@@ -32,8 +32,8 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
 
         await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
 
-        await IdentitySeeder.SeedRolesAsync(roleManager);
-        await IdentitySeeder.SeedRolesAsync(roleManager);
+        await IdentitySeeder.SeedRolesAsync(roleManager, TestContext.Current.CancellationToken);
+        await IdentitySeeder.SeedRolesAsync(roleManager, TestContext.Current.CancellationToken);
 
         var roles = await context.Roles.OrderBy(role => role.Name).Select(role => role.Name).ToListAsync(TestContext.Current.CancellationToken);
         Assert.Equal(new[] { SystemRoles.Admin, SystemRoles.HumanAgent, SystemRoles.KnowledgeOperator }, roles);

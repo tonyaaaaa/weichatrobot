@@ -11,7 +11,7 @@ public static class IdentitySeeder
         var roleManager = services.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
 
-        await SeedRolesAsync(roleManager);
+        await SeedRolesAsync(roleManager, cancellationToken);
 
         var email = configuration["BootstrapAdmin:Email"];
         var password = configuration["BootstrapAdmin:Password"];
@@ -21,42 +21,57 @@ public static class IdentitySeeder
             return;
         }
 
-        var existing = await userManager.FindByEmailAsync(email);
-        if (existing is not null)
+        cancellationToken.ThrowIfCancellationRequested();
+        var user = await userManager.FindByEmailAsync(email).WaitAsync(cancellationToken);
+        if (user is null)
+        {
+            user = new ApplicationUser
+            {
+                UserName = email,
+                Email = email,
+                DisplayName = displayName,
+                EmailConfirmed = true
+            };
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = await userManager.CreateAsync(user, password).WaitAsync(cancellationToken);
+            if (!result.Succeeded)
+            {
+                throw new InvalidOperationException($"Bootstrap admin could not be created: {string.Join("; ", result.Errors.Select(error => error.Code))}");
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (await userManager.IsInRoleAsync(user, SystemRoles.Admin).WaitAsync(cancellationToken))
         {
             return;
         }
 
-        var user = new ApplicationUser
-        {
-            UserName = email,
-            Email = email,
-            DisplayName = displayName,
-            EmailConfirmed = true
-        };
-        var result = await userManager.CreateAsync(user, password);
-        if (!result.Succeeded)
-        {
-            throw new InvalidOperationException($"Bootstrap admin could not be created: {string.Join("; ", result.Errors.Select(error => error.Code))}");
-        }
-
-        var roleResult = await userManager.AddToRoleAsync(user, SystemRoles.Admin);
+        cancellationToken.ThrowIfCancellationRequested();
+        var roleResult = await userManager.AddToRoleAsync(user, SystemRoles.Admin).WaitAsync(cancellationToken);
         if (!roleResult.Succeeded)
         {
             throw new InvalidOperationException($"Bootstrap admin role could not be assigned: {string.Join("; ", roleResult.Errors.Select(error => error.Code))}");
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await userManager.IsInRoleAsync(user, SystemRoles.Admin).WaitAsync(cancellationToken))
+        {
+            throw new InvalidOperationException("Bootstrap admin role membership could not be verified.");
+        }
     }
 
-    public static async Task SeedRolesAsync(RoleManager<IdentityRole<Guid>> roleManager)
+    public static async Task SeedRolesAsync(RoleManager<IdentityRole<Guid>> roleManager, CancellationToken cancellationToken = default)
     {
         foreach (var roleName in SystemRoles.All)
         {
-            if (await roleManager.RoleExistsAsync(roleName))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await roleManager.RoleExistsAsync(roleName).WaitAsync(cancellationToken))
             {
                 continue;
             }
 
-            var result = await roleManager.CreateAsync(new IdentityRole<Guid>(roleName));
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = await roleManager.CreateAsync(new IdentityRole<Guid>(roleName)).WaitAsync(cancellationToken);
             if (!result.Succeeded)
             {
                 throw new InvalidOperationException($"Role '{roleName}' could not be seeded: {string.Join("; ", result.Errors.Select(error => error.Code))}");
