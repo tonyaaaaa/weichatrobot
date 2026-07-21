@@ -15,4 +15,5 @@ __pycache__/
 .venv/
 logs/
 *.log
+secrets.json
 *.secrets.json
