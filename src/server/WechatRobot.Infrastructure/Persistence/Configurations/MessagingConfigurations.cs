@@ -12,6 +12,7 @@ internal sealed class RobotConfigConfiguration : IEntityTypeConfiguration<RobotC
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.WorkToolRobotId).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.CallbackSecretHash).HasMaxLength(128).IsRequired();
         builder.HasIndex(entity => entity.WorkToolRobotId).IsUnique();
     }
 }

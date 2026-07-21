@@ -6,6 +6,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Api.Auth;
 using WechatRobot.Api.Models;
+using WechatRobot.Api.WorkTool;
+using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
 using WechatRobot.Infrastructure.Identity;
@@ -28,6 +31,10 @@ builder.Services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(
 var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
+builder.Services.AddScoped<InboundMessageService>();
+builder.Services.AddSingleton(TimeProvider.System);
+WorkToolCallbackRateLimitPolicy.Add(builder.Services);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services
@@ -98,8 +105,10 @@ if (builder.Configuration.GetValue<bool>("Database:ApplyMigrationsOnStartup"))
 app.UseCors("AdminSpa");
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
+app.MapWorkToolCallbackEndpoints();
 app.MapGet("/", () => Results.Ok());
 
 app.Run();
