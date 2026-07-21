@@ -183,13 +183,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         var updated = await database.SendCommands
             .Where(command => command.Id == candidate.Id && command.Version == candidate.Version &&
                 (((command.Status == "pending" || command.Status == "retrying") && command.NextAttemptAtUtc <= nowUtc) ||
-                (command.Status == "leased" && command.LeaseExpiresAtUtc <= nowUtc)) &&
-                !database.SendCommands.Any(earlier =>
-                    earlier.RobotConfigId == command.RobotConfigId &&
-                    earlier.Id != command.Id &&
-                    earlier.CreatedAtUtc < command.CreatedAtUtc &&
-                    earlier.Status != "completed" &&
-                    earlier.Status != "deadLetter"))
+                (command.Status == "leased" && command.LeaseExpiresAtUtc <= nowUtc)))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(command => command.Status, "leased")
                 .SetProperty(command => command.LeaseOwner, leaseOwner)
