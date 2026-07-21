@@ -9,7 +9,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="Testcontainers.MySql" />
     <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Api\WechatRobot.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Infrastructure\WechatRobot.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>
