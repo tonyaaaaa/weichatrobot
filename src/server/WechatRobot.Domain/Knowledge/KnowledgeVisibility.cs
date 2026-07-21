@@ -1,10 +1,11 @@
+using System.Collections.Immutable;
 using WechatRobot.Domain.Groups;
 
 namespace WechatRobot.Domain.Knowledge;
 
 public static class KnowledgeVisibility
 {
-    public static IReadOnlySet<Guid> BuildAllowedTagIds(
+    public static ImmutableHashSet<Guid> BuildAllowedTagIds(
         string groupName,
         IEnumerable<GroupRule> groupRules,
         KnowledgeTag globalPublicTag)
@@ -13,7 +14,7 @@ public static class KnowledgeVisibility
         ArgumentNullException.ThrowIfNull(groupRules);
         ArgumentNullException.ThrowIfNull(globalPublicTag);
 
-        var allowedTagIds = new HashSet<Guid>();
+        var allowedTagIds = ImmutableHashSet.CreateBuilder<Guid>();
         if (globalPublicTag.IsEnabled && globalPublicTag.IsGlobalPublic)
         {
             allowedTagIds.Add(globalPublicTag.Id);
@@ -29,6 +30,6 @@ public static class KnowledgeVisibility
             allowedTagIds.UnionWith(rule.BoundTagIds);
         }
 
-        return allowedTagIds;
+        return allowedTagIds.ToImmutable();
     }
 }
