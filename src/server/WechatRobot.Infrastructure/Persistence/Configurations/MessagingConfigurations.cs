@@ -119,7 +119,12 @@ internal sealed class ModelConfigConfiguration : IEntityTypeConfiguration<ModelC
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Provider).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.ConfigurationType).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.BaseUrl).HasMaxLength(2048).IsRequired();
         builder.Property(entity => entity.Model).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.EncryptedApiKey).HasColumnType("longtext");
+        builder.Property(entity => entity.TimeoutSeconds).IsRequired();
+        builder.Property(entity => entity.MaxRetries).IsRequired();
         builder.HasIndex(entity => entity.Name).IsUnique();
     }
 }

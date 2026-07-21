@@ -5,8 +5,13 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Api.Auth;
+using WechatRobot.Api.Models;
+using WechatRobot.Application.Models;
+using WechatRobot.Application.Security;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Infrastructure.Models;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +25,11 @@ if (allowedOrigins.Length == 0 || allowedOrigins.Any(string.IsNullOrWhiteSpace))
 }
 
 builder.Services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
+var secretProtector = new AesGcmSecretProtector();
+builder.Services.AddSingleton<ISecretProtector>(secretProtector);
+builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
+builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
     {
@@ -89,6 +99,7 @@ app.UseCors("AdminSpa");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapAuthEndpoints();
+app.MapModelConfigurationEndpoints();
 app.MapGet("/", () => Results.Ok());
 
 app.Run();

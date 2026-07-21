@@ -16,4 +16,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Application\WechatRobot.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Infrastructure\WechatRobot.Infrastructure.csproj" />
+  </ItemGroup>
+
 </Project>

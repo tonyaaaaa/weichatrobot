@@ -17,6 +17,7 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
 
     public RoleAuthorizationTests(WebApplicationFactory<Program> factory)
     {
+        Environment.SetEnvironmentVariable("WECHATROBOT_MASTER_KEY_BASE64", Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
         Environment.SetEnvironmentVariable("Jwt__Issuer", "integration-tests");
         Environment.SetEnvironmentVariable("Jwt__Audience", "integration-tests-api");
         Environment.SetEnvironmentVariable("Jwt__SigningKey", SigningKey);
