@@ -6,7 +6,7 @@ using WechatRobot.Application.WorkTool;
 
 namespace WechatRobot.Application.Messaging;
 
-public sealed class InboundMessageService(IDurableJobRepository durableJobs, TimeProvider timeProvider)
+public sealed class InboundMessageService(IDurableJobRepository durableJobs, TimeProvider timeProvider, TimeSpan fallbackDeduplicationWindow)
 {
     private static readonly Regex Whitespace = new("\\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
@@ -20,8 +20,8 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
             callback.ReceivedName!,
             callback.Spoken!,
             receivedAtUtc,
-            TimeSpan.FromMinutes(5));
-        var fallbackWindowStartUtc = deduplication.FallbackWindowStartUtc ?? FloorToWindow(receivedAtUtc, TimeSpan.FromMinutes(5));
+            fallbackDeduplicationWindow);
+        var fallbackWindowStartUtc = deduplication.FallbackWindowStartUtc ?? FloorToWindow(receivedAtUtc, fallbackDeduplicationWindow);
         var fallbackHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(deduplication.Key)));
 
         return await durableJobs.IngestInboundMessageAsync(new(

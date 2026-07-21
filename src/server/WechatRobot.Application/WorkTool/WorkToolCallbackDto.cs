@@ -4,6 +4,8 @@ namespace WechatRobot.Application.WorkTool;
 
 public sealed class WorkToolCallbackDto
 {
+    public const int MaxIdentifierLength = 128;
+    public const int MaxTextLength = 8192;
     [JsonPropertyName("spoken")]
     public string? Spoken { get; init; }
 
@@ -51,7 +53,22 @@ public sealed class WorkToolCallbackDto
             return false;
         }
 
+        if (!IsWithinLength(MessageId, MaxIdentifierLength)
+            || !IsWithinLength(ReceivedName, MaxIdentifierLength)
+            || !IsWithinLength(GroupName, MaxIdentifierLength)
+            || !IsWithinLength(GroupRemark, MaxIdentifierLength)
+            || !IsWithinLength(Spoken, MaxTextLength)
+            || !IsWithinLength(RawSpoken, MaxTextLength))
+        {
+            reason = "callback-field-too-large";
+            return false;
+        }
+
         reason = string.Empty;
         return true;
     }
+
+    public static bool IsIdentifierWithinLimit(string? value) => IsWithinLength(value, MaxIdentifierLength);
+
+    private static bool IsWithinLength(string? value, int maximumLength) => value is null || value.Length <= maximumLength;
 }

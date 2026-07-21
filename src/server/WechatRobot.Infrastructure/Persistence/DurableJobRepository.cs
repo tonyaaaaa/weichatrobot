@@ -44,8 +44,13 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         }
         catch (DbUpdateException exception) when (IsUniqueConstraintViolation(exception))
         {
-            await transaction.RollbackAsync(cancellationToken);
+            await transaction.RollbackAsync(CancellationToken.None);
             return InboundMessageIngestResult.Duplicate;
+        }
+        catch (OperationCanceledException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
         }
     }
 

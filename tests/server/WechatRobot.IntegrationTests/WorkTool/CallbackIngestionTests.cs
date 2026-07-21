@@ -5,8 +5,10 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.IntegrationTests.Infrastructure;
@@ -89,6 +91,98 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
+    public async Task Parallel_duplicate_callbacks_are_accepted_but_create_one_message_and_job()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var robot = await SeedRobotAsync(factory, "callback-parallel-duplicate", "callback-secret");
+        var payload = ValidPayload("message-parallel-duplicate");
+
+        using var firstClient = factory.CreateClient();
+        using var secondClient = factory.CreateClient();
+        var responses = await Task.WhenAll(
+            firstClient.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken),
+            secondClient.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken));
+
+        foreach (var response in responses)
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("{\"code\":0,\"message\":\"accepted\"}", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        }
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        Assert.Equal(1, await database.ConversationMessages.CountAsync(message => message.RobotConfigId == robot.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(1, await CountJobsForRobotAsync(database, robot.Id));
+    }
+
+    [Fact]
+    public async Task Ingestion_timeout_returns_redacted_failure_and_rolls_back_the_transaction()
+    {
+        var interceptor = new DelayingSaveChangesInterceptor(TimeSpan.FromMilliseconds(200));
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString, callbackDeadlineMilliseconds: 50, interceptor: interceptor);
+        var robot = await SeedRobotAsync(factory, "callback-timeout", "callback-secret");
+        interceptor.DelayOnSave = true;
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", ValidPayload("message-timeout"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.DoesNotContain("timeout", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), StringComparison.OrdinalIgnoreCase);
+        await AssertNoInboundDataAsync(factory, robot.Id);
+    }
+
+    [Fact]
+    public async Task Oversized_persisted_callback_field_is_rejected_without_enqueuing()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var robot = await SeedRobotAsync(factory, "callback-oversized", "callback-secret");
+        var payload = ValidPayload("message-oversized");
+        payload["receivedName"] = new string('a', 129);
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.DoesNotContain("received", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), StringComparison.OrdinalIgnoreCase);
+        await AssertNoInboundDataAsync(factory, robot.Id);
+    }
+
+    [Fact]
+    public async Task Fallback_deduplication_bucket_uses_configured_runtime_window()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString, fallbackTimeBucketSeconds: 420);
+        var robot = await SeedRobotAsync(factory, "callback-configured-bucket", "callback-secret");
+        var payload = ValidPayload(string.Empty);
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var message = await database.ConversationMessages.SingleAsync(value => value.RobotConfigId == robot.Id, TestContext.Current.CancellationToken);
+        var window = TimeSpan.FromMinutes(7);
+        var expectedWindowStart = new DateTime(message.ReceivedAtUtc.Ticks - message.ReceivedAtUtc.Ticks % window.Ticks, DateTimeKind.Utc);
+        Assert.Equal(expectedWindowStart, message.FallbackWindowStartUtc);
+    }
+
+    [Fact]
+    public async Task One_source_cannot_bypass_callback_limit_by_varying_robot_codes()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        using var client = factory.CreateClient();
+
+        var responses = new List<HttpResponseMessage>();
+        for (var index = 0; index < 51; index++)
+        {
+            responses.Add(await client.PostAsJsonAsync($"/api/worktool/callback/unregistered-{index}?token=wrong", ValidPayload($"message-rate-{index}"), TestContext.Current.CancellationToken));
+        }
+
+        Assert.All(responses.Take(50), response => Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode));
+        Assert.Equal(HttpStatusCode.TooManyRequests, responses[50].StatusCode);
+    }
+
+    [Fact]
     public async Task Job_enqueue_failure_rolls_back_inbound_message()
     {
         await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
@@ -157,9 +251,16 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
 public sealed class CallbackApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _connectionString;
-    public CallbackApiFactory(string connectionString)
+    private readonly int? _callbackDeadlineMilliseconds;
+    private readonly int? _fallbackTimeBucketSeconds;
+    private readonly IInterceptor? _interceptor;
+
+    public CallbackApiFactory(string connectionString, int? callbackDeadlineMilliseconds = null, int? fallbackTimeBucketSeconds = null, IInterceptor? interceptor = null)
     {
         _connectionString = connectionString;
+        _callbackDeadlineMilliseconds = callbackDeadlineMilliseconds;
+        _fallbackTimeBucketSeconds = fallbackTimeBucketSeconds;
+        _interceptor = interceptor;
         Environment.SetEnvironmentVariable("WECHATROBOT_MASTER_KEY_BASE64", Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
         Environment.SetEnvironmentVariable("Jwt__Issuer", "callback-tests");
         Environment.SetEnvironmentVariable("Jwt__Audience", "callback-tests-api");
@@ -172,14 +273,56 @@ public sealed class CallbackApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
-        builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        builder.ConfigureAppConfiguration((_, configuration) =>
         {
+            var values = new Dictionary<string, string?>
+            {
             ["Jwt:Issuer"] = "callback-tests",
             ["Jwt:Audience"] = "callback-tests-api",
             ["Jwt:SigningKey"] = "callback-tests-signing-key-must-be-at-least-32-bytes",
             ["ConnectionStrings:WechatRobot"] = _connectionString,
             ["Cors:AllowedOrigins:0"] = "https://admin.example.test",
             ["Database:ApplyMigrationsOnStartup"] = "true"
-        }));
+            };
+            if (_callbackDeadlineMilliseconds is not null)
+            {
+                values["WorkToolCallback:IngestionDeadlineMilliseconds"] = _callbackDeadlineMilliseconds.Value.ToString();
+            }
+
+            if (_fallbackTimeBucketSeconds is not null)
+            {
+                values["WorkToolCallback:FallbackDeduplicationWindowSeconds"] = _fallbackTimeBucketSeconds.Value.ToString();
+            }
+
+            configuration.AddInMemoryCollection(values);
+        });
+
+        if (_interceptor is not null)
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<WechatRobotDbContext>>();
+                services.RemoveAll<WechatRobotDbContext>();
+                services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(_connectionString).AddInterceptors(_interceptor));
+            });
+        }
+    }
+}
+
+public sealed class DelayingSaveChangesInterceptor(TimeSpan delay) : SaveChangesInterceptor
+{
+    public bool DelayOnSave { get; set; }
+
+    public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        if (DelayOnSave)
+        {
+            await Task.Delay(delay, cancellationToken);
+        }
+
+        return result;
     }
 }

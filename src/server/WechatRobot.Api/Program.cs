@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Api.Auth;
 using WechatRobot.Api.Models;
@@ -32,8 +33,15 @@ var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
-builder.Services.AddScoped<InboundMessageService>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddOptions<WorkToolCallbackOptions>()
+    .BindConfiguration(WorkToolCallbackOptions.SectionName)
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder.Services.AddScoped<InboundMessageService>(services => new InboundMessageService(
+    services.GetRequiredService<IDurableJobRepository>(),
+    services.GetRequiredService<TimeProvider>(),
+    services.GetRequiredService<IOptions<WorkToolCallbackOptions>>().Value.FallbackDeduplicationWindow));
 WorkToolCallbackRateLimitPolicy.Add(builder.Services);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();

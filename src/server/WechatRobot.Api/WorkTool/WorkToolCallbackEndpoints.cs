@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Persistence;
@@ -23,26 +24,42 @@ public static class WorkToolCallbackEndpoints
         WorkToolCallbackDto callback,
         WechatRobotDbContext database,
         InboundMessageService inboundMessages,
+        IOptions<WorkToolCallbackOptions> callbackOptions,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger("WorkToolCallback");
-        var robot = await database.RobotConfigs.SingleOrDefaultAsync(config => config.WorkToolRobotId == robotCode && config.IsEnabled, cancellationToken);
-        if (robot is null || !SecretMatches(token, robot.CallbackSecretHash))
+        if (!WorkToolCallbackDto.IsIdentifierWithinLimit(robotCode))
         {
-            logger.LogWarning("WorkTool callback rejected: authentication failed.");
-            return Results.Unauthorized();
-        }
-
-        if (!callback.IsSupportedGroupText(out var reason))
-        {
-            logger.LogWarning("WorkTool callback rejected: {Reason}.", reason);
+            logger.LogWarning("WorkTool callback rejected: invalid callback shape.");
             return Results.BadRequest();
         }
 
+        using var ingestionDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ingestionDeadline.CancelAfter(callbackOptions.Value.IngestionDeadline);
+        var ingestionToken = ingestionDeadline.Token;
+
         try
         {
-            await inboundMessages.IngestAsync(robot.Id, robot.WorkToolRobotId, callback, cancellationToken);
+            var robot = await database.RobotConfigs.SingleOrDefaultAsync(config => config.WorkToolRobotId == robotCode && config.IsEnabled, ingestionToken);
+            if (robot is null || !SecretMatches(token, robot.CallbackSecretHash))
+            {
+                logger.LogWarning("WorkTool callback rejected: authentication failed.");
+                return Results.Unauthorized();
+            }
+
+            if (!callback.IsSupportedGroupText(out var reason))
+            {
+                logger.LogWarning("WorkTool callback rejected: {Reason}.", reason);
+                return Results.BadRequest();
+            }
+
+            await inboundMessages.IngestAsync(robot.Id, robot.WorkToolRobotId, callback, ingestionToken);
+        }
+        catch (OperationCanceledException) when (ingestionDeadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogError("WorkTool callback persistence timed out.");
+            return Results.StatusCode(StatusCodes.Status500InternalServerError);
         }
         catch (Exception)
         {
