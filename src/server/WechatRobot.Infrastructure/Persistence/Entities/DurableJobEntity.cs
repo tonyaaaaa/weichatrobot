@@ -8,7 +8,11 @@ public sealed class DurableJobEntity
     public string Status { get; set; } = "pending";
     public int AttemptCount { get; set; }
     public DateTime AvailableAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime NextAttemptAtUtc { get; set; } = DateTime.UtcNow;
+    public string? LeaseOwner { get; set; }
     public DateTime? LeaseExpiresAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
+    public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

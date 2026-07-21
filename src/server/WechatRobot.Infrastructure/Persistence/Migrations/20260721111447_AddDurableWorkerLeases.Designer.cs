@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WechatRobot.Infrastructure.Persistence;
 
@@ -10,9 +11,11 @@ using WechatRobot.Infrastructure.Persistence;
 namespace WechatRobot.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(WechatRobotDbContext))]
-    partial class WechatRobotDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260721111447_AddDurableWorkerLeases")]
+    partial class AddDurableWorkerLeases
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -278,7 +281,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<Guid?>("DurableJobId")
+                    b.Property<Guid>("DurableJobId")
                         .HasColumnType("char(36)");
 
                     b.Property<string>("PayloadJson")
@@ -708,7 +711,8 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.DurableJobEntity", null)
                         .WithMany()
                         .HasForeignKey("DurableJobId")
-                        .OnDelete(DeleteBehavior.Cascade);
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", b =>

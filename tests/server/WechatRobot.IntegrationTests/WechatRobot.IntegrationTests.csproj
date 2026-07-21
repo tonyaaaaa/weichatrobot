@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\server\WechatRobot.Api\WechatRobot.Api.csproj" />
     <ProjectReference Include="..\..\..\src\server\WechatRobot.Infrastructure\WechatRobot.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Worker\WechatRobot.Worker.csproj" />
   </ItemGroup>
 
   <ItemGroup>

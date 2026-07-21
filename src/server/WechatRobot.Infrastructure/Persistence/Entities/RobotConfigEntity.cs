@@ -7,6 +7,7 @@ public sealed class RobotConfigEntity
     public string WorkToolRobotId { get; set; } = string.Empty;
     public string CallbackSecretHash { get; set; } = string.Empty;
     public bool IsEnabled { get; set; } = true;
+    public int SendRateLimitPerMinute { get; set; } = 50;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

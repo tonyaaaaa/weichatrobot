@@ -13,6 +13,8 @@ internal sealed class RobotConfigConfiguration : IEntityTypeConfiguration<RobotC
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.WorkToolRobotId).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.CallbackSecretHash).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.SendRateLimitPerMinute).HasDefaultValue(50).IsRequired();
+        builder.ToTable(table => table.HasCheckConstraint("CK_robot_config_send_rate_limit", "`SendRateLimitPerMinute` BETWEEN 1 AND 60"));
         builder.HasIndex(entity => entity.WorkToolRobotId).IsUnique();
     }
 }
@@ -80,7 +82,9 @@ internal sealed class DurableJobConfiguration : IEntityTypeConfiguration<Durable
         builder.Property(entity => entity.JobType).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.PayloadJson).HasColumnType("longtext").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
-        builder.HasIndex(entity => new { entity.Status, entity.AvailableAtUtc });
+        builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
+        builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });
     }
 }
 
@@ -93,7 +97,10 @@ internal sealed class SendCommandConfiguration : IEntityTypeConfiguration<SendCo
         builder.Property(entity => entity.IdempotencyKey).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.PayloadJson).HasColumnType("longtext").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.IdempotencyKey).IsUnique();
+        builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.SetNull);
     }
