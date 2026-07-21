@@ -85,6 +85,48 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
         Assert.Equal(storedCiphertext, (await databaseAfterUpdate.ModelConfigs.SingleAsync(config => config.Name == "chat-primary", TestContext.Current.CancellationToken)).EncryptedApiKey);
     }
 
+    [Fact]
+    public async Task Short_api_key_update_returns_masked_metadata_without_disclosing_the_key()
+    {
+        const string plaintextKey = "abc";
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var service = scope.ServiceProvider.GetRequiredService<ModelConfigurationService>();
+            database.ModelConfigs.Add(new()
+            {
+                Name = "chat-short-key",
+                Provider = "openai-compatible",
+                ConfigurationType = "chat",
+                BaseUrl = "https://provider.example.test",
+                Model = "model",
+                EncryptedApiKey = service.ProtectSubmittedApiKey(plaintextKey, null)
+            });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var response = await client.PutAsJsonAsync("/api/admin/model-configurations/chat-short-key", new
+        {
+            provider = "openai-compatible",
+            configurationType = "chat",
+            baseUrl = "https://provider.example.test",
+            model = "model",
+            apiKey = "",
+            timeoutSeconds = 30,
+            maxRetries = 0,
+            isEnabled = true,
+            isDefault = false
+        }, TestContext.Current.CancellationToken);
+        var json = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        Assert.DoesNotContain(plaintextKey, json, StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(json);
+        Assert.True(document.RootElement.GetProperty("hasApiKey").GetBoolean());
+        Assert.Equal("****", document.RootElement.GetProperty("lastFour").GetString());
+    }
+
 }
 
 public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program>

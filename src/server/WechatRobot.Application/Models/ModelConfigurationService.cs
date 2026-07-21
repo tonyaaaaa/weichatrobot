@@ -29,7 +29,7 @@ public sealed class ModelConfigurationService(ISecretProtector secretProtector)
         }
 
         var plaintext = secretProtector.Unprotect(encryptedApiKey);
-        return new ApiKeyMetadata(true, plaintext.Length <= 4 ? plaintext : plaintext[^4..]);
+        return new ApiKeyMetadata(true, plaintext.Length <= 4 ? "****" : plaintext[^4..]);
     }
 }
 

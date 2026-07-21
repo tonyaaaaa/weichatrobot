@@ -37,14 +37,14 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                 table: "model_config",
                 type: "int",
                 nullable: false,
-                defaultValue: 30);
+                defaultValue: 0);
 
             migrationBuilder.AddColumn<int>(
                 name: "TimeoutSeconds",
                 table: "model_config",
                 type: "int",
                 nullable: false,
-                defaultValue: 0);
+                defaultValue: 30);
         }
 
         /// <inheritdoc />
