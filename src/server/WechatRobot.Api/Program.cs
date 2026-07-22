@@ -55,13 +55,25 @@ builder.Services.AddOptions<DocumentUploadOptions>()
 builder.Services.Configure<FormOptions>(options =>
     options.MultipartBodyLengthLimit = checked(builder.Configuration.GetValue<long?>($"{DocumentUploadOptions.SectionName}:MaximumBytes") ?? 20 * 1024 * 1024) + 64 * 1024);
 builder.Services.AddOptions<OssOptions>().BindConfiguration(OssOptions.SectionName);
-builder.Services.AddSingleton<IOssTransport, AliyunOssTransport>();
-builder.Services.AddSingleton<IObjectStorage, AliyunOssStorage>();
+if (builder.Configuration["ObjectStorage:Provider"]?.Equals("loopback", StringComparison.OrdinalIgnoreCase) == true)
+{
+    if (!builder.Environment.IsDevelopment()) throw new InvalidOperationException("Loopback object storage is development-only.");
+    builder.Services.AddOptions<LoopbackObjectStorageOptions>().BindConfiguration(LoopbackObjectStorageOptions.SectionName).ValidateOnStart();
+    builder.Services.AddHttpClient<IObjectStorage, LoopbackObjectStorage>();
+}
+else
+{
+    builder.Services.AddSingleton<IOssTransport, AliyunOssTransport>();
+    builder.Services.AddSingleton<IObjectStorage, AliyunOssStorage>();
+}
 builder.Services.AddScoped<IKnowledgeDocumentStore, KnowledgeDocumentStore>();
 builder.Services.AddOptions<DocumentParsingOptions>().BindConfiguration(DocumentParsingOptions.SectionName)
     .Validate(options => options.MaximumSourceBytes > 0 && options.MaximumPages > 0 && options.MaximumMemoryBytes > 0 && options.ExecutionTimeoutSeconds > 0 &&
         options.MaximumPageCharacters > 0 && options.MaximumExpandedEntryBytes > 0 && options.MaximumResultCharacters > 0, "Document parsing limits are invalid.")
     .ValidateOnStart();
+if (builder.Configuration.GetValue<bool>($"{DocumentSourceOptions.SectionName}:AllowLoopbackHttp") && !builder.Environment.IsDevelopment())
+    throw new InvalidOperationException("Loopback HTTP document sources are development-only.");
+builder.Services.AddOptions<DocumentSourceOptions>().BindConfiguration(DocumentSourceOptions.SectionName);
 builder.Services.AddHttpClient<IDocumentSourceReader, HttpDocumentSourceReader>();
 builder.Services.AddSingleton<MarkdownTextParser>();
 builder.Services.AddSingleton<DocxParser>();

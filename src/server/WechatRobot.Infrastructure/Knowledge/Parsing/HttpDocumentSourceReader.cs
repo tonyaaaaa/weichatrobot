@@ -1,16 +1,34 @@
 using WechatRobot.Application.Knowledge.Parsing;
+using Microsoft.Extensions.Options;
 
 namespace WechatRobot.Infrastructure.Knowledge.Parsing;
 
-public sealed class HttpDocumentSourceReader(HttpClient client) : IDocumentSourceReader
+public sealed class DocumentSourceOptions
 {
+    public const string SectionName = "DocumentSource";
+    public bool AllowLoopbackHttp { get; set; }
+}
+
+public sealed class HttpDocumentSourceReader : IDocumentSourceReader
+{
+    private readonly HttpClient _client;
+    private readonly bool _allowLoopbackHttp;
+
+    public HttpDocumentSourceReader(HttpClient client, IOptions<DocumentSourceOptions> options)
+    {
+        _client = client;
+        _allowLoopbackHttp = options.Value.AllowLoopbackHttp;
+    }
+
     public async Task<Stream> OpenReadAsync(Uri publicUrl, DocumentProcessingContext context)
     {
-        if (publicUrl.Scheme != Uri.UriSchemeHttps) throw new InvalidOperationException("Document source URLs must use HTTPS.");
+        if (publicUrl.Scheme != Uri.UriSchemeHttps &&
+            !(_allowLoopbackHttp && publicUrl.Scheme == Uri.UriSchemeHttp && publicUrl.IsLoopback))
+            throw new InvalidOperationException("Document source URLs must use HTTPS, except an explicitly enabled loopback development source.");
         context.Checkpoint("source-http");
         try
         {
-            using var response = await client.GetAsync(publicUrl, HttpCompletionOption.ResponseHeadersRead, context.Token);
+            using var response = await _client.GetAsync(publicUrl, HttpCompletionOption.ResponseHeadersRead, context.Token);
             context.Checkpoint("source-http-headers");
             response.EnsureSuccessStatusCode();
             var length = response.Content.Headers.ContentLength

@@ -29,8 +29,11 @@ public sealed class QdrantKnowledgeService(
     {
         if (tagIds.Count == 0) throw new ArgumentException("At least one knowledge tag is required.", nameof(tagIds));
         var distinctTags = tagIds.Distinct().Order().ToArray();
-        if (await database.KnowledgeTags.CountAsync(tag => tag.IsEnabled && distinctTags.Contains(tag.Id), token) != distinctTags.Length)
-            throw new ArgumentException("Only enabled knowledge tags may be indexed.", nameof(tagIds));
+        foreach (var tagId in distinctTags)
+        {
+            if (!await database.KnowledgeTags.AnyAsync(tag => tag.IsEnabled && tag.Id == tagId, token))
+                throw new ArgumentException("Only enabled knowledge tags may be indexed.", nameof(tagIds));
+        }
         var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, token) ?? throw new KeyNotFoundException();
         var version = await database.KnowledgeDocumentVersions.SingleOrDefaultAsync(item => item.Id == versionId && item.KnowledgeDocumentId == documentId, token) ?? throw new KeyNotFoundException();
         if (document.IsDeleteRequested) throw new InvalidOperationException("The document is pending physical deletion.");
@@ -176,7 +179,10 @@ public sealed class QdrantKnowledgeService(
         if (versionChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
         var chunkIds = work.Chunks.Select(chunk => chunk.Id).ToArray();
         if (database.Database.IsRelational())
-            await database.KnowledgeChunkTags.Where(binding => chunkIds.Contains(binding.KnowledgeChunkId)).ExecuteDeleteAsync(token);
+        {
+            foreach (var chunkId in chunkIds)
+                await database.KnowledgeChunkTags.Where(binding => binding.KnowledgeChunkId == chunkId).ExecuteDeleteAsync(token);
+        }
         else
             database.KnowledgeChunkTags.RemoveRange(await database.KnowledgeChunkTags.Where(binding => chunkIds.Contains(binding.KnowledgeChunkId)).ToArrayAsync(token));
         database.KnowledgeChunkTags.AddRange(work.Chunks.SelectMany(chunk => chunk.TagIds.Select(tagId =>
@@ -295,10 +301,14 @@ public sealed class QdrantKnowledgeService(
         var expected = await database.KnowledgeChunks.AsNoTracking().Where(chunk => chunk.KnowledgeDocumentVersionId == active && chunk.Status == "approved")
             .Select(chunk => new { chunk.Id, chunk.KnowledgeDocumentVersionId }).ToArrayAsync(token);
         var ids = expected.Select(chunk => chunk.Id).ToArray();
-        var tags = (await (from binding in database.KnowledgeChunkTags.AsNoTracking()
-                           join tag in database.KnowledgeTags.AsNoTracking() on binding.KnowledgeTagId equals tag.Id
-                           where ids.Contains(binding.KnowledgeChunkId) && tag.IsEnabled
-                           select new { binding.KnowledgeChunkId, binding.KnowledgeTagId }).ToArrayAsync(token)).ToLookup(row => row.KnowledgeChunkId, row => row.KnowledgeTagId);
+        var tags = new Dictionary<Guid, Guid[]>();
+        foreach (var chunkId in ids)
+        {
+            tags[chunkId] = await (from binding in database.KnowledgeChunkTags.AsNoTracking()
+                                   join tag in database.KnowledgeTags.AsNoTracking() on binding.KnowledgeTagId equals tag.Id
+                                   where binding.KnowledgeChunkId == chunkId && tag.IsEnabled
+                                   select binding.KnowledgeTagId).ToArrayAsync(token);
+        }
         var actual = await vectors.InspectVersionAsync(new VectorCollection(name, dimension, ParseDistance(distance)), active, token);
         var actualById = actual.ToDictionary(point => point.ChunkId);
         var drift = new List<string>();
@@ -333,18 +343,31 @@ public sealed class QdrantKnowledgeService(
             candidates.AddRange(await vectors.SearchAsync(request, token));
         }
         if (candidates.Count == 0) return [];
-        var candidateIds = candidates.Select(hit => hit.ChunkId).Distinct().ToArray();
-        var visibleIds = await (from chunk in database.KnowledgeChunks.AsNoTracking()
-                                join version in database.KnowledgeDocumentVersions.AsNoTracking() on chunk.KnowledgeDocumentVersionId equals version.Id
-                                join document in database.KnowledgeDocuments.AsNoTracking() on version.KnowledgeDocumentId equals document.Id
-                                where candidateIds.Contains(chunk.Id) && chunk.Status == "approved" && version.Status == "active" && version.IsPublished &&
-                                      document.Status == "active" && !document.IsDeleteRequested && document.ActiveVersionId == version.Id &&
-                                      database.KnowledgeChunkTags.Any(binding => binding.KnowledgeChunkId == chunk.Id &&
-                                          ((global != null && binding.KnowledgeTagId == global) || enabledAllowed.Contains(binding.KnowledgeTagId)))
-                                select chunk.Id).ToArrayAsync(token);
-        var allowed = visibleIds.ToHashSet();
-        return candidates.Where(hit => allowed.Contains(hit.ChunkId)).OrderByDescending(hit => hit.Score).DistinctBy(hit => hit.ChunkId).Take(limit).ToArray();
+        var visible = new List<VectorSearchHit>();
+        foreach (var hit in candidates.OrderByDescending(hit => hit.Score).DistinctBy(hit => hit.ChunkId))
+        {
+            if (!await IsLiveChunkAsync(hit.ChunkId, token)) continue;
+            var hasVisibleTag = global is { } globalId &&
+                await database.KnowledgeChunkTags.AsNoTracking().AnyAsync(binding => binding.KnowledgeChunkId == hit.ChunkId && binding.KnowledgeTagId == globalId, token);
+            foreach (var tagId in enabledAllowed)
+            {
+                if (hasVisibleTag) break;
+                hasVisibleTag = await database.KnowledgeChunkTags.AsNoTracking()
+                    .AnyAsync(binding => binding.KnowledgeChunkId == hit.ChunkId && binding.KnowledgeTagId == tagId, token);
+            }
+            if (hasVisibleTag) visible.Add(hit);
+            if (visible.Count == limit) break;
+        }
+        return visible;
     }
+
+    private Task<bool> IsLiveChunkAsync(Guid chunkId, CancellationToken token) =>
+        (from chunk in database.KnowledgeChunks.AsNoTracking()
+         join version in database.KnowledgeDocumentVersions.AsNoTracking() on chunk.KnowledgeDocumentVersionId equals version.Id
+         join document in database.KnowledgeDocuments.AsNoTracking() on version.KnowledgeDocumentId equals document.Id
+         where chunk.Id == chunkId && chunk.Status == "approved" && version.Status == "active" && version.IsPublished &&
+               document.Status == "active" && !document.IsDeleteRequested && document.ActiveVersionId == version.Id
+         select chunk.Id).AnyAsync(token);
 
     public async Task<IReadOnlyList<KnowledgeVectorContract>> GetDocumentVectorContractsAsync(Guid documentId, CancellationToken token)
     {

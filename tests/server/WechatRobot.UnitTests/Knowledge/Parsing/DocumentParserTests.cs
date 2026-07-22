@@ -1,6 +1,7 @@
 using System.Text;
 using WechatRobot.Application.Knowledge.Parsing;
 using WechatRobot.Infrastructure.Knowledge.Parsing;
+using Microsoft.Extensions.Options;
 
 namespace WechatRobot.UnitTests.Knowledge.Parsing;
 
@@ -145,10 +146,26 @@ public sealed class DocumentParserTests
         var time = new ManualTimeProvider();
         var handler = new AdvancingHandler(() => time.Advance(TimeSpan.FromSeconds(2)));
         var context = Context(Limits() with { ExecutionTimeout = TimeSpan.FromSeconds(1) }, time);
-        var exception = await Assert.ThrowsAsync<DocumentParsingException>(() => new HttpDocumentSourceReader(new HttpClient(handler))
+        var exception = await Assert.ThrowsAsync<DocumentParsingException>(() => new HttpDocumentSourceReader(new HttpClient(handler), Options.Create(new DocumentSourceOptions()))
             .OpenReadAsync(new Uri("https://example.test/source"), context));
         Assert.True(handler.ReceivedCancelableToken);
         Assert.Equal(DocumentParsingError.Timeout, exception.Error);
+    }
+
+    [Fact]
+    public async Task Http_source_allows_plain_http_only_for_explicit_loopback_profile()
+    {
+        var handler = new StaticContentHandler("loopback source"u8.ToArray());
+        var reader = new HttpDocumentSourceReader(new HttpClient(handler), Options.Create(new DocumentSourceOptions
+        {
+            AllowLoopbackHttp = true
+        }));
+
+        await using var stream = await reader.OpenReadAsync(new Uri("http://127.0.0.1:5591/objects/source.txt"), Context());
+        using var text = new StreamReader(stream);
+
+        Assert.Equal("loopback source", await text.ReadToEndAsync(TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.OpenReadAsync(new Uri("http://192.0.2.1/source.txt"), Context()));
     }
 
     private static DocumentParsingLimits Limits() => new(1024 * 1024, 20, 2 * 1024 * 1024, TimeSpan.FromSeconds(5));
@@ -173,5 +190,11 @@ public sealed class DocumentParserTests
             advance();
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent("content"u8.ToArray()) });
         }
+    }
+
+    private sealed class StaticContentHandler(byte[] bytes) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) });
     }
 }

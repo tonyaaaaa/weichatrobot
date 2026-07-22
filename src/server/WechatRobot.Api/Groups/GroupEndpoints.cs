@@ -59,10 +59,12 @@ public static class GroupEndpoints
         if (group is null) return Results.NotFound();
 
         var selectedTagIds = request.BoundTagIds.Distinct().ToArray();
-        var validTagIds = await database.KnowledgeTags.Where(tag => tag.IsEnabled && selectedTagIds.Contains(tag.Id)).Select(tag => tag.Id).ToArrayAsync(cancellationToken);
-        if (validTagIds.Length != selectedTagIds.Length)
+        foreach (var tagId in selectedTagIds)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["boundTagIds"] = ["Only existing enabled tags can be bound to a group."] });
+            if (!await database.KnowledgeTags.AnyAsync(tag => tag.IsEnabled && tag.Id == tagId, cancellationToken))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["boundTagIds"] = ["Only existing enabled tags can be bound to a group."] });
+            }
         }
 
         var existingRules = database.GroupRules.Where(rule => rule.GroupProfileId == id);
