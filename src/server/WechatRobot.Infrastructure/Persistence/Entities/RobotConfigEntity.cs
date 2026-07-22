@@ -6,7 +6,6 @@ public sealed class RobotConfigEntity
     public string Name { get; set; } = string.Empty;
     public string WorkToolRobotId { get; set; } = string.Empty;
     public string CallbackSecretHash { get; set; } = string.Empty;
-    public string? EncryptedCredential { get; set; }
     public bool IsEnabled { get; set; } = true;
     public int SendRateLimitPerMinute { get; set; } = 50;
     public decimal SendRateTokens { get; set; } = 50m;

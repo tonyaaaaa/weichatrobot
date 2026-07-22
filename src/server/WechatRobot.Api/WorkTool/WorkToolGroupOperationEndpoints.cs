@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using WechatRobot.Application.Security;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
@@ -29,13 +28,13 @@ public static class WorkToolGroupOperationEndpoints
         return endpoints;
     }
 
-    private static async Task<IResult> ListRobotsAsync(WechatRobotDbContext database, ISecretProtector protector, CancellationToken cancellationToken)
+    private static async Task<IResult> ListRobotsAsync(WechatRobotDbContext database, CancellationToken cancellationToken)
     {
         var robots = await database.RobotConfigs.AsNoTracking().OrderBy(robot => robot.Name).ToArrayAsync(cancellationToken);
-        return Results.Ok(robots.Select(robot => new RobotResponse(robot.Id, robot.Name, robot.WorkToolRobotId, robot.IsEnabled, CredentialMetadata(protector, robot.EncryptedCredential))));
+        return Results.Ok(robots.Select(robot => new RobotResponse(robot.Id, robot.Name, MaskRobotId(robot.WorkToolRobotId), robot.IsEnabled)));
     }
 
-    private static async Task<IResult> UpsertRobotAsync(Guid id, UpdateRobotRequest request, WechatRobotDbContext database, ISecretProtector protector, CancellationToken cancellationToken)
+    private static async Task<IResult> UpsertRobotAsync(Guid id, UpdateRobotRequest request, WechatRobotDbContext database, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 || string.IsNullOrWhiteSpace(request.WorkToolRobotId) || request.WorkToolRobotId.Length > 128)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["robot"] = ["Robot name and WorkTool robot ID are required."] });
@@ -47,10 +46,9 @@ public static class WorkToolGroupOperationEndpoints
             database.RobotConfigs.Add(robot);
         }
         robot.Name = request.Name.Trim(); robot.WorkToolRobotId = request.WorkToolRobotId.Trim(); robot.IsEnabled = request.IsEnabled;
-        if (!string.IsNullOrWhiteSpace(request.Credential)) robot.EncryptedCredential = protector.Protect(request.Credential.Trim());
         robot.UpdatedAtUtc = DateTime.UtcNow;
         await database.SaveChangesAsync(cancellationToken);
-        return Results.Ok(new RobotResponse(robot.Id, robot.Name, robot.WorkToolRobotId, robot.IsEnabled, CredentialMetadata(protector, robot.EncryptedCredential)));
+        return Results.Ok(new RobotResponse(robot.Id, robot.Name, MaskRobotId(robot.WorkToolRobotId), robot.IsEnabled));
     }
 
     private static async Task<IResult> TestRobotConnectionAsync(Guid id, WechatRobotDbContext database, IWorkToolClient client, CancellationToken cancellationToken)
@@ -78,7 +76,7 @@ public static class WorkToolGroupOperationEndpoints
         return Results.Ok(new KnownGroupResponse(existing.Id, existing.RobotConfigId, existing.ExternalGroupId, existing.Name));
     }
 
-    private static async Task<IResult> ListOperationsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) => Results.Ok(await database.WorkToolOperationAudits.AsNoTracking().OrderByDescending(item => item.CreatedAtUtc).Take(100).Select(item => new AuditResponse(item.Id, item.Operation, item.Status, item.Result, item.CreatedAtUtc, item.SanitizedRequestJson)).ToArrayAsync(cancellationToken));
+    private static async Task<IResult> ListOperationsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) => Results.Ok(await database.WorkToolOperationAudits.AsNoTracking().OrderByDescending(item => item.CreatedAtUtc).Take(100).Select(item => new AuditResponse(item.Id, item.Operation, item.WorkToolCommandNumber, item.Status, item.Result, item.CreatedAtUtc, item.SanitizedRequestJson)).ToArrayAsync(cancellationToken));
 
     private static async Task<IResult> PreviewAsync(GroupOperationRequest request, ClaimsPrincipal user, WechatRobotDbContext database, GroupOperationConfirmationService confirmation, CancellationToken cancellationToken)
     {
@@ -87,7 +85,7 @@ public static class WorkToolGroupOperationEndpoints
         var now = DateTime.UtcNow;
         var token = confirmation.Issue(operatorName, sanitized, now, ConfirmationLifetime);
         database.WorkToolOperationConfirmations.Add(new WorkToolOperationConfirmationEntity { TokenHash = Hash(token), OperatorName = operatorName, PayloadHash = Hash(sanitized), ExpiresAtUtc = now.Add(ConfirmationLifetime) });
-        database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind.ToString(), sanitized, "Previewed", "Confirmation required."));
+        database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Previewed", "Confirmation required."));
         await database.SaveChangesAsync(cancellationToken);
         return Results.Ok(new PreviewResponse(sanitized, token, now.Add(ConfirmationLifetime)));
     }
@@ -99,13 +97,13 @@ public static class WorkToolGroupOperationEndpoints
         var now = DateTime.UtcNow;
         var confirmationRow = await database.WorkToolOperationConfirmations.SingleOrDefaultAsync(item => item.TokenHash == Hash(request.ConfirmationToken), cancellationToken);
         var valid = confirmationRow is not null && confirmationRow.ConsumedAtUtc is null && confirmationRow.ExpiresAtUtc >= now && confirmationRow.OperatorName == operatorName && confirmationRow.PayloadHash == Hash(sanitized) && confirmation.IsValid(request.ConfirmationToken, operatorName, sanitized, now);
-        if (!valid) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind.ToString(), sanitized, "Rejected", "Invalid, changed, expired, or already-used confirmation.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token is invalid, expired, already used, or does not match this request." }); }
+        if (!valid) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Invalid, changed, expired, or already-used confirmation.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token is invalid, expired, already used, or does not match this request." }); }
         var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(item => item.Id == request.Operation.RobotConfigId && item.IsEnabled, cancellationToken);
-        if (robot is null) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind.ToString(), sanitized, "Rejected", "Enabled robot was not found.")); await database.SaveChangesAsync(cancellationToken); return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] }); }
+        if (robot is null) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Enabled robot was not found.")); await database.SaveChangesAsync(cancellationToken); return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] }); }
         confirmationRow!.ConsumedAtUtc = now; confirmationRow.Version++;
-        var audit = NewAudit(operatorName, operation.Kind.ToString(), sanitized, "Pending", null); database.WorkToolOperationAudits.Add(audit);
+        var audit = NewAudit(operatorName, operation.Kind, sanitized, "Pending", null); database.WorkToolOperationAudits.Add(audit);
         try { await database.SaveChangesAsync(cancellationToken); }
-        catch (DbUpdateConcurrencyException) { database.Entry(confirmationRow).State = EntityState.Detached; database.Entry(audit).State = EntityState.Detached; database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind.ToString(), sanitized, "Rejected", "Confirmation was already used.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token was already used." }); }
+        catch (DbUpdateConcurrencyException) { database.Entry(confirmationRow).State = EntityState.Detached; database.Entry(audit).State = EntityState.Detached; database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Confirmation was already used.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token was already used." }); }
         try { var result = await client.ExecuteGroupOperationAsync(operation with { WorkToolRobotId = robot.WorkToolRobotId }, cancellationToken); audit.Status = result.Succeeded ? "Succeeded" : "Failed"; audit.Result = result.Succeeded ? null : "WorkTool rejected the command."; await database.SaveChangesAsync(cancellationToken); return Results.Ok(new CommandStatusResponse(result.Succeeded, result.Succeeded ? "Command accepted." : "WorkTool rejected the command.")); }
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { audit.Status = "Failed"; audit.Result = "WorkTool request failed."; await database.SaveChangesAsync(cancellationToken); return Results.Problem("WorkTool request failed.", statusCode: 502); }
     }
@@ -116,26 +114,25 @@ public static class WorkToolGroupOperationEndpoints
         if (!Enum.TryParse<WorkToolGroupOperationKind>(request.Kind, true, out var kind) || string.IsNullOrWhiteSpace(request.GroupIdentifier) || request.GroupIdentifier.Length > 256 || request.MemberIds.Count > 100 || request.MemberIds.Any(member => string.IsNullOrWhiteSpace(member) || member.Length > 128) || request.Value?.Length > 4000) { error = "Operation input is invalid."; return false; }
         if (kind == WorkToolGroupOperationKind.Create && request.MemberIds.Count == 0) { error = "New groups require at least one member."; return false; }
         if (kind is WorkToolGroupOperationKind.AddMembers or WorkToolGroupOperationKind.RemoveMembers && request.MemberIds.Count == 0) { error = "Member changes require at least one member."; return false; }
-        if (kind is WorkToolGroupOperationKind.Rename or WorkToolGroupOperationKind.UpdateAnnouncement or WorkToolGroupOperationKind.UpdateRemark && string.IsNullOrWhiteSpace(request.Value)) { error = "This operation requires a value."; return false; }
+        if (kind is WorkToolGroupOperationKind.Rename or WorkToolGroupOperationKind.UpdateAnnouncement && string.IsNullOrWhiteSpace(request.Value)) { error = "This operation requires a value."; return false; }
         operation = new WorkToolGroupOperationRequest(string.Empty, kind, request.GroupIdentifier.Trim(), request.MemberIds.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
-        sanitized = JsonSerializer.Serialize(new { kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberIds.Count, memberIdsHash = Hash(string.Join("\n", operation.MemberIds)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
+        sanitized = JsonSerializer.Serialize(new { robotConfigId = request.RobotConfigId, kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberIds.Count, memberIdsHash = Hash(string.Join("\n", operation.MemberIds)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
         return true;
     }
 
-    private static WorkToolOperationAuditEntity NewAudit(string operatorName, string operation, string request, string status, string? result) => new() { OperatorName = operatorName, Operation = operation, SanitizedRequestJson = request, Status = status, Result = SafeResult(result) };
+    private static WorkToolOperationAuditEntity NewAudit(string operatorName, WorkToolGroupOperationKind operation, string request, string status, string? result) => new() { OperatorName = operatorName, Operation = operation.ToString(), WorkToolCommandNumber = operation == WorkToolGroupOperationKind.Create ? 206 : 207, SanitizedRequestJson = request, Status = status, Result = SafeResult(result) };
     private static string RequireOperator(ClaimsPrincipal user) => user.Identity?.Name ?? "unknown";
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static string? SafeResult(string? value) => string.IsNullOrWhiteSpace(value) ? value : value.Length > 512 ? value[..512] : value;
-    private static CredentialMetadataResponse CredentialMetadata(ISecretProtector protector, string? encrypted) { if (string.IsNullOrWhiteSpace(encrypted)) return new(false, null); var value = protector.Unprotect(encrypted); return new(true, value.Length <= 4 ? "****" : value[^4..]); }
+    private static string MaskRobotId(string value) => value.Length <= 4 ? "****" : $"***{value[^4..]}";
 
-    public sealed record UpdateRobotRequest(string Name, string WorkToolRobotId, string? Credential, bool IsEnabled);
-    public sealed record RobotResponse(Guid Id, string Name, string WorkToolRobotId, bool IsEnabled, CredentialMetadataResponse Credential);
-    public sealed record CredentialMetadataResponse(bool HasCredential, string? LastFour);
+    public sealed record UpdateRobotRequest(string Name, string WorkToolRobotId, bool IsEnabled);
+    public sealed record RobotResponse(Guid Id, string Name, string RobotReference, bool IsEnabled);
     public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string ExternalGroupId, string Name, bool ManualInvitationCompleted);
     public sealed record KnownGroupResponse(Guid Id, Guid RobotConfigId, string ExternalGroupId, string Name);
     public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberIds, string? Value) { public IReadOnlyList<string> MemberIds { get; init; } = MemberIds ?? []; }
     public sealed record ExecuteOperationRequest(GroupOperationRequest Operation, string ConfirmationToken);
     public sealed record PreviewResponse(string SanitizedRequest, string ConfirmationToken, DateTime ExpiresAtUtc);
     public sealed record CommandStatusResponse(bool Succeeded, string Message);
-    public sealed record AuditResponse(Guid Id, string Operation, string Status, string? Result, DateTime CreatedAtUtc, string SanitizedRequest);
+    public sealed record AuditResponse(Guid Id, string Operation, int WorkToolCommandNumber, string Status, string? Result, DateTime CreatedAtUtc, string SanitizedRequest);
 }

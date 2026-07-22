@@ -12,18 +12,19 @@ public sealed class GroupOperationConfirmationService(string signingKey)
     {
         var expiresAtUtc = new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc).Add(lifetime)).ToUnixTimeSeconds();
         var payloadHash = Hash(Normalize(payloadJson));
-        var message = $"{operatorName}\n{expiresAtUtc}\n{payloadHash}";
-        return $"{expiresAtUtc}.{payloadHash}.{Base64Url(HMACSHA256.HashData(_signingKey, Encoding.UTF8.GetBytes(message)))}";
+        var nonce = Base64Url(RandomNumberGenerator.GetBytes(16));
+        var message = $"{operatorName}\n{expiresAtUtc}\n{payloadHash}\n{nonce}";
+        return $"{expiresAtUtc}.{payloadHash}.{nonce}.{Base64Url(HMACSHA256.HashData(_signingKey, Encoding.UTF8.GetBytes(message)))}";
     }
 
     public bool IsValid(string token, string operatorName, string payloadJson, DateTime nowUtc)
     {
         var parts = token.Split('.', StringSplitOptions.None);
-        if (parts.Length != 3 || !long.TryParse(parts[0], out var expiresAtUnix) || expiresAtUnix < new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc)).ToUnixTimeSeconds()) return false;
+        if (parts.Length != 4 || !long.TryParse(parts[0], out var expiresAtUnix) || expiresAtUnix < new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc)).ToUnixTimeSeconds()) return false;
         var payloadHash = Hash(Normalize(payloadJson));
         if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(parts[1]), Encoding.UTF8.GetBytes(payloadHash))) return false;
-        var expected = HMACSHA256.HashData(_signingKey, Encoding.UTF8.GetBytes($"{operatorName}\n{expiresAtUnix}\n{payloadHash}"));
-        return TryFromBase64Url(parts[2], out var signature) && CryptographicOperations.FixedTimeEquals(expected, signature);
+        var expected = HMACSHA256.HashData(_signingKey, Encoding.UTF8.GetBytes($"{operatorName}\n{expiresAtUnix}\n{payloadHash}\n{parts[2]}"));
+        return TryFromBase64Url(parts[3], out var signature) && CryptographicOperations.FixedTimeEquals(expected, signature);
     }
 
     public static string Normalize(string json)

@@ -15,7 +15,7 @@ public sealed record WorkToolSendResult(bool Succeeded, string? FailureReason)
     public static WorkToolSendResult Failed(string reason) => new(false, reason);
 }
 
-public enum WorkToolGroupOperationKind { Create, AddMembers, RemoveMembers, Rename, UpdateAnnouncement, UpdateRemark }
+public enum WorkToolGroupOperationKind { Create, AddMembers, RemoveMembers, Rename, UpdateAnnouncement }
 
 public sealed record WorkToolGroupOperationRequest(
     string WorkToolRobotId,

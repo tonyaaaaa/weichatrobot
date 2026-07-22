@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WechatRobot.Application.Models;
+using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
 
@@ -164,6 +165,9 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
             services.AddDbContext<WechatRobotDbContext>(options => options
                 .UseInMemoryDatabase(_databaseName)
                 .UseInternalServiceProvider(InMemoryProvider));
+            foreach (var workTool in services.Where(service => service.ServiceType == typeof(IWorkToolClient)).ToArray()) services.Remove(workTool);
+            services.AddSingleton<RecordingWorkToolClient>();
+            services.AddSingleton<IWorkToolClient>(provider => provider.GetRequiredService<RecordingWorkToolClient>());
             services.AddAuthentication(options =>
                 {
                     options.DefaultAuthenticateScheme = "integration-admin";
@@ -173,6 +177,16 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
                 .AddScheme<AuthenticationSchemeOptions, IntegrationAdminAuthenticationHandler>("integration-admin", _ => { });
         });
     }
+}
+
+public sealed class RecordingWorkToolClient : IWorkToolClient
+{
+    public int GroupOperationCalls { get; private set; }
+    public WorkToolSendResult NextGroupOperationResult { get; set; } = WorkToolSendResult.Success();
+    public Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+    public Task<WorkToolSendResult> TestConnectionAsync(string workToolRobotId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+    public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) { GroupOperationCalls++; return Task.FromResult(NextGroupOperationResult); }
+    public void Reset(WorkToolSendResult? next = null) { GroupOperationCalls = 0; NextGroupOperationResult = next ?? WorkToolSendResult.Success(); }
 }
 
 public sealed class IntegrationAdminAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>

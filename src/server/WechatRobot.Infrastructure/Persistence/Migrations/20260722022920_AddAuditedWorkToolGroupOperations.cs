@@ -11,12 +11,6 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<string>(
-                name: "EncryptedCredential",
-                table: "robot_config",
-                type: "longtext",
-                nullable: true);
-
             migrationBuilder.CreateTable(
                 name: "worktool_operation_audit",
                 columns: table => new
@@ -24,6 +18,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     Id = table.Column<Guid>(type: "char(36)", nullable: false),
                     OperatorName = table.Column<string>(type: "varchar(256)", maxLength: 256, nullable: false),
                     Operation = table.Column<string>(type: "varchar(64)", maxLength: 64, nullable: false),
+                    WorkToolCommandNumber = table.Column<int>(type: "int", nullable: false),
                     SanitizedRequestJson = table.Column<string>(type: "longtext", nullable: false),
                     Status = table.Column<string>(type: "varchar(32)", maxLength: 32, nullable: false),
                     Result = table.Column<string>(type: "varchar(1024)", maxLength: 1024, nullable: true),
@@ -74,10 +69,6 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
             migrationBuilder.DropTable(
                 name: "worktool_operation_confirmation");
-
-            migrationBuilder.DropColumn(
-                name: "EncryptedCredential",
-                table: "robot_config");
         }
     }
 }

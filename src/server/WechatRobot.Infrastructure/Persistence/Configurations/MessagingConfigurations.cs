@@ -13,7 +13,6 @@ internal sealed class RobotConfigConfiguration : IEntityTypeConfiguration<RobotC
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.WorkToolRobotId).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.CallbackSecretHash).HasMaxLength(128).IsRequired();
-        builder.Property(entity => entity.EncryptedCredential).HasColumnType("longtext");
         builder.Property(entity => entity.SendRateLimitPerMinute).HasDefaultValue(50).IsRequired();
         builder.Property(entity => entity.SendRateTokens).HasPrecision(10, 4).HasDefaultValue(50m).IsRequired();
         builder.Property(entity => entity.SendLeaseOwner).HasMaxLength(128);
@@ -160,6 +159,7 @@ internal sealed class WorkToolOperationAuditConfiguration : IEntityTypeConfigura
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.OperatorName).HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.Operation).HasMaxLength(64).IsRequired();
+        builder.Property(entity => entity.WorkToolCommandNumber).IsRequired();
         builder.Property(entity => entity.SanitizedRequestJson).HasColumnType("longtext").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.Result).HasMaxLength(1024);

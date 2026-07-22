@@ -52,22 +52,16 @@ public sealed class WorkToolClient(HttpClient httpClient) : IWorkToolClient
     public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken)
     {
         object command = request.Kind == WorkToolGroupOperationKind.Create
-            ? new { type = 206, groupName = request.GroupIdentifier, memberIds = request.MemberIds }
+            ? new { type = 206, groupName = request.GroupIdentifier, selectList = request.MemberIds, groupAnnouncement = request.Value }
             : new
             {
                 type = 207,
-                groupId = request.GroupIdentifier,
-                action = request.Kind switch
-                {
-                    WorkToolGroupOperationKind.AddMembers => "addMembers",
-                    WorkToolGroupOperationKind.RemoveMembers => "removeMembers",
-                    WorkToolGroupOperationKind.Rename => "rename",
-                    WorkToolGroupOperationKind.UpdateAnnouncement => "updateAnnouncement",
-                    WorkToolGroupOperationKind.UpdateRemark => "updateRemark",
-                    _ => throw new ArgumentOutOfRangeException(nameof(request.Kind))
-                },
-                memberIds = request.MemberIds,
-                value = request.Value
+                groupName = request.GroupIdentifier,
+                newGroupName = request.Kind == WorkToolGroupOperationKind.Rename ? request.Value : null,
+                newGroupAnnouncement = request.Kind == WorkToolGroupOperationKind.UpdateAnnouncement ? request.Value : null,
+                selectList = request.Kind == WorkToolGroupOperationKind.AddMembers ? request.MemberIds : Array.Empty<string>(),
+                showMessageHistory = false,
+                removeList = request.Kind == WorkToolGroupOperationKind.RemoveMembers ? request.MemberIds : Array.Empty<string>()
             };
 
         return SendCommandAsync(request.WorkToolRobotId, command, cancellationToken);

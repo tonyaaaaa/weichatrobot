@@ -5,6 +5,7 @@ public sealed class WorkToolOperationAuditEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     public string OperatorName { get; set; } = string.Empty;
     public string Operation { get; set; } = string.Empty;
+    public int WorkToolCommandNumber { get; set; }
     public string SanitizedRequestJson { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string? Result { get; set; }

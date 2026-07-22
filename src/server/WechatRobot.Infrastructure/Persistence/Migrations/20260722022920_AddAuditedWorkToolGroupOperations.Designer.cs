@@ -11,7 +11,7 @@ using WechatRobot.Infrastructure.Persistence;
 namespace WechatRobot.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(WechatRobotDbContext))]
-    [Migration("20260722021009_AddAuditedWorkToolGroupOperations")]
+    [Migration("20260722022920_AddAuditedWorkToolGroupOperations")]
     partial class AddAuditedWorkToolGroupOperations
     {
         /// <inheritdoc />
@@ -582,9 +582,6 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<string>("EncryptedCredential")
-                        .HasColumnType("longtext");
-
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("tinyint(1)");
 
@@ -734,6 +731,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)");
+
+                    b.Property<int>("WorkToolCommandNumber")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 

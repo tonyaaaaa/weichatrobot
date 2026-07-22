@@ -579,9 +579,6 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<string>("EncryptedCredential")
-                        .HasColumnType("longtext");
-
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("tinyint(1)");
 
@@ -731,6 +728,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)");
+
+                    b.Property<int>("WorkToolCommandNumber")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
