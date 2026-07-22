@@ -44,6 +44,14 @@ public sealed class HandoffCase
         return new(id, groupProfileId, questionMessageId, reason, evidenceJson, pauseScope, stableSenderId, createdAtUtc);
     }
 
+    public static HandoffCase Restore(Guid id, Guid groupProfileId, Guid questionMessageId, string reason, string evidenceJson,
+        PauseScope pauseScope, string? stableSenderId, HandoffState state, Guid? assigneeUserId, string? finalAnswer, DateTime createdAtUtc, DateTime updatedAtUtc)
+    {
+        var value = Start(id, groupProfileId, questionMessageId, reason, evidenceJson, pauseScope, stableSenderId, createdAtUtc);
+        value.State = state; value.AssigneeUserId = assigneeUserId; value.FinalAnswer = finalAnswer; value.UpdatedAtUtc = updatedAtUtc;
+        return value;
+    }
+
     public bool Assign(Guid assigneeUserId, DateTime nowUtc)
     {
         if (assigneeUserId == Guid.Empty) throw new ArgumentException("Assignee is required.");

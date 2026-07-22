@@ -73,6 +73,7 @@ builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<QdrantKnowledgeService>();
 builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());
 builder.Services.AddScoped<KnowledgeIndexService>();
+builder.Services.AddScoped<KnowledgeCandidatePublishProcessor>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
@@ -142,6 +143,7 @@ builder.Services.AddHostedService<RobotSendWorker>();
 builder.Services.AddHostedService<KnowledgeUploadWorker>();
 builder.Services.AddHostedService<KnowledgeParseWorker>();
 builder.Services.AddHostedService<KnowledgeIndexWorker>();
+builder.Services.AddHostedService<KnowledgeCandidatePublishWorker>();
 builder.Services.AddHostedService<KnowledgeDocumentCleanupWorker>();
 
 var host = builder.Build();

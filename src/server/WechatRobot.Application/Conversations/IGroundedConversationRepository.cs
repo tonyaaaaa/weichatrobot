@@ -22,6 +22,8 @@ public interface IGroundedConversationRepository
     Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token);
     Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token);
     Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token);
+    Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
+        throw new NotSupportedException();
     Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token);
     Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token);
     Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token);

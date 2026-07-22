@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using WechatRobot.Infrastructure.Persistence.Entities;
+using WechatRobot.Infrastructure.Identity;
 
 namespace WechatRobot.Infrastructure.Persistence.Configurations;
 
@@ -17,6 +18,8 @@ internal sealed class HandoffCaseConfiguration : IEntityTypeConfiguration<Handof
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(x => x.QuestionMessageId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(x => x.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(x => x.GroupProfileId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.AssigneeUserId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.ResolvedByUserId).OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -28,6 +31,20 @@ internal sealed class HandoffMessageConfiguration : IEntityTypeConfiguration<Han
         builder.Property(x => x.SenderDisplayName).HasMaxLength(128).IsRequired(); builder.Property(x => x.AuthenticationKind).HasMaxLength(64).IsRequired();
         builder.Property(x => x.Text).HasColumnType("longtext").IsRequired(); builder.HasIndex(x => x.ExternalMessageId).IsUnique();
         builder.HasOne<HandoffCaseEntity>().WithMany().HasForeignKey(x => x.HandoffCaseId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.AuthenticatedUserId).OnDelete(DeleteBehavior.SetNull);
+    }
+}
+
+internal sealed class HandoffTransitionConfiguration : IEntityTypeConfiguration<HandoffTransitionEntity>
+{
+    public void Configure(EntityTypeBuilder<HandoffTransitionEntity> builder)
+    {
+        builder.ToTable("handoff_transition"); builder.HasKey(x => x.Id); builder.Property(x => x.FromState).HasMaxLength(32).IsRequired();
+        builder.Property(x => x.ToState).HasMaxLength(32).IsRequired(); builder.Property(x => x.ReasonCode).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.IdempotencyKey).HasMaxLength(128).IsRequired(); builder.HasIndex(x => x.IdempotencyKey).IsUnique();
+        builder.HasIndex(x => new { x.HandoffCaseId, x.Sequence }).IsUnique();
+        builder.HasOne<HandoffCaseEntity>().WithMany().HasForeignKey(x => x.HandoffCaseId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -53,5 +70,6 @@ internal sealed class KnowledgeReviewConfiguration : IEntityTypeConfiguration<Kn
         builder.Property(x => x.TagIdsJson).HasColumnType("json").IsRequired(); builder.Property(x => x.RevisedAnswer).HasColumnType("longtext");
         builder.Property(x => x.IdempotencyKey).HasMaxLength(128).IsRequired(); builder.HasIndex(x => x.IdempotencyKey).IsUnique();
         builder.HasOne<KnowledgeCandidateEntity>().WithMany().HasForeignKey(x => x.KnowledgeCandidateId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.ReviewerUserId).OnDelete(DeleteBehavior.SetNull);
     }
 }

@@ -227,6 +227,38 @@ public sealed class GroundedConversationRepository(
         await transaction.CommitAsync(token);
     }
 
+    public async Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(token);
+        if (await database.RetrievalAudits.AnyAsync(x => x.ConversationMessageId == request.MessageId, token))
+        {
+            await database.ConversationMessages.Where(x => x.Id == request.MessageId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ProcessingState, "completed"), token);
+            await database.ConversationSessions.Where(x => x.Id == request.ConversationSessionId && x.LeaseOwner == request.SessionLeaseOwner)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LeaseOwner, (string?)null).SetProperty(x => x.LeaseExpiresAtUtc, (DateTime?)null)
+                    .SetProperty(x => x.Version, x => x.Version + 1), token);
+            await transaction.CommitAsync(token); return;
+        }
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var session = await database.ConversationSessions.AsNoTracking().Where(x => x.Id == request.ConversationSessionId && x.LeaseOwner == request.SessionLeaseOwner)
+            .Select(x => new { x.NextSequence }).SingleOrDefaultAsync(token) ?? throw new ConversationSessionOwnershipLostException("Conversation lease was lost before handoff commit.");
+        var inbound = await database.ConversationMessages.SingleAsync(x => x.Id == request.MessageId, token);
+        inbound.GroupProfileId = request.GroupProfileId; inbound.ConversationSessionId = request.ConversationSessionId;
+        inbound.SessionSequence = session.NextSequence + 1; inbound.ProcessingState = "completed";
+        database.RetrievalAudits.Add(new RetrievalAuditEntity { ConversationMessageId = request.MessageId, GroupProfileId = request.GroupProfileId,
+            Decision = AnswerDecisionKind.Handoff.ToString(), ConfidenceThreshold = result.Audit.ConfidenceThreshold, ConfidenceValue = result.Audit.ConfidenceValue,
+            ContextPolicy = result.Audit.ContextPolicy, FailureCode = result.Audit.FailureCode,
+            EvidenceJson = JsonSerializer.Serialize(result.Audit.Evidence.Select(x => new { x.DocumentId, x.VersionId, x.ChunkId, x.PageNumber, x.Similarity, x.TagIds })),
+            InputSummaryJson = result.Audit.InputSummaryJson, CreatedAtUtc = now });
+        var guarded = await database.ConversationSessions.Where(x => x.Id == request.ConversationSessionId && x.LeaseOwner == request.SessionLeaseOwner &&
+                x.LeaseExpiresAtUtc > now && x.NextSequence == session.NextSequence)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LeaseOwner, (string?)null).SetProperty(x => x.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(x => x.NextSequence, session.NextSequence + 1).SetProperty(x => x.LastActivityAtUtc, now)
+                .SetProperty(x => x.UpdatedAtUtc, now).SetProperty(x => x.Version, x => x.Version + 1), token);
+        if (guarded != 1) { await transaction.RollbackAsync(token); throw new ConversationSessionOwnershipLostException("Conversation lease was lost before handoff commit."); }
+        await database.SaveChangesAsync(token); await transaction.CommitAsync(token);
+    }
+
     public async Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(token);

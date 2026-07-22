@@ -21,18 +21,19 @@ public static class HandoffEndpoints
     private static async Task<IResult> StartManualAsync(ManualHandoffRequest request, ClaimsPrincipal user, HandoffService service,
         UserManager<ApplicationUser> users, CancellationToken token)
     {
-        var actor = Actor(user);
+        if (!TryActor(user, out var actor)) return TypedResults.Unauthorized();
         if (request.AssigneeUserId is { } assignee && !await IsHumanAgentAsync(users, assignee))
             return TypedResults.BadRequest(new { error = "Assignee must be an authenticated HumanAgent or Admin user." });
         try
         {
-            var result = await service.StartAsync(new(request.QuestionMessageId, request.RobotConfigId, request.GroupProfileId,
-                request.WorkToolRobotId, request.GroupName, "manual_transfer", JsonSerializer.Serialize(new { AuthenticatedActorUserId = actor, request.Reason }),
-                request.PauseScope, request.StableSenderId, request.AssigneeUserId, request.AssigneeTarget,
-                string.IsNullOrWhiteSpace(request.IdempotencyKey) ? $"manual-handoff:{request.QuestionMessageId:D}" : request.IdempotencyKey), token);
+            var result = await service.StartManualAsync(new(request.QuestionMessageId, request.Reason, request.PauseScope,
+                request.AssigneeUserId, request.IdempotencyKey, actor), token);
             return TypedResults.Ok(result);
         }
         catch (ArgumentException exception) { return TypedResults.BadRequest(new { error = exception.Message }); }
+        catch (KeyNotFoundException) { return TypedResults.NotFound(); }
+        catch (HandoffStateException exception) { return TypedResults.Conflict(new { error = exception.Message }); }
+        catch (HandoffConcurrencyException exception) { return TypedResults.Conflict(new { error = exception.Message }); }
     }
 
     private static async Task<IResult> AssignAsync(Guid id, AssignHandoffRequest request, ClaimsPrincipal user, HandoffService service,
@@ -40,12 +41,13 @@ public static class HandoffEndpoints
     {
         if (!await IsHumanAgentAsync(users, request.AssigneeUserId))
             return TypedResults.BadRequest(new { error = "Assignee must be an authenticated HumanAgent or Admin user." });
-        return await ExecuteAsync(() => service.AssignAsync(id, Actor(user), request.AssigneeUserId, request.ExpectedVersion, token));
+        if (!TryActor(user, out var actor)) return TypedResults.Unauthorized();
+        return await ExecuteAsync(() => service.AssignAsync(id, actor, request.AssigneeUserId, request.ExpectedVersion, token));
     }
     private static async Task<IResult> ResolveAsync(Guid id, ResolveHandoffRequest request, ClaimsPrincipal user, HandoffService service, CancellationToken token) =>
-        await ExecuteAsync(() => service.ResolveAsync(id, Actor(user), request.FinalAnswer, request.ExpectedVersion, token));
+        TryActor(user, out var actor) ? await ExecuteAsync(() => service.ResolveAsync(id, actor, request.FinalAnswer, request.ExpectedVersion, token)) : TypedResults.Unauthorized();
     private static async Task<IResult> RestoreAsync(Guid id, VersionedHandoffRequest request, ClaimsPrincipal user, HandoffService service, CancellationToken token) =>
-        await ExecuteAsync(() => service.RestoreAiAsync(id, Actor(user), request.ExpectedVersion, token));
+        TryActor(user, out var actor) ? await ExecuteAsync(() => service.RestoreAiAsync(id, actor, request.ExpectedVersion, token)) : TypedResults.Unauthorized();
 
     private static async Task<IResult> ExecuteAsync<T>(Func<Task<T>> action)
     {
@@ -56,8 +58,7 @@ public static class HandoffEndpoints
         catch (ArgumentException exception) { return TypedResults.BadRequest(new { error = exception.Message }); }
     }
 
-    private static Guid Actor(ClaimsPrincipal user) => Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var id) && id != Guid.Empty
-        ? id : throw new UnauthorizedAccessException("Authenticated user id is missing.");
+    private static bool TryActor(ClaimsPrincipal user, out Guid id) => Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out id) && id != Guid.Empty;
     private static async Task<bool> IsHumanAgentAsync(UserManager<ApplicationUser> users, Guid id)
     {
         var user = await users.FindByIdAsync(id.ToString("D"));
@@ -65,8 +66,7 @@ public static class HandoffEndpoints
     }
 }
 
-public sealed record ManualHandoffRequest(Guid QuestionMessageId, Guid RobotConfigId, Guid GroupProfileId, string WorkToolRobotId, string GroupName,
-    string Reason, HandoffPauseScope PauseScope, string? StableSenderId, Guid? AssigneeUserId, string AssigneeTarget, string? IdempotencyKey);
+public sealed record ManualHandoffRequest(Guid QuestionMessageId, string Reason, HandoffPauseScope PauseScope, Guid? AssigneeUserId, string IdempotencyKey);
 public sealed record AssignHandoffRequest(Guid AssigneeUserId, int ExpectedVersion);
 public sealed record ResolveHandoffRequest(string FinalAnswer, int ExpectedVersion);
 public sealed record VersionedHandoffRequest(int ExpectedVersion);

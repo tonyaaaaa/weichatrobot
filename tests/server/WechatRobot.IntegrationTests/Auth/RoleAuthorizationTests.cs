@@ -85,7 +85,19 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
         Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.PostAsJsonAsync("/api/handoffs/manual", new { }, TestContext.Current.CancellationToken)).StatusCode);
     }
 
-    private static string CreateToken(string role)
+    [Fact]
+    public async Task Authenticated_handoff_request_with_invalid_subject_returns_unauthorized()
+    {
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.HumanAgent, "not-a-guid"));
+
+        var response = await client.PostAsJsonAsync($"/api/handoffs/{Guid.NewGuid():D}/resolve",
+            new { finalAnswer = "answer", expectedVersion = 0 }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    private static string CreateToken(string role, string? subject = null)
     {
         var descriptor = new SecurityTokenDescriptor
         {
@@ -93,7 +105,7 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
             Audience = "integration-tests-api",
             Subject = new ClaimsIdentity(new[]
             {
-                new Claim(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString()),
+                new Claim(JwtRegisteredClaimNames.Sub, subject ?? Guid.NewGuid().ToString()),
                 new Claim(ClaimTypes.Name, "integration-user"),
                 new Claim(ClaimTypes.Role, role)
             }),

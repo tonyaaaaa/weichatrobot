@@ -41,7 +41,7 @@ public sealed class InboundMessageProcessor(
         {
         if (handoffs is not null && await handoffs.IsPausedAsync(request, cancellationToken))
         {
-            await conversations.ReleaseLeaseAsync(request.ConversationSessionId, sessionLeaseOwner, cancellationToken);
+            await conversations.PersistHandoffTerminalAsync(request, HandoffResult("already_paused"), cancellationToken);
             committed = true;
             return;
         }
@@ -76,8 +76,20 @@ public sealed class InboundMessageProcessor(
             request.Scope.DegradationReason, summaryFailureCode), cancellationToken);
         if (effectiveContext.WasIdleReset) result = result with { ResetContextBeforeCurrent = true, UpdatedSummary = null };
         if (updatedSummary is not null) result = result with { UpdatedSummary = updatedSummary };
-        if (handoffs is not null) await handoffs.HandleDecisionAsync(request, result, cancellationToken);
+        if (handoffs is not null && await handoffs.HandleDecisionAsync(request, result, cancellationToken))
+        {
+            await EnsureLeaseAsync(request, cancellationToken);
+            await conversations.PersistHandoffTerminalAsync(request, HandoffResult(result.Audit.FailureCode ?? "handoff_triggered", result.Audit), cancellationToken);
+            committed = true;
+            return;
+        }
         await EnsureLeaseAsync(request, cancellationToken);
+        if (handoffs is not null && await handoffs.IsPausedAsync(request, cancellationToken))
+        {
+            await conversations.PersistHandoffTerminalAsync(request, HandoffResult("manual_handoff_race", result.Audit), cancellationToken);
+            committed = true;
+            return;
+        }
         await conversations.PersistAnswerAndEnqueueAsync(request, result, cancellationToken);
         committed = true;
         }
@@ -86,6 +98,11 @@ public sealed class InboundMessageProcessor(
             if (!committed) await conversations.ReleaseLeaseAsync(request.ConversationSessionId, sessionLeaseOwner, CancellationToken.None);
         }
     }
+
+    private static GroundedAnswerResult HandoffResult(string reason, RetrievalAuditDraft? source = null) => new(
+        new(AnswerDecisionKind.Handoff, string.Empty), source is null
+            ? new([], 0, null, "handoff", AnswerDecisionKind.Handoff.ToString(), reason)
+            : source with { Decision = AnswerDecisionKind.Handoff.ToString(), FailureCode = reason });
 
     private async Task EnsureLeaseAsync(ConversationProcessingRequest request, CancellationToken token)
     {

@@ -8,7 +8,7 @@ using WechatRobot.Infrastructure.Persistence.Entities;
 
 namespace WechatRobot.Infrastructure.Persistence;
 
-public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db, QdrantKnowledgeService knowledge) : IKnowledgeCandidateStore
+public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowledgeCandidateStore
 {
     public async Task<KnowledgeCandidateReviewResult> ReviewAsync(ReviewKnowledgeCandidateCommand command, DateTime nowUtc, CancellationToken token)
     {
@@ -16,6 +16,7 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db, QdrantKno
         if (prior is not null)
         {
             if (prior.KnowledgeCandidateId != command.CandidateId) throw new InvalidOperationException("Review idempotency key belongs to another candidate.");
+            if (prior.Decision == "approve") await EnsurePublishOutboxAsync(command.CandidateId, prior.TagIdsJson, nowUtc, token);
             return await ResultAsync(command.CandidateId, token);
         }
 
@@ -48,15 +49,13 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db, QdrantKno
         db.AddRange(document, version, chunk);
         candidate.Answer = answer; candidate.Status = "approved_pending_index"; candidate.KnowledgeDocumentVersionId = version.Id;
         candidate.Version++; candidate.UpdatedAtUtc = nowUtc;
+        db.DurableJobs.Add(PublishJob(candidate.Id, document.Id, version.Id, command.TagIds, nowUtc));
         try { await db.SaveChangesAsync(token); }
         catch (DbUpdateConcurrencyException) { throw new HandoffConcurrencyException("The candidate was modified by another reviewer."); }
         catch (DbUpdateException exception) when (exception.InnerException is MySql.Data.MySqlClient.MySqlException { Number: 1062 })
         { db.ChangeTracker.Clear(); return await ResultAsync(command.CandidateId, token); }
 
-        var jobId = await knowledge.QueueIndexAsync(document.Id, version.Id, command.TagIds, false, token);
-        candidate.Status = "indexing"; candidate.Version++; candidate.UpdatedAtUtc = nowUtc;
-        await db.SaveChangesAsync(token);
-        return new(candidate.Id, candidate.Status, version.Id, jobId, candidate.Version);
+        return new(candidate.Id, candidate.Status, version.Id, null, candidate.Version, candidate.Id);
     }
 
     private async Task<KnowledgeCandidateReviewResult> ResultAsync(Guid candidateId, CancellationToken token)
@@ -65,8 +64,36 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db, QdrantKno
         var jobId = item.KnowledgeDocumentVersionId is { } versionId
             ? await db.KnowledgeIndexJobs.AsNoTracking().Where(x => x.KnowledgeDocumentVersionId == versionId && x.Operation != "cleanup").Select(x => (Guid?)x.Id).FirstOrDefaultAsync(token)
             : null;
-        return new(item.Id, item.Status, item.KnowledgeDocumentVersionId, jobId, item.Version);
+        var publishJobId = await db.DurableJobs.AsNoTracking().Where(x => x.Id == item.Id && x.JobType == "PublishKnowledgeCandidate")
+            .Select(x => (Guid?)x.Id).SingleOrDefaultAsync(token);
+        return new(item.Id, item.Status, item.KnowledgeDocumentVersionId, jobId, item.Version, publishJobId);
     }
+
+    private async Task EnsurePublishOutboxAsync(Guid candidateId, string tagIdsJson, DateTime nowUtc, CancellationToken token)
+    {
+        var candidate = await db.KnowledgeCandidates.SingleAsync(x => x.Id == candidateId, token);
+        if (candidate.KnowledgeDocumentVersionId is not { } versionId) throw new HandoffStateException("Approved candidate has no knowledge version.");
+        var version = await db.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(x => x.Id == versionId, token);
+        var job = await db.DurableJobs.SingleOrDefaultAsync(x => x.Id == candidateId, token);
+        var hasIndexJob = await db.KnowledgeIndexJobs.AnyAsync(x => x.KnowledgeDocumentVersionId == versionId && x.Operation != "cleanup", token);
+        if (job is null) db.DurableJobs.Add(PublishJob(candidateId, version.KnowledgeDocumentId, versionId,
+            JsonSerializer.Deserialize<Guid[]>(tagIdsJson) ?? [], nowUtc));
+        else if (candidate.Status != "published" && (job.Status == "deadLetter" || job.Status == "completed" && !hasIndexJob))
+        {
+            job.Status = "retrying"; job.AttemptCount = 0; job.NextAttemptAtUtc = nowUtc; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null;
+            job.CompletedAtUtc = null; job.Version++; job.UpdatedAtUtc = nowUtc;
+        }
+        if (candidate.Status == "indexing" && !hasIndexJob)
+        { candidate.Status = "approved_pending_index"; candidate.Version++; candidate.UpdatedAtUtc = nowUtc; }
+        await db.SaveChangesAsync(token);
+    }
+
+    private static DurableJobEntity PublishJob(Guid candidateId, Guid documentId, Guid versionId, IReadOnlyList<Guid> tags, DateTime now) => new()
+    {
+        Id = candidateId, JobType = "PublishKnowledgeCandidate", PayloadJson = JsonSerializer.Serialize(new
+        { CandidateId = candidateId, DocumentId = documentId, VersionId = versionId, TagIds = tags.Distinct().Order().ToArray() }),
+        Status = "pending", AvailableAtUtc = now, NextAttemptAtUtc = now, CreatedAtUtc = now, UpdatedAtUtc = now
+    };
 
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static string Limit(string value, int max) => value.Length <= max ? value : value[..max];

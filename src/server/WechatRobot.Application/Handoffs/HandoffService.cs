@@ -6,6 +6,8 @@ public sealed record StartHandoffCommand(Guid QuestionMessageId, Guid RobotConfi
     string GroupName, string ReasonCode, string EvidenceJson, HandoffPauseScope PauseScope, string? StableSenderId,
     Guid? AssigneeUserId, string AssigneeTarget, string IdempotencyKey);
 public sealed record HandoffRecord(Guid Id, string State, Guid? AssigneeUserId, int Version);
+public sealed record ManualStartHandoffCommand(Guid QuestionMessageId, string Reason, HandoffPauseScope PauseScope, Guid? AssigneeUserId,
+    string IdempotencyKey, Guid AuthenticatedActorUserId);
 public sealed record KnowledgeCandidateRecord(Guid Id, Guid HandoffCaseId, string Question, string Answer, string Status, int Version);
 
 public interface IHandoffStore
@@ -18,6 +20,7 @@ public interface IHandoffStore
     Task<bool> IsPausedAsync(Guid groupProfileId, string? stableSenderId, CancellationToken token);
     Task<int> CountRecentSystemFailuresAsync(Guid groupProfileId, int maximum, CancellationToken token);
     Task CapturePausedMessageAsync(Guid groupProfileId, string? stableSenderId, Guid conversationMessageId, string displayName, string text, DateTime nowUtc, CancellationToken token);
+    Task<HandoffRecord> StartManualAsync(ManualStartHandoffCommand command, DateTime nowUtc, CancellationToken token);
 }
 
 public sealed class HandoffService(IHandoffStore store, TimeProvider timeProvider)
@@ -27,6 +30,12 @@ public sealed class HandoffService(IHandoffStore store, TimeProvider timeProvide
         if (command.PauseScope == HandoffPauseScope.Sender && string.IsNullOrWhiteSpace(command.StableSenderId))
             throw new ArgumentException("Sender-only pause requires a stable sender identifier; WorkTool display names are not identities.");
         return store.StartAsync(command, timeProvider.GetUtcNow().UtcDateTime, token);
+    }
+    public Task<HandoffRecord> StartManualAsync(ManualStartHandoffCommand command, CancellationToken token)
+    {
+        ValidateIdempotency(command.IdempotencyKey);
+        return store.StartManualAsync(command with { IdempotencyKey = $"manual:{command.QuestionMessageId:D}:{command.IdempotencyKey.Trim()}" },
+            timeProvider.GetUtcNow().UtcDateTime, token);
     }
 
     public Task RecordUnverifiedWorkToolMessageAsync(Guid handoffId, string externalMessageId, string displayName, string text, CancellationToken token) =>
@@ -46,6 +55,8 @@ public sealed class HandoffService(IHandoffStore store, TimeProvider timeProvide
     public Task<bool> IsPausedAsync(Guid groupId, string? stableSenderId, CancellationToken token) => store.IsPausedAsync(groupId, stableSenderId, token);
     public Task CapturePausedMessageAsync(Guid groupId, string? stableSenderId, Guid messageId, string displayName, string text, CancellationToken token) =>
         store.CapturePausedMessageAsync(groupId, stableSenderId, messageId, displayName, text, timeProvider.GetUtcNow().UtcDateTime, token);
+    private static void ValidateIdempotency(string value)
+    { if (string.IsNullOrWhiteSpace(value) || value.Length > 48) throw new ArgumentException("Idempotency key is required and must not exceed 48 characters."); }
 }
 
 public sealed class HandoffConcurrencyException(string message) : Exception(message);

@@ -4,6 +4,7 @@ using WechatRobot.Application.Groups;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
+using WechatRobot.Application.Handoffs;
 
 namespace WechatRobot.UnitTests.Conversations;
 
@@ -61,6 +62,22 @@ public sealed class InboundMessageProcessorTests
         Assert.DoesNotContain(chat.LastRequest!.Messages, message => message.Content.Contains("OLD-", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Handoff_trigger_suppresses_the_calculated_ai_answer_and_commits_typed_handoff_terminal()
+    {
+        var repository = new FakeRepository(Request());
+        var handoff = new FakeHandoff { Trigger = true };
+        var answer = new GroundedAnswerService(new FakeRetrieval(), new FakeChat(), new GroundedAnswerOptions(), new AnswerOutputFirewall());
+        var processor = new InboundMessageProcessor(repository, new ConversationContextService(), new RetrievalQueryBuilder(new(256)),
+            new FakeSummarizer("summary"), answer, TimeProvider.System, handoff);
+
+        await processor.ProcessAsync(Job(repository.Request.MessageId), TestContext.Current.CancellationToken);
+
+        Assert.Null(repository.Result);
+        Assert.NotNull(repository.HandoffResult);
+        Assert.Equal(AnswerDecisionKind.Handoff, repository.HandoffResult!.Decision.Kind);
+    }
+
     private static InboundMessageProcessor Processor(FakeRepository repository, IConversationSummarizer summarizer)
     {
         var answer = new GroundedAnswerService(new FakeRetrieval(), new FakeChat(), new GroundedAnswerOptions(), new AnswerOutputFirewall());
@@ -88,15 +105,24 @@ public sealed class InboundMessageProcessorTests
     {
         public ConversationProcessingRequest Request { get; } = request;
         public GroundedAnswerResult? Result { get; private set; }
+        public GroundedAnswerResult? HandoffResult { get; private set; }
         public int RenewCount { get; private set; }
         public Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token) => Task.FromResult(Request);
         public Task<ConversationProcessingRequest> LeaseForProcessingAsync(Guid messageId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) => Task.FromResult(Request with { SessionLeaseOwner = leaseOwner });
         public Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) { RenewCount++; return Task.FromResult(true); }
         public Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token) => Task.CompletedTask;
         public Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) { Result = result; return Task.CompletedTask; }
+        public Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) { HandoffResult = result; return Task.CompletedTask; }
         public Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
         public Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
         public Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
+    }
+
+    private sealed class FakeHandoff : IHandoffOrchestrator
+    {
+        public bool Trigger { get; init; }
+        public Task<bool> IsPausedAsync(ConversationProcessingRequest request, CancellationToken token) => Task.FromResult(false);
+        public Task<bool> HandleDecisionAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) => Task.FromResult(Trigger);
     }
 
     private sealed class FakeSummarizer : IConversationSummarizer

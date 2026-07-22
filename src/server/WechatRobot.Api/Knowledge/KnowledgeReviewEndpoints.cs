@@ -26,6 +26,7 @@ public static class KnowledgeReviewEndpoints
         catch (HandoffConcurrencyException exception) { return TypedResults.Conflict(new { error = exception.Message }); }
         catch (HandoffStateException exception) { return TypedResults.Conflict(new { error = exception.Message }); }
         catch (ArgumentException exception) { return TypedResults.BadRequest(new { error = exception.Message }); }
+        catch (InvalidOperationException exception) { return TypedResults.Conflict(new { error = exception.Message }); }
     }
 }
 

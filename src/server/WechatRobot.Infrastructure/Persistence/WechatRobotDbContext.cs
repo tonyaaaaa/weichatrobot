@@ -36,6 +36,7 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<KnowledgeIndexJobEntity> KnowledgeIndexJobs => Set<KnowledgeIndexJobEntity>();
     public DbSet<HandoffCaseEntity> HandoffCases => Set<HandoffCaseEntity>();
     public DbSet<HandoffMessageEntity> HandoffMessages => Set<HandoffMessageEntity>();
+    public DbSet<HandoffTransitionEntity> HandoffTransitions => Set<HandoffTransitionEntity>();
     public DbSet<KnowledgeCandidateEntity> KnowledgeCandidates => Set<KnowledgeCandidateEntity>();
     public DbSet<KnowledgeReviewEntity> KnowledgeReviews => Set<KnowledgeReviewEntity>();
 
