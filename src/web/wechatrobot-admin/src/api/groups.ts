@@ -6,7 +6,7 @@ export interface ContextOverrides { senderIsolated?: boolean | null; historyTurn
 export interface EffectiveContext { senderIsolated: boolean; historyTurns: number; idleTimeoutMinutes: number; tokenCap: number; summaryEnabled: boolean; includeBotHistory: boolean; }
 export interface GroupConfiguration {
   id: string; name: string; rules: { include: GroupRule[]; exclude: GroupRule[] }; boundTagIds: string[]; allowedTagIds: string[];
-  availableTags: { id: string; name: string; isGlobalPublic: boolean }[]; tagVisibility: 'any-bound-tag-or-global-public';
+  availableTags: { id: string; name: string; isGlobalPublic: boolean; isEnabled: boolean; isBound: boolean }[]; tagVisibility: 'any-bound-tag-or-global-public';
   context: { configured: ContextOverrides; effective: EffectiveContext }; clearedContextMessages: number;
 }
 export interface UpdateGroupConfiguration { includeRules: GroupRule[]; excludeRules: GroupRule[]; boundTagIds: string[]; context: ContextOverrides; clearContext: boolean; }

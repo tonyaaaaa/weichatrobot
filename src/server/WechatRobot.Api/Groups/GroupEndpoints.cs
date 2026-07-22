@@ -138,7 +138,8 @@ public static class GroupEndpoints
                     .Concat(rules.Where(rule => rule.RuleKind == (int)GroupRuleDirection.Include && !string.IsNullOrWhiteSpace(rule.ExcludePattern)).Select(ToLegacyExcludeResponse)).ToArray()),
             boundTagIds,
             service.ResolveVisibleTagIds(boundTagIds, domainTags).OrderBy(tagId => tagId).ToArray(),
-            tags.Where(tag => tag.IsEnabled).Select(tag => new KnowledgeTagResponse(tag.Id, tag.Name, tag.IsGlobalPublic)).ToArray(),
+            tags.Where(tag => tag.IsEnabled || boundTagIds.Contains(tag.Id))
+                .Select(tag => new KnowledgeTagResponse(tag.Id, tag.Name, tag.IsGlobalPublic, tag.IsEnabled, boundTagIds.Contains(tag.Id))).ToArray(),
             AnyBoundTagOrGlobalPublic,
             new GroupContextResponse(configured, service.GetEffectiveContext(configured)),
             clearedMessages);
@@ -204,7 +205,7 @@ public static class GroupEndpoints
         IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context, int ClearedContextMessages);
     public sealed record GroupRulesResponse(IReadOnlyList<RuleResponse> Include, IReadOnlyList<RuleResponse> Exclude);
     public sealed record RuleResponse(Guid Id, string Pattern, string PatternKind, bool IgnoreCase);
-    public sealed record KnowledgeTagResponse(Guid Id, string Name, bool IsGlobalPublic);
+    public sealed record KnowledgeTagResponse(Guid Id, string Name, bool IsGlobalPublic, bool IsEnabled, bool IsBound);
     public sealed record GroupContextResponse(GroupContextOverrides Configured, GroupContextSettings Effective);
     public sealed record PreviewGroupRulesResponse(IReadOnlyList<GroupRulePreviewResult> Results);
     public sealed record GroupRulePreviewResult(string GroupName, bool IsMatch, bool IsExcluded);

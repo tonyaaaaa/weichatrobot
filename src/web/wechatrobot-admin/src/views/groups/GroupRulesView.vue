@@ -12,7 +12,7 @@ const activeGroupId = ref(props.groupId || String(route.params.id ?? ''));
 const includeRules = ref<GroupRule[]>([]);
 const excludeRules = ref<GroupRule[]>([]);
 const boundTagIds = ref<string[]>([]);
-const availableTags = ref<{ id: string; name: string; isGlobalPublic: boolean }[]>([]);
+const availableTags = ref<{ id: string; name: string; isGlobalPublic: boolean; isEnabled: boolean; isBound: boolean }[]>([]);
 const previewGroupNames = ref('');
 const previewResults = ref<{ groupName: string; isMatch: boolean; isExcluded: boolean }[]>([]);
 const notice = ref('');
@@ -49,10 +49,10 @@ onMounted(load);
     <h1>群管理</h1><p>仅管理员可维护。标签检索遵循“任一已绑定标签匹配即可检索”，全局公开标签始终可用。</p>
     <label>群配置 ID <input v-model.trim="activeGroupId" aria-label="群配置 ID"><button type="button" @click="load">读取配置</button></label>
     <RuleEditor :include-rules="includeRules" :exclude-rules="excludeRules" @add="addRule" @remove="removeRule" />
-    <section><h2>知识库标签</h2><p>多选标签按 OR 关系检索；“全局公开”标签无需绑定。</p><label v-for="tag in availableTags" :key="tag.id"><input v-model="boundTagIds" type="checkbox" :value="tag.id">{{ tag.name }}{{ tag.isGlobalPublic ? '（全局公开）' : '' }}</label></section>
+    <section><h2>知识库标签</h2><p>多选标签按 OR 关系检索；“全局公开”标签无需绑定。</p><label v-for="tag in availableTags" :key="tag.id" :class="{ 'stale-tag': !tag.isEnabled }"><input v-model="boundTagIds" type="checkbox" :data-testid="`tag-${tag.id}`" :value="tag.id" :disabled="!tag.isEnabled && !tag.isBound">{{ tag.name }}{{ !tag.isEnabled ? '（已禁用，移除后不可重新添加）' : tag.isGlobalPublic ? '（全局公开）' : '' }}</label></section>
     <ContextPolicyForm :configured="configured" :effective="effective" @clear="save(true)" />
     <section><h2>预览群名称</h2><textarea v-model="previewGroupNames" placeholder="每行一个已知群名称" /><button type="button" data-testid="preview-rules" @click="preview">保存前预览</button></section>
     <RulePreview :results="previewResults" />
-    <button type="button" :disabled="!canSave" @click="() => save()">保存群配置</button><p aria-live="polite">{{ notice }}</p>
+    <button type="button" data-testid="save-configuration" :disabled="!canSave" @click="() => save()">保存群配置</button><p aria-live="polite">{{ notice }}</p>
   </section>
 </template>

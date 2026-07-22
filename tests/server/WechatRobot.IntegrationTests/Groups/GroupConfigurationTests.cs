@@ -121,6 +121,45 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
         Assert.Equal(1, await databaseAfter.ConversationMessages.CountAsync(TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Disabled_bound_tag_is_exposed_for_removal_but_cannot_be_newly_or_still_bound_on_save()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        using var client = _factory.CreateClient();
+        var initiallyBound = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
+        {
+            includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = new[] { ScopedTagId },
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false
+        }, TestContext.Current.CancellationToken);
+        initiallyBound.EnsureSuccessStatusCode();
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            (await database.KnowledgeTags.SingleAsync(tag => tag.Id == ScopedTagId, TestContext.Current.CancellationToken)).IsEnabled = false;
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var configuration = await client.GetFromJsonAsync<JsonElement>($"/api/groups/{groupId}/configuration", TestContext.Current.CancellationToken);
+        var disabledBoundTag = configuration.GetProperty("availableTags").EnumerateArray().Single(tag => tag.GetProperty("id").GetGuid() == ScopedTagId);
+        Assert.False(disabledBoundTag.GetProperty("isEnabled").GetBoolean());
+        Assert.True(disabledBoundTag.GetProperty("isBound").GetBoolean());
+
+        var removeDisabledBinding = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
+        {
+            includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = Array.Empty<Guid>(),
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false
+        }, TestContext.Current.CancellationToken);
+        removeDisabledBinding.EnsureSuccessStatusCode();
+
+        var addDisabledTag = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
+        {
+            includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = new[] { ScopedTagId },
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, addDisabledTag.StatusCode);
+    }
+
     private static readonly Guid RobotId = Guid.Parse("00000000-0000-0000-0000-000000000801");
     private static readonly Guid ScopedTagId = Guid.Parse("00000000-0000-0000-0000-000000000802");
     private static readonly Guid GlobalPublicTagId = Guid.Parse("00000000-0000-0000-0000-000000000803");
@@ -143,7 +182,18 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
             new KnowledgeTagEntity { Id = UnboundPrivateTagId, Name = "内部", NormalizedName = "内部" }
         })
         {
-            if (!await database.KnowledgeTags.AnyAsync(existing => existing.Id == tag.Id, TestContext.Current.CancellationToken)) database.KnowledgeTags.Add(tag);
+            var existing = await database.KnowledgeTags.SingleOrDefaultAsync(existing => existing.Id == tag.Id, TestContext.Current.CancellationToken);
+            if (existing is null)
+            {
+                database.KnowledgeTags.Add(tag);
+            }
+            else
+            {
+                existing.Name = tag.Name;
+                existing.NormalizedName = tag.NormalizedName;
+                existing.IsEnabled = tag.IsEnabled;
+                existing.IsGlobalPublic = tag.IsGlobalPublic;
+            }
         }
 
         database.GroupProfiles.Add(new GroupProfileEntity { Id = groupId, RobotConfigId = RobotId, ExternalGroupId = groupId.ToString("N"), Name = "技术支持群" });

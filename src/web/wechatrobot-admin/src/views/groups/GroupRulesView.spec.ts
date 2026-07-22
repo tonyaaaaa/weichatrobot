@@ -34,4 +34,25 @@ describe('GroupRulesView', () => {
     expect(wrapper.text()).toContain('已排除');
     expect(wrapper.text()).toContain('按成员隔离');
   });
+
+  it('shows a disabled existing binding so an administrator can remove it and save other changes', async () => {
+    const disabledTagId = '00000000-0000-0000-0000-000000000802';
+    api.getConfiguration.mockResolvedValue({
+      rules: { include: [], exclude: [] }, boundTagIds: [disabledTagId],
+      availableTags: [{ id: disabledTagId, name: '已停用技术', isGlobalPublic: false, isEnabled: false, isBound: true }],
+      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
+    });
+    api.updateConfiguration.mockResolvedValue({
+      clearedContextMessages: 0,
+      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
+    });
+    const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });
+    await Promise.resolve();
+    await wrapper.vm.$nextTick();
+    await wrapper.get(`[data-testid="tag-${disabledTagId}"]`).setValue(false);
+    await wrapper.get('[data-testid="save-configuration"]').trigger('click');
+
+    expect(wrapper.text()).toContain('已禁用，移除后不可重新添加');
+    expect(api.updateConfiguration).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ boundTagIds: [] }));
+  });
 });
