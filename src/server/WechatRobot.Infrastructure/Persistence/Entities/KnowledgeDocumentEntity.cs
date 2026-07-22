@@ -10,6 +10,7 @@ public sealed class KnowledgeDocumentEntity
     public int? ActiveEmbeddingDimension { get; set; }
     public string? ActiveDistance { get; set; }
     public int? ActiveIndexGeneration { get; set; }
+    public bool ActiveCollectionExclusive { get; set; }
     public bool IsDeleteRequested { get; set; }
     public int StateVersion { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

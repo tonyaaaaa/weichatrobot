@@ -10,6 +10,7 @@ public sealed class KnowledgeIndexJobEntity
     public string? PreviousActiveCollectionName { get; set; }
     public int? PreviousActiveEmbeddingDimension { get; set; }
     public string? PreviousActiveDistance { get; set; }
+    public bool PreviousActiveCollectionExclusive { get; set; }
     public int Generation { get; set; } = 1;
     public string Operation { get; set; } = "index";
     public string CollectionName { get; set; } = string.Empty;

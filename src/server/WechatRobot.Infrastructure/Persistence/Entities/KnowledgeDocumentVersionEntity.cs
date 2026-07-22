@@ -20,6 +20,7 @@ public sealed class KnowledgeDocumentVersionEntity
     public int? EmbeddingDimension { get; set; }
     public string? VectorDistance { get; set; }
     public int? IndexGeneration { get; set; }
+    public bool IndexCollectionExclusive { get; set; }
     public int PreviewRevision { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;

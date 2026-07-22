@@ -1,5 +1,7 @@
 using System.Data.Common;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -273,16 +275,24 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         var document = new KnowledgeDocumentEntity
         {
             Status = "active", ActiveCollectionName = $"kb_cosine_3_tag_live_{Guid.NewGuid():N}", ActiveEmbeddingDimension = 3,
-            ActiveDistance = "cosine", ActiveIndexGeneration = 1
+            ActiveDistance = "cosine", ActiveIndexGeneration = 1, ActiveCollectionExclusive = true
         };
         var version = Version(document.Id, 1, "active", true);
         version.IndexCollectionName = document.ActiveCollectionName;
         version.EmbeddingDimension = 3;
         version.VectorDistance = "cosine";
         version.IndexGeneration = 1;
+        version.IndexCollectionExclusive = true;
         document.ActiveVersionId = version.Id;
         var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "tagged", Status = "approved" };
+        var initialIndexJob = new KnowledgeIndexJobEntity
+        {
+            Id = StableIndexJobId(version.Id), KnowledgeDocumentId = document.Id, KnowledgeDocumentVersionId = version.Id,
+            CollectionName = document.ActiveCollectionName, Dimension = 3, Distance = "cosine", Generation = 1,
+            IsCollectionExclusive = true, Status = "completed"
+        };
         database.AddRange(tagA, tagB, document, version, chunk,
+            initialIndexJob,
             new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagA.Id },
             new ModelConfigEntity
             {
@@ -320,10 +330,46 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             .IndexAsync(jobId, TestContext.Current.CancellationToken);
         database.ChangeTracker.Clear();
 
+        Assert.True((await database.KnowledgeIndexJobs.AsNoTracking().SingleAsync(job => job.Operation == "cleanup" &&
+            job.CollectionName == live.Name, TestContext.Current.CancellationToken)).IsCollectionExclusive);
+
         Assert.Equal([tagB.Id], await database.KnowledgeChunkTags.AsNoTracking().Where(binding => binding.KnowledgeChunkId == chunk.Id)
             .Select(binding => binding.KnowledgeTagId).ToArrayAsync(TestContext.Current.CancellationToken));
         Assert.Empty(await service.SearchVisibleAsync([1, 0, 0], [tagA.Id], vectors, 5, TestContext.Current.CancellationToken));
         Assert.Single(await service.SearchVisibleAsync([0, 1, 0], [tagB.Id], vectors, 5, TestContext.Current.CancellationToken));
+
+        var activeCollectionName = (await database.KnowledgeDocuments.AsNoTracking().SingleAsync(item => item.Id == document.Id,
+            TestContext.Current.CancellationToken)).ActiveCollectionName!;
+        var activeCollection = new VectorCollection(activeCollectionName, 3, VectorDistance.Cosine);
+        var cleanupServices = new ServiceCollection();
+        cleanupServices.AddDbContext<WechatRobotDbContext>(builder => builder.UseMySQL(_fixture.ConnectionString));
+        cleanupServices.AddSingleton(new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+        cleanupServices.AddSingleton(KnowledgeIndexWorkerOptions.Default);
+        cleanupServices.AddSingleton(TimeProvider.System);
+        cleanupServices.AddSingleton<ISecretProtector, PassThroughProtector>();
+        cleanupServices.AddSingleton<IVectorStore>(vectors);
+        cleanupServices.AddSingleton<IObjectStorage, RecordingStorage>();
+        cleanupServices.AddScoped<IDurableJobRepository, DurableJobRepository>();
+        cleanupServices.AddScoped<ModelConfigurationService>();
+        cleanupServices.AddScoped<QdrantKnowledgeService>();
+        cleanupServices.AddScoped<KnowledgeDocumentStore>();
+        await using var cleanupProvider = cleanupServices.BuildServiceProvider();
+        var cleanupWorker = new KnowledgeIndexWorker(cleanupProvider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
+            KnowledgeIndexWorkerOptions.Default);
+        for (var attempt = 0; attempt < 4 && await database.KnowledgeIndexJobs.AsNoTracking().AnyAsync(job => job.Operation == "cleanup" &&
+                 (job.Status == "pending" || job.Status == "retrying"), TestContext.Current.CancellationToken); attempt++)
+            Assert.True(await cleanupWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+
+        Assert.Null(await vectors.InspectCollectionAsync(live.Name, TestContext.Current.CancellationToken));
+        Assert.NotNull(await vectors.InspectCollectionAsync(activeCollection.Name, TestContext.Current.CancellationToken));
+        Assert.Single(await service.SearchVisibleAsync([0, 1, 0], [tagB.Id], vectors, 5, TestContext.Current.CancellationToken));
+
+        await using (var deleteScope = cleanupProvider.CreateAsyncScope())
+            Assert.True(await deleteScope.ServiceProvider.GetRequiredService<KnowledgeDocumentStore>()
+                .RequestPhysicalDeleteAsync(document.Id, TestContext.Current.CancellationToken));
+        var physicalCleanup = new KnowledgeDocumentCleanupWorker(cleanupProvider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        Assert.True(await physicalCleanup.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        Assert.Null(await vectors.InspectCollectionAsync(activeCollection.Name, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -649,6 +695,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
 
     private static QdrantKnowledgeService Service(WechatRobotDbContext database) => new(database,
         new ModelConfigurationService(new PassThroughProtector()), new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
+
+    private static Guid StableIndexJobId(Guid versionId) => new(SHA256.HashData(Encoding.UTF8.GetBytes($"index:{versionId:N}")).AsSpan(0, 16));
 
     private static KnowledgeIndexJobEntity Job(Guid documentId, Guid versionId, Guid oldVersionId) => new()
     {
