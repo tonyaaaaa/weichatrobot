@@ -17,6 +17,8 @@ using WechatRobot.Application.Security;
 using WechatRobot.Infrastructure.Models;
 using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.WorkTool;
+using WechatRobot.Application.Conversations;
+using WechatRobot.Infrastructure.Conversations;
 using WechatRobot.Worker.Jobs;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -71,6 +73,7 @@ builder.Services.AddScoped<QdrantKnowledgeService>();
 builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());
 builder.Services.AddScoped<KnowledgeIndexService>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");
@@ -104,13 +107,14 @@ builder.Services.AddScoped(services => new DocumentUploadService(
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<OssOptions>>().Value.PublicReadRiskAccepted,
     services.GetRequiredService<IObjectStorage>(), services.GetRequiredService<IKnowledgeDocumentStore>()));
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddOptions<FixedReplyOptions>()
-    .BindConfiguration(FixedReplyOptions.SectionName)
-    .ValidateDataAnnotations()
-    .ValidateOnStart();
-builder.Services.AddScoped<InboundMessageProcessor>(services => new InboundMessageProcessor(
-    services.GetRequiredService<SendCommandService>(),
-    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FixedReplyOptions>>().Value));
+var groundedAnswerOptions = builder.Configuration.GetSection(GroundedAnswerOptions.SectionName).Get<GroundedAnswerOptions>() ?? new();
+groundedAnswerOptions.Validate();
+builder.Services.AddSingleton(groundedAnswerOptions);
+builder.Services.AddSingleton<ConversationContextService>();
+builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
+builder.Services.AddScoped<IRetrievalEvidenceProvider, KnowledgeRetrievalEvidenceProvider>();
+builder.Services.AddScoped<GroundedAnswerService>();
+builder.Services.AddScoped<InboundMessageProcessor>();
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/");

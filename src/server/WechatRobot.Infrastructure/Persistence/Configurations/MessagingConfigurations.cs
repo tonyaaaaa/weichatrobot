@@ -77,13 +77,47 @@ internal sealed class ConversationMessageConfiguration : IEntityTypeConfiguratio
         builder.ToTable("conversation_message");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.WorkToolMessageId).HasMaxLength(128);
+        builder.Property(entity => entity.Direction).HasMaxLength(16).HasDefaultValue("inbound").IsRequired();
+        builder.Property(entity => entity.Role).HasMaxLength(16).HasDefaultValue("user").IsRequired();
         builder.Property(entity => entity.FallbackHash).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.SenderExternalUserId).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
         builder.HasIndex(entity => entity.WorkToolMessageId).IsUnique();
         builder.HasIndex(entity => new { entity.FallbackHash, entity.FallbackWindowStartUtc }).IsUnique();
+        builder.HasIndex(entity => entity.InReplyToMessageId).IsUnique();
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne<ConversationSessionEntity>().WithMany().HasForeignKey(entity => entity.ConversationSessionId).OnDelete(DeleteBehavior.SetNull);
+    }
+}
+
+internal sealed class ConversationSessionConfiguration : IEntityTypeConfiguration<ConversationSessionEntity>
+{
+    public void Configure(EntityTypeBuilder<ConversationSessionEntity> builder)
+    {
+        builder.ToTable("conversation_session");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.SenderScopeKey).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.Summary).HasColumnType("longtext");
+        builder.HasIndex(entity => new { entity.GroupProfileId, entity.SenderScopeKey }).IsUnique();
+        builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class RetrievalAuditConfiguration : IEntityTypeConfiguration<RetrievalAuditEntity>
+{
+    public void Configure(EntityTypeBuilder<RetrievalAuditEntity> builder)
+    {
+        builder.ToTable("retrieval_audit");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.Decision).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.ContextPolicy).HasMaxLength(1024).IsRequired();
+        builder.Property(entity => entity.FailureCode).HasMaxLength(64);
+        builder.Property(entity => entity.EvidenceJson).HasColumnType("json").IsRequired();
+        builder.HasIndex(entity => entity.ConversationMessageId).IsUnique();
+        builder.HasIndex(entity => new { entity.GroupProfileId, entity.CreatedAtUtc });
+        builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.ConversationMessageId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

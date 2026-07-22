@@ -10,6 +10,9 @@ using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.IntegrationTests.Infrastructure;
 using WechatRobot.Worker.Jobs;
+using WechatRobot.Application.Conversations;
+using WechatRobot.Application.Groups;
+using WechatRobot.Application.Models;
 
 namespace WechatRobot.IntegrationTests.Messaging;
 
@@ -110,15 +113,50 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         .AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(_fixture.ConnectionString))
         .AddScoped<IDurableJobRepository, DurableJobRepository>()
         .AddScoped<SendCommandService>()
-        .AddScoped<InboundMessageProcessor>(services => new InboundMessageProcessor(
-            services.GetRequiredService<SendCommandService>(),
-            services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FixedReplyOptions>>().Value))
+        .AddScoped<IGroundedConversationRepository, FakeConversationRepository>()
+        .AddSingleton<ConversationContextService>()
+        .AddSingleton<IRetrievalEvidenceProvider, FakeEvidenceProvider>()
+        .AddSingleton<IChatCompletionClient, FakeChatClient>()
+        .AddSingleton(new GroundedAnswerOptions(.5, 8, "insufficient", "failure", "handoff"))
+        .AddScoped<GroundedAnswerService>()
+        .AddScoped<InboundMessageProcessor>()
         .AddSingleton<IWorkToolClient>(_ => new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }))
         .AddSingleton(TimeProvider.System)
         .AddOptions<FixedReplyOptions>()
         .Configure(options => options.Text = "fixed reply")
         .Services
         .BuildServiceProvider();
+
+    private sealed class FakeConversationRepository(WechatRobotDbContext database, IDurableJobRepository jobs) : IGroundedConversationRepository
+    {
+        public async Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token)
+        {
+            var message = await database.ConversationMessages.SingleAsync(item => item.Id == messageId, token);
+            var robot = await database.RobotConfigs.SingleAsync(item => item.Id == message.RobotConfigId, token);
+            return new(message.Id, robot.Id, robot.WorkToolRobotId, Guid.NewGuid(), "Support", message.SenderExternalUserId, message.Text,
+                message.ReceivedAtUtc, [], [], null, new GroupContextSettings(false, 6, 30, 3000, true, true),
+                new ModelProviderConfiguration("https://fake.test", "fake", "fake", TimeSpan.FromSeconds(1), 0));
+        }
+
+        public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
+            _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.GroupName, result.Decision.GroupText,
+                $"grounded-reply:{request.MessageId:D}"), token);
+        public Task<int> ClearContextAsync(Guid groupProfileId, string? senderExternalUserId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
+        public Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
+        public Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
+    }
+
+    private sealed class FakeEvidenceProvider : IRetrievalEvidenceProvider
+    {
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1, .99, [], "fake", "fixed evidence")]);
+    }
+
+    private sealed class FakeChatClient : IChatCompletionClient
+    {
+        public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChatCompletionResponse("fixed reply"));
+    }
 
     private sealed class FakeWorkToolHandler : HttpMessageHandler
     {

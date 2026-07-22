@@ -1,9 +1,13 @@
 using System.Text.Json;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Conversations;
 
 namespace WechatRobot.Application.Messaging;
 
-public sealed class InboundMessageProcessor(SendCommandService sendCommands, FixedReplyOptions options)
+public sealed class InboundMessageProcessor(
+    IGroundedConversationRepository conversations,
+    ConversationContextService context,
+    GroundedAnswerService answers)
 {
     public async Task ProcessAsync(LeasedDurableJob job, CancellationToken cancellationToken)
     {
@@ -22,13 +26,11 @@ public sealed class InboundMessageProcessor(SendCommandService sendCommands, Fix
             throw new InvalidOperationException("Inbound durable job payload is incomplete.");
         }
 
-        await sendCommands.EnqueueFixedReplyAsync(
-            payload.RobotConfigId,
-            payload.WorkToolRobotId,
-            payload.GroupName,
-            options.Text,
-            payload.MessageId,
-            cancellationToken);
+        var request = await conversations.LoadForProcessingAsync(payload.MessageId, cancellationToken);
+        var effectiveContext = context.Build(request.History, request.ContextPolicy, request.SenderExternalUserId, request.ReceivedAtUtc, request.Summary);
+        var result = await answers.AnswerAsync(new(request.MessageId, request.GroupProfileId, request.SenderExternalUserId, request.Question,
+            request.AllowedTagIds, effectiveContext, request.ContextPolicy, request.ChatConfiguration), cancellationToken);
+        await conversations.PersistAnswerAndEnqueueAsync(request, result, cancellationToken);
     }
 
     private sealed class InboundMessagePayload
