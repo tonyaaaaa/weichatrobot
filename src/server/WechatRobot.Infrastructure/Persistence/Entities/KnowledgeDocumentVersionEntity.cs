@@ -16,6 +16,9 @@ public sealed class KnowledgeDocumentVersionEntity
     public string? FailureReason { get; set; }
     public byte[] StagedContent { get; set; } = [];
     public bool IsPublished { get; set; }
+    public string? IndexCollectionName { get; set; }
+    public int? EmbeddingDimension { get; set; }
+    public string? VectorDistance { get; set; }
     public int PreviewRevision { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;

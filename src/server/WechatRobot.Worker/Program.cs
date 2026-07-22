@@ -12,6 +12,10 @@ using WechatRobot.Infrastructure.Knowledge.Parsing;
 using WechatRobot.Application.Knowledge.Ocr;
 using WechatRobot.Infrastructure.Knowledge.Ocr;
 using WechatRobot.Infrastructure.Storage;
+using WechatRobot.Application.Models;
+using WechatRobot.Application.Security;
+using WechatRobot.Infrastructure.Models;
+using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Worker.Jobs;
 
@@ -41,6 +45,23 @@ builder.Services.AddSingleton<DocumentParserSelector>(services => new DocumentPa
     services.GetRequiredService<MarkdownTextParser>(), services.GetRequiredService<DocxParser>(), services.GetRequiredService<PdfTextParser>()]));
 builder.Services.AddSingleton<ChunkingService>();
 builder.Services.AddScoped<ChunkPreviewRepository>();
+var knowledgeIndexOptions = builder.Configuration.GetSection(KnowledgeIndexOptions.SectionName).Get<KnowledgeIndexOptions>()
+    ?? new KnowledgeIndexOptions(1536, VectorDistance.Cosine);
+if (knowledgeIndexOptions.Dimension <= 0 || knowledgeIndexOptions.BatchSize <= 0 || knowledgeIndexOptions.MaximumAttempts <= 0)
+    throw new InvalidOperationException("Knowledge index configuration is invalid.");
+builder.Services.AddSingleton(knowledgeIndexOptions);
+builder.Services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
+builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddScoped<QdrantKnowledgeService>();
+builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());
+builder.Services.AddScoped<KnowledgeIndexService>();
+builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");
+    var apiKey = builder.Configuration["Qdrant:ApiKey"];
+    if (!string.IsNullOrWhiteSpace(apiKey)) client.DefaultRequestHeaders.Add("api-key", apiKey);
+});
 var ocrClientOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrClientOptions>() ?? new OcrClientOptions();
 if (ocrClientOptions.Timeout <= TimeSpan.Zero || ocrClientOptions.MaximumResponseBytes <= 0 || !OcrEndpointPolicy.IsAllowed(ocrClientOptions.BaseAddress))
     throw new InvalidOperationException("OCR client configuration must use a private Compose name or localhost and positive limits.");
@@ -83,6 +104,7 @@ builder.Services.AddHostedService<DurableJobWorker>();
 builder.Services.AddHostedService<RobotSendWorker>();
 builder.Services.AddHostedService<KnowledgeUploadWorker>();
 builder.Services.AddHostedService<KnowledgeParseWorker>();
+builder.Services.AddHostedService<KnowledgeIndexWorker>();
 
 var host = builder.Build();
 host.Run();

@@ -70,6 +70,20 @@ builder.Services.AddSingleton<DocumentParserSelector>(services => new DocumentPa
     services.GetRequiredService<MarkdownTextParser>(), services.GetRequiredService<DocxParser>(), services.GetRequiredService<PdfTextParser>()]));
 builder.Services.AddSingleton<ChunkingService>();
 builder.Services.AddScoped<ChunkPreviewRepository>();
+var knowledgeIndexOptions = builder.Configuration.GetSection(KnowledgeIndexOptions.SectionName).Get<KnowledgeIndexOptions>()
+    ?? new KnowledgeIndexOptions(1536, VectorDistance.Cosine);
+if (knowledgeIndexOptions.Dimension <= 0 || knowledgeIndexOptions.BatchSize <= 0 || knowledgeIndexOptions.MaximumAttempts <= 0)
+    throw new InvalidOperationException("Knowledge index configuration is invalid.");
+builder.Services.AddSingleton(knowledgeIndexOptions);
+builder.Services.AddScoped<QdrantKnowledgeService>();
+builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());
+builder.Services.AddScoped<KnowledgeIndexService>();
+builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");
+    var apiKey = builder.Configuration["Qdrant:ApiKey"];
+    if (!string.IsNullOrWhiteSpace(apiKey)) client.DefaultRequestHeaders.Add("api-key", apiKey);
+});
 builder.Services.AddScoped(services => new KnowledgePreviewService(services.GetRequiredService<WechatRobotDbContext>(), services.GetRequiredService<IDocumentSourceReader>(),
     services.GetRequiredService<DocumentParserSelector>(), services.GetRequiredService<ChunkingService>(), services.GetRequiredService<ChunkPreviewRepository>(),
     services.GetRequiredService<IOptions<DocumentParsingOptions>>().Value, services.GetRequiredService<TimeProvider>()));
@@ -165,6 +179,7 @@ app.MapModelConfigurationEndpoints();
 app.MapGroupEndpoints();
 app.MapDocumentEndpoints();
 app.MapChunkPreviewEndpoints();
+app.MapKnowledgeIndexEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
 app.MapGet("/", () => Results.Ok());

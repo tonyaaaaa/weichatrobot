@@ -12,6 +12,9 @@ internal sealed class KnowledgeDocumentConfiguration : IEntityTypeConfiguration<
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Title).HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.ActiveCollectionName).HasMaxLength(128);
+        builder.Property(entity => entity.ActiveDistance).HasMaxLength(16);
+        builder.Property(entity => entity.ActiveVersionId).IsConcurrencyToken();
         builder.HasIndex(entity => entity.Status);
     }
 }
@@ -33,6 +36,8 @@ internal sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigu
         builder.Property(entity => entity.PreviewRevision).IsConcurrencyToken();
         builder.Property(entity => entity.FailureReason).HasMaxLength(512);
         builder.Property(entity => entity.StagedContent).HasColumnType("longblob").IsRequired();
+        builder.Property(entity => entity.IndexCollectionName).HasMaxLength(128);
+        builder.Property(entity => entity.VectorDistance).HasMaxLength(16);
         builder.HasIndex(entity => entity.Sha256).IsUnique();
         builder.HasIndex(entity => new { entity.KnowledgeDocumentId, entity.Version }).IsUnique();
         builder.HasOne<KnowledgeDocumentEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentId).OnDelete(DeleteBehavior.Cascade);
@@ -94,6 +99,26 @@ internal sealed class KnowledgeOcrPageConfiguration : IEntityTypeConfiguration<K
         builder.Property(entity => entity.Error).HasMaxLength(512);
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128).IsConcurrencyToken();
         builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.PageNumber }).IsUnique();
+        builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<KnowledgeIndexJobEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeIndexJobEntity> builder)
+    {
+        builder.ToTable("knowledge_index_job");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.Operation).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.CollectionName).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.Distance).HasMaxLength(16).IsRequired();
+        builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.FailureReason).HasMaxLength(1024);
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
+        builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });
+        builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.Operation, entity.Status });
+        builder.HasOne<KnowledgeDocumentEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
     }
 }
