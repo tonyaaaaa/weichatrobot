@@ -46,6 +46,34 @@ public sealed class OcrClientContractTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.RecognizeAsync([new OcrRenderedPage(1, [1], 1, 1)], caller.Token));
     }
 
+    [Fact]
+    public async Task Rejects_declared_oversized_response_before_reading_body()
+    {
+        var content = new GuardedContent(4097);
+        var handler = new DelegateHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content }));
+        var client = CreateClient(handler, TimeSpan.FromSeconds(1));
+
+        var exception = await Assert.ThrowsAsync<OcrClientException>(() =>
+            client.RecognizeAsync([new OcrRenderedPage(1, [1], 1, 1)], TestContext.Current.CancellationToken));
+
+        Assert.Equal(OcrClientError.ResponseTooLarge, exception.Error);
+        Assert.False(content.WasRead);
+    }
+
+    [Fact]
+    public async Task Rejects_chunked_oversized_response_while_streaming()
+    {
+        var content = new ByteArrayContent(new byte[4097]);
+        content.Headers.ContentLength = null;
+        var handler = new DelegateHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content }));
+        var client = CreateClient(handler, TimeSpan.FromSeconds(1));
+
+        var exception = await Assert.ThrowsAsync<OcrClientException>(() =>
+            client.RecognizeAsync([new OcrRenderedPage(1, [1], 1, 1)], TestContext.Current.CancellationToken));
+
+        Assert.Equal(OcrClientError.ResponseTooLarge, exception.Error);
+    }
+
     private static HttpOcrClient CreateClient(HttpMessageHandler handler, TimeSpan timeout) =>
         new(new HttpClient(handler) { BaseAddress = new Uri("http://ocr:8000/") }, new OcrClientOptions { Timeout = timeout, MaximumResponseBytes = 4096 });
 
@@ -55,5 +83,13 @@ public sealed class OcrClientContractTests
         public DelegateHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler) => _handler = (request, _) => handler(request);
         public DelegateHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) => _handler = handler;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => _handler(request, cancellationToken);
+    }
+
+    private sealed class GuardedContent(long declaredLength) : HttpContent
+    {
+        public bool WasRead { get; private set; }
+        protected override bool TryComputeLength(out long length) { length = declaredLength; return true; }
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        { WasRead = true; throw new InvalidOperationException("Body must not be read."); }
     }
 }

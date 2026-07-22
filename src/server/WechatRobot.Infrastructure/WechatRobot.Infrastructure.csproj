@@ -13,7 +13,6 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="MySql.EntityFrameworkCore" />
-    <PackageReference Include="PDFtoImage" />
     <PackageReference Include="UglyToad.PdfPig" />
   </ItemGroup>
 

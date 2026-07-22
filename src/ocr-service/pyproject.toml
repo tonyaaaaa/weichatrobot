@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechatrobot-ocr"
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi==0.116.1",
+  "pillow==11.3.0",
+  "uvicorn[standard]==0.35.0",
+]
+
+[project.optional-dependencies]
+production = [
+  "numpy==2.2.6",
+  "paddleocr==3.2.0",
+  "paddlepaddle==3.1.1",
+]
+test = [
+  "httpx==0.28.1",
+  "pytest==8.4.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

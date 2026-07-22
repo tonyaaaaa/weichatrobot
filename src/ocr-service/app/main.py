@@ -1,37 +1,17 @@
-import asyncio
 import base64
-import binascii
+import logging
 import os
-from typing import Protocol
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import ValidationError
 
+from .models import OcrPageRequest, OcrPagesRequest
+from .ocr_engine import ImageValidationError, OcrEngine, create_engine, validate_image
+from .process_pool import OcrPageTimeoutError, OcrProcessPool
 
-class OcrEngine(Protocol):
-    def recognize(self, image_bytes: bytes) -> list[tuple[str, float]]: ...
-
-
-class OcrPageRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    page_number: int = Field(alias="pageNumber", ge=1)
-    image_base64: str = Field(alias="imageBase64", min_length=1)
-    width: int = Field(ge=1)
-    height: int = Field(ge=1)
-
-    @field_validator("image_base64")
-    @classmethod
-    def validate_base64(cls, value: str) -> str:
-        try:
-            base64.b64decode(value, validate=True)
-        except (binascii.Error, ValueError) as exception:
-            raise ValueError("imageBase64 must be valid base64") from exception
-        return value
-
-
-class OcrPagesRequest(BaseModel):
-    pages: list[OcrPageRequest] = Field(min_length=1, max_length=500)
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -39,9 +19,19 @@ def create_app(
     *,
     maximum_request_bytes: int = 25 * 1024 * 1024,
     maximum_image_pixels: int = 16_000_000,
+    maximum_image_width: int = 10_000,
+    maximum_image_height: int = 10_000,
     page_timeout_seconds: float = 15,
 ) -> FastAPI:
-    app = FastAPI(title="WechatRobot OCR", docs_url=None, redoc_url=None)
+    pool = OcrProcessPool(engine)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        pool.close()
+
+    app = FastAPI(title="WechatRobot OCR", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.state.ocr_pool = pool
 
     @app.middleware("http")
     async def bound_request_body(request: Request, call_next):
@@ -56,33 +46,57 @@ def create_app(
         request._body = bytes(body)
 
         delivered = False
+
         async def receive():
             nonlocal delivered
             if delivered:
                 return {"type": "http.request", "body": b"", "more_body": False}
             delivered = True
             return {"type": "http.request", "body": request._body, "more_body": False}
+
         request._receive = receive
         return await call_next(request)
 
     @app.get("/health")
+    @app.get("/health/live")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/health/ready")
+    async def ready():
+        if await pool.ready():
+            return {"status": "ready"}
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
 
     @app.post("/v1/ocr/pages")
     async def recognize_pages(request: Request):
         try:
             payload = OcrPagesRequest.model_validate_json(await request.body())
         except ValidationError as exception:
-            return JSONResponse(status_code=422, content={"detail": exception.errors(include_context=False, include_input=False)})
-        for page in payload.pages:
-            if page.width * page.height > maximum_image_pixels:
-                return JSONResponse(status_code=422, content={"detail": "Image pixel limit exceeded."})
+            return JSONResponse(
+                status_code=422,
+                content={"detail": exception.errors(include_context=False, include_input=False)},
+            )
 
-        async def recognize(page: OcrPageRequest):
+        decoded_pages: list[tuple[OcrPageRequest, bytes]] = []
+        for page in payload.pages:
+            image_bytes = base64.b64decode(page.image_base64, validate=True)
             try:
-                image = base64.b64decode(page.image_base64, validate=True)
-                blocks = await asyncio.wait_for(asyncio.to_thread(engine.recognize, image), timeout=page_timeout_seconds)
+                validate_image(
+                    image_bytes,
+                    declared_width=page.width,
+                    declared_height=page.height,
+                    maximum_width=maximum_image_width,
+                    maximum_height=maximum_image_height,
+                    maximum_pixels=maximum_image_pixels,
+                )
+            except ImageValidationError as exception:
+                return JSONResponse(status_code=422, content={"detail": str(exception)})
+            decoded_pages.append((page, image_bytes))
+
+        async def recognize(page: OcrPageRequest, image_bytes: bytes):
+            try:
+                blocks = await pool.recognize(image_bytes, timeout_seconds=page_timeout_seconds)
                 return {
                     "pageNumber": page.page_number,
                     "status": "completed",
@@ -92,41 +106,39 @@ def create_app(
                     ],
                     "error": None,
                 }
-            except TimeoutError:
-                return {"pageNumber": page.page_number, "status": "timeout", "blocks": [], "error": "OCR page timed out."}
+            except OcrPageTimeoutError:
+                return {
+                    "pageNumber": page.page_number,
+                    "status": "timeout",
+                    "blocks": [],
+                    "error": "OCR page timed out.",
+                }
             except Exception:
-                return {"pageNumber": page.page_number, "status": "failed", "blocks": [], "error": "OCR page failed."}
+                logger.exception("OCR page failed in isolated worker")
+                return {
+                    "pageNumber": page.page_number,
+                    "status": "failed",
+                    "blocks": [],
+                    "error": "OCR page failed.",
+                }
 
-        pages = await asyncio.gather(*(recognize(page) for page in payload.pages))
-        return {"pages": list(pages)}
+        pages = []
+        for page, image in decoded_pages:
+            pages.append(await recognize(page, image))
+        return {"pages": pages}
 
     return app
 
 
-class PaddleOcrEngine:
-    def __init__(self):
-        self._engine = None
-
-    def recognize(self, image_bytes: bytes) -> list[tuple[str, float]]:
-        if self._engine is None:
-            from paddleocr import PaddleOCR
-            self._engine = PaddleOCR(use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)
-        import numpy
-        from PIL import Image
-        from io import BytesIO
-        image = numpy.asarray(Image.open(BytesIO(image_bytes)).convert("RGB"))
-        results = self._engine.predict(image)
-        blocks: list[tuple[str, float]] = []
-        for result in results:
-            data = result.json.get("res", {})
-            for text, confidence in zip(data.get("rec_texts", []), data.get("rec_scores", [])):
-                blocks.append((str(text), float(confidence)))
-        return blocks
+def create_configured_app() -> FastAPI:
+    return create_app(
+        create_engine(os.getenv("OCR_ENGINE", "paddle")),
+        maximum_request_bytes=int(os.getenv("OCR_MAX_REQUEST_BYTES", str(25 * 1024 * 1024))),
+        maximum_image_pixels=int(os.getenv("OCR_MAX_IMAGE_PIXELS", "16000000")),
+        maximum_image_width=int(os.getenv("OCR_MAX_IMAGE_WIDTH", "10000")),
+        maximum_image_height=int(os.getenv("OCR_MAX_IMAGE_HEIGHT", "10000")),
+        page_timeout_seconds=float(os.getenv("OCR_PAGE_TIMEOUT_SECONDS", "15")),
+    )
 
 
-app = create_app(
-    PaddleOcrEngine(),
-    maximum_request_bytes=int(os.getenv("OCR_MAX_REQUEST_BYTES", str(25 * 1024 * 1024))),
-    maximum_image_pixels=int(os.getenv("OCR_MAX_IMAGE_PIXELS", "16000000")),
-    page_timeout_seconds=float(os.getenv("OCR_PAGE_TIMEOUT_SECONDS", "15")),
-)
+app = create_configured_app()

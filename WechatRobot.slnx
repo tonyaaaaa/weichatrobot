@@ -5,6 +5,7 @@
     <Project Path="src/server/WechatRobot.Application/WechatRobot.Application.csproj" />
     <Project Path="src/server/WechatRobot.Domain/WechatRobot.Domain.csproj" />
     <Project Path="src/server/WechatRobot.Infrastructure/WechatRobot.Infrastructure.csproj" />
+    <Project Path="src/server/WechatRobot.PdfRenderer/WechatRobot.PdfRenderer.csproj" />
     <Project Path="src/server/WechatRobot.Worker/WechatRobot.Worker.csproj" />
   </Folder>
   <Folder Name="/tests/" />

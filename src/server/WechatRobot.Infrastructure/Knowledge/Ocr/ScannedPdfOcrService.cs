@@ -15,6 +15,8 @@ public sealed class OcrProcessingOptions
     public long MaximumRenderedBytes { get; set; } = 6 * 1024 * 1024;
     public int RenderTimeoutSeconds { get; set; } = 15;
     public int PageLeaseSeconds { get; set; } = 60;
+    public string RendererExecutablePath { get; set; } = Path.Combine(AppContext.BaseDirectory,
+        OperatingSystem.IsWindows() ? "WechatRobot.PdfRenderer.exe" : "WechatRobot.PdfRenderer");
 }
 
 public sealed class OcrIncompleteException() : DocumentParsingException(DocumentParsingError.OcrIncomplete, "OCR did not complete every PDF page.");

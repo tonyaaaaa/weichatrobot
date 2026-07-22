@@ -5,6 +5,13 @@ using WechatRobot.Application.Knowledge.Ocr;
 
 namespace WechatRobot.Infrastructure.Knowledge.Ocr;
 
+public static class OcrEndpointPolicy
+{
+    public static bool IsAllowed(Uri address) =>
+        (address.Scheme == Uri.UriSchemeHttp || address.Scheme == Uri.UriSchemeHttps) &&
+        (address.IsLoopback || string.Equals(address.Host, "ocr", StringComparison.OrdinalIgnoreCase));
+}
+
 public sealed class OcrClientOptions
 {
     public const string SectionName = "Ocr";
@@ -24,9 +31,15 @@ public sealed class HttpOcrClient(HttpClient httpClient, OcrClientOptions option
         try
         {
             var request = new OcrRequest(pages.Select(page => new OcrRequestPage(page.PageNumber, Convert.ToBase64String(page.ImageBytes), page.Width, page.Height)).ToArray());
-            using var response = await httpClient.PostAsJsonAsync("v1/ocr/pages", request, JsonOptions, timeout.Token);
+            using var message = new HttpRequestMessage(HttpMethod.Post, "v1/ocr/pages")
+            {
+                Content = JsonContent.Create(request, options: JsonOptions)
+            };
+            using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (!response.IsSuccessStatusCode)
                 throw new OcrClientException(OcrClientError.Unavailable, $"OCR service returned HTTP {(int)response.StatusCode}.");
+            if (response.Content.Headers.ContentLength is long declaredLength && declaredLength > options.MaximumResponseBytes)
+                throw new OcrClientException(OcrClientError.ResponseTooLarge, "OCR response exceeded the configured limit.");
             await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
             using var buffer = new MemoryStream();
             var bytes = new byte[8192];

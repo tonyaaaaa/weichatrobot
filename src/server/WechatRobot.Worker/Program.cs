@@ -42,11 +42,12 @@ builder.Services.AddSingleton<DocumentParserSelector>(services => new DocumentPa
 builder.Services.AddSingleton<ChunkingService>();
 builder.Services.AddScoped<ChunkPreviewRepository>();
 var ocrClientOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrClientOptions>() ?? new OcrClientOptions();
-if (ocrClientOptions.Timeout <= TimeSpan.Zero || ocrClientOptions.MaximumResponseBytes <= 0 || !IsPrivateOcrAddress(ocrClientOptions.BaseAddress))
+if (ocrClientOptions.Timeout <= TimeSpan.Zero || ocrClientOptions.MaximumResponseBytes <= 0 || !OcrEndpointPolicy.IsAllowed(ocrClientOptions.BaseAddress))
     throw new InvalidOperationException("OCR client configuration must use a private Compose name or localhost and positive limits.");
 var ocrProcessingOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrProcessingOptions>() ?? new OcrProcessingOptions();
 if (ocrProcessingOptions.MinimumExtractedTextCharacters < 0 || ocrProcessingOptions.MaximumPages <= 0 || ocrProcessingOptions.MaximumImagePixels <= 0 ||
-    ocrProcessingOptions.MaximumRenderedBytes <= 0 || ocrProcessingOptions.RenderTimeoutSeconds <= 0 || ocrProcessingOptions.PageLeaseSeconds <= 0)
+    ocrProcessingOptions.MaximumRenderedBytes <= 0 || ocrProcessingOptions.RenderTimeoutSeconds <= 0 || ocrProcessingOptions.PageLeaseSeconds <= 0 ||
+    string.IsNullOrWhiteSpace(ocrProcessingOptions.RendererExecutablePath))
     throw new InvalidOperationException("OCR processing limits are invalid.");
 builder.Services.AddSingleton(ocrClientOptions);
 builder.Services.AddSingleton(ocrProcessingOptions);
@@ -55,7 +56,7 @@ builder.Services.AddSingleton<IPdfPageRenderer>(_ =>
 {
     if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
         throw new PlatformNotSupportedException("The pinned PDFium renderer supports Windows, Linux and macOS.");
-    return new PdfiumPageRenderer(ocrProcessingOptions);
+    return new IsolatedPdfPageRenderer(ocrProcessingOptions);
 });
 builder.Services.AddScoped<ScannedPdfOcrService>();
 builder.Services.AddScoped(services => new KnowledgePreviewService(services.GetRequiredService<WechatRobotDbContext>(), services.GetRequiredService<IDocumentSourceReader>(),
@@ -85,10 +86,3 @@ builder.Services.AddHostedService<KnowledgeParseWorker>();
 
 var host = builder.Build();
 host.Run();
-
-static bool IsPrivateOcrAddress(Uri address)
-{
-    if (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps) return false;
-    if (address.IsLoopback) return true;
-    return !address.Host.Contains('.') && !address.Host.Contains(':') && address.Host.Length > 0;
-}
