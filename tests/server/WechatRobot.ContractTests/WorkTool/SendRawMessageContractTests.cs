@@ -15,7 +15,7 @@ public sealed class SendRawMessageContractTests
         using var client = new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") };
         var sut = new WorkToolClient(client);
 
-        var result = await sut.SendTextAsync(new WorkToolSendRequest("robot-7", "Support Group", "fixed reply", "idem-1"), TestContext.Current.CancellationToken);
+        var result = await sut.SendTextAsync(new WorkToolSendRequest("robot-7", "Support Group", "fixed reply", "idem-1", ["张工"]), TestContext.Current.CancellationToken);
 
         Assert.True(result.Succeeded);
         Assert.Equal("POST", handler.Method);
@@ -26,6 +26,7 @@ public sealed class SendRawMessageContractTests
         Assert.Equal(203, command.GetProperty("type").GetInt32());
         Assert.Equal("Support Group", command.GetProperty("titleList")[0].GetString());
         Assert.Equal("fixed reply", command.GetProperty("receivedContent").GetString());
+        Assert.Equal("张工", command.GetProperty("atList")[0].GetString());
     }
 
     [Fact]

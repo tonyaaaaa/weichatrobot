@@ -246,7 +246,8 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         await transaction.CommitAsync(cancellationToken);
         var leased = await database.SendCommands.AsNoTracking().SingleAsync(command => command.Id == candidate.Id, cancellationToken);
         var payload = JsonSerializer.Deserialize<SendPayload>(leased.PayloadJson) ?? throw new InvalidOperationException("Send command payload is invalid.");
-        return new LeasedSendCommand(leased.Id, leased.RobotConfigId, payload.WorkToolRobotId, payload.GroupName, payload.Text, leased.IdempotencyKey, robotState.SendRateLimitPerMinute, leased.AttemptCount, leaseOwner);
+        return new LeasedSendCommand(leased.Id, leased.RobotConfigId, payload.WorkToolRobotId, payload.GroupName, payload.Text, leased.IdempotencyKey,
+            robotState.SendRateLimitPerMinute, leased.AttemptCount, leaseOwner, payload.AtList);
     }
 
     public async Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken)
@@ -363,6 +364,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         public string WorkToolRobotId { get; init; } = string.Empty;
         public string GroupName { get; init; } = string.Empty;
         public string Text { get; init; } = string.Empty;
+        public string[]? AtList { get; init; }
     }
 
     private static bool IsUniqueConstraintViolation(DbUpdateException exception) => exception.InnerException is MySqlException { Number: 1062 };

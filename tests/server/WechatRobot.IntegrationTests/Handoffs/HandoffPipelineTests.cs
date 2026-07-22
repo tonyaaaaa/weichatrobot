@@ -10,6 +10,19 @@ namespace WechatRobot.IntegrationTests.Handoffs;
 public sealed class HandoffPipelineTests
 {
     [Fact]
+    public async Task Manual_handoff_rejects_disabled_robot_with_controlled_state_error()
+    {
+        await using var db = Database();
+        var robot = new RobotConfigEntity { Name = "disabled", WorkToolRobotId = "disabled-robot", CallbackSecretHash = "hash", IsEnabled = false };
+        var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = "disabled-group", Name = "禁用群" };
+        var message = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name,
+            SenderDisplayName = "客户", Text = "人工", FallbackHash = Guid.NewGuid().ToString("N") };
+        db.AddRange(robot, group, message); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<HandoffStateException>(() => new HandoffService(new EfHandoffStore(db), TimeProvider.System)
+            .StartManualAsync(new(message.Id, "人工", HandoffPauseScope.Group, null, "disabled", Guid.NewGuid()), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Manual_handoff_derives_robot_group_sender_scope_and_mention_from_server_data()
     {
         await using var db = Database();
@@ -28,7 +41,7 @@ public sealed class HandoffPipelineTests
         using var payload = JsonDocument.Parse((await db.SendCommands.SingleAsync(TestContext.Current.CancellationToken)).PayloadJson);
         Assert.Equal("server-robot", payload.RootElement.GetProperty("WorkToolRobotId").GetString());
         Assert.Equal("技术部", payload.RootElement.GetProperty("GroupName").GetString());
-        Assert.Contains("@agent.zhang", payload.RootElement.GetProperty("Text").GetString());
+        Assert.Equal("agent.zhang", payload.RootElement.GetProperty("AtList")[0].GetString());
     }
 
     [Fact]
@@ -59,7 +72,7 @@ public sealed class HandoffPipelineTests
         Assert.Equal(key, send.IdempotencyKey);
         using var payload = JsonDocument.Parse(send.PayloadJson);
         var notification = payload.RootElement.GetProperty("Text").GetString();
-        Assert.Contains("@张工", notification);
+        Assert.Equal("张工", payload.RootElement.GetProperty("AtList")[0].GetString());
         Assert.Contains("explicit_transfer", notification);
         Assert.True(await service.IsPausedAsync(group.Id, null, TestContext.Current.CancellationToken));
 

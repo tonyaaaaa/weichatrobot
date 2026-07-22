@@ -26,6 +26,14 @@ public sealed class QdrantKnowledgeService(
     TimeProvider timeProvider) : IKnowledgeService
 {
     public async Task<Guid> QueueIndexAsync(Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds, bool explicitReindex, CancellationToken token)
+        => await QueueIndexCoreAsync(documentId, versionId, tagIds, explicitReindex, null, null, token);
+
+    public async Task<Guid> QueueCandidateIndexAsync(Guid candidateId, Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds,
+        string publishLeaseOwner, CancellationToken token)
+        => await QueueIndexCoreAsync(documentId, versionId, tagIds, false, candidateId, publishLeaseOwner, token);
+
+    private async Task<Guid> QueueIndexCoreAsync(Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds, bool explicitReindex,
+        Guid? candidateId, string? publishLeaseOwner, CancellationToken token)
     {
         if (tagIds.Count == 0) throw new ArgumentException("At least one knowledge tag is required.", nameof(tagIds));
         var distinctTags = tagIds.Distinct().Order().ToArray();
@@ -48,11 +56,39 @@ public sealed class QdrantKnowledgeService(
 
         var id = StableJobId(versionId);
         var existing = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(item => item.Id == id, token);
-        if (existing is not null && !explicitReindex) return existing.Id;
+        var reuseExisting = existing is not null && !explicitReindex && existing.Status is not "failed";
+        if (reuseExisting && candidateId is null) return existing!.Id;
         if (existing?.Status is "leased" or "activating") throw new InvalidOperationException("An index worker is already processing this version.");
         var generation = (existing?.Generation ?? 0) + 1;
         var stagingCollection = StagingCollection(options.CollectionName, id, generation);
         await using var transaction = await BeginTransactionAsync(token);
+        KnowledgeCandidateEntity? candidate = null;
+        if (candidateId is { } ownedCandidateId)
+        {
+            var nowUtc = timeProvider.GetUtcNow().UtcDateTime;
+            var publishJob = await database.DurableJobs.FromSqlInterpolated(
+                    $"SELECT * FROM durable_job WHERE Id = {ownedCandidateId} FOR UPDATE").AsNoTracking().SingleOrDefaultAsync(token);
+            if (string.IsNullOrWhiteSpace(publishLeaseOwner) || publishJob is null ||
+                publishJob.JobType != "PublishKnowledgeCandidate" || publishJob.Status != "leased" ||
+                publishJob.LeaseOwner != publishLeaseOwner || publishJob.LeaseExpiresAtUtc <= nowUtc)
+                throw new InvalidOperationException("Candidate publish lease ownership was lost before indexing was queued.");
+            candidate = await database.KnowledgeCandidates.SingleOrDefaultAsync(item => item.Id == ownedCandidateId &&
+                item.KnowledgeDocumentVersionId == versionId &&
+                (item.Status == "approved_pending_index" || item.Status == "indexing"), token)
+                ?? throw new InvalidOperationException("Candidate is not eligible for indexing.");
+            if (reuseExisting)
+            {
+                _ = await database.KnowledgeIndexJobs.FromSqlInterpolated(
+                    $"SELECT * FROM knowledge_index_job WHERE Id = {existing!.Id} FOR UPDATE").AsNoTracking().SingleAsync(token);
+                if (candidate.Status != "indexing")
+                {
+                    candidate.Status = "indexing"; candidate.Version++; candidate.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+                }
+                await database.SaveChangesAsync(token);
+                if (transaction is not null) await transaction.CommitAsync(token);
+                return existing.Id;
+            }
+        }
         var chunks = await database.KnowledgeChunks.Where(chunk => chunk.KnowledgeDocumentVersionId == versionId && chunk.Status == "approved").ToArrayAsync(token);
         if (chunks.Length == 0) throw new InvalidOperationException("The version has no approved chunks.");
         var now = timeProvider.GetUtcNow().UtcDateTime;
@@ -88,6 +124,12 @@ public sealed class QdrantKnowledgeService(
         document.Status = document.ActiveVersionId is null ? "indexing" : "active";
         document.StateVersion++;
         document.UpdatedAtUtc = version.UpdatedAtUtc = now;
+        if (candidate is not null && candidate.Status != "indexing")
+        {
+            candidate.Status = "indexing";
+            candidate.Version++;
+            candidate.UpdatedAtUtc = now;
+        }
         try
         {
             await database.SaveChangesAsync(token);
@@ -177,7 +219,8 @@ public sealed class QdrantKnowledgeService(
                 .SetProperty(version => version.IndexCollectionExclusive, work.IsCollectionExclusive)
                 .SetProperty(version => version.UpdatedAtUtc, now), token);
         if (versionChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
-        await database.KnowledgeCandidates.Where(candidate => candidate.KnowledgeDocumentVersionId == work.VersionId && candidate.Status == "indexing")
+        await database.KnowledgeCandidates.Where(candidate => candidate.KnowledgeDocumentVersionId == work.VersionId &&
+                (candidate.Status == "indexing" || candidate.Status == "approved_pending_index"))
             .ExecuteUpdateAsync(setters => setters.SetProperty(candidate => candidate.Status, "published")
                 .SetProperty(candidate => candidate.PublishedAtUtc, now).SetProperty(candidate => candidate.Version, candidate => candidate.Version + 1)
                 .SetProperty(candidate => candidate.UpdatedAtUtc, now), token);
@@ -224,6 +267,7 @@ public sealed class QdrantKnowledgeService(
 
     public async Task MarkIndexFailedAsync(Guid jobId, string? leaseOwner, string reason, bool retryable, CancellationToken token)
     {
+        database.ChangeTracker.Clear();
         var job = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(item => item.Id == jobId && item.LeaseOwner == leaseOwner &&
             (item.Status == "leased" || item.Status == "activating"), token);
         if (job is null) return;

@@ -69,6 +69,7 @@ internal sealed class KnowledgeReviewConfiguration : IEntityTypeConfiguration<Kn
         builder.ToTable("knowledge_review"); builder.HasKey(x => x.Id); builder.Property(x => x.Decision).HasMaxLength(32).IsRequired();
         builder.Property(x => x.TagIdsJson).HasColumnType("json").IsRequired(); builder.Property(x => x.RevisedAnswer).HasColumnType("longtext");
         builder.Property(x => x.IdempotencyKey).HasMaxLength(128).IsRequired(); builder.HasIndex(x => x.IdempotencyKey).IsUnique();
+        builder.Property(x => x.RequestFingerprint).HasMaxLength(64);
         builder.HasOne<KnowledgeCandidateEntity>().WithMany().HasForeignKey(x => x.KnowledgeCandidateId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.ReviewerUserId).OnDelete(DeleteBehavior.SetNull);
     }

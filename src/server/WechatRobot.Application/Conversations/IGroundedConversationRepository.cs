@@ -31,3 +31,4 @@ public interface IGroundedConversationRepository
 
 public sealed class ConversationSessionBusyException(string message) : Exception(message);
 public sealed class ConversationSessionOwnershipLostException(string message) : Exception(message);
+public sealed class ConversationHandoffRaceException(string message) : Exception(message);

@@ -19,7 +19,8 @@ public sealed class WorkToolClient(HttpClient httpClient) : IWorkToolClient
                     {
                         type = 203,
                         titleList = new[] { request.GroupName },
-                        receivedContent = request.Text
+                        receivedContent = request.Text,
+                        atList = request.AtList ?? []
                     }
                 }
             },

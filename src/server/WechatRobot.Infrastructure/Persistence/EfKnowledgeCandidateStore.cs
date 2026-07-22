@@ -12,30 +12,45 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
 {
     public async Task<KnowledgeCandidateReviewResult> ReviewAsync(ReviewKnowledgeCandidateCommand command, DateTime nowUtc, CancellationToken token)
     {
+        var tags = command.TagIds ?? throw new ArgumentException("TagIds is required.");
+        var fingerprint = Fingerprint(command.CandidateId, command.Decision, tags, command.RevisedAnswer);
         var prior = await db.KnowledgeReviews.AsNoTracking().SingleOrDefaultAsync(x => x.IdempotencyKey == command.IdempotencyKey, token);
         if (prior is not null)
         {
             if (prior.KnowledgeCandidateId != command.CandidateId) throw new InvalidOperationException("Review idempotency key belongs to another candidate.");
+            if (prior.RequestFingerprint is not null && !string.Equals(prior.RequestFingerprint, fingerprint, StringComparison.Ordinal))
+                throw new HandoffStateException("Review idempotency key was already used with a different payload.");
             if (prior.Decision == "approve") await EnsurePublishOutboxAsync(command.CandidateId, prior.TagIdsJson, nowUtc, token);
             return await ResultAsync(command.CandidateId, token);
         }
 
+        await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
         var candidate = await db.KnowledgeCandidates.SingleOrDefaultAsync(x => x.Id == command.CandidateId, token) ?? throw new KeyNotFoundException();
         if (candidate.Version != command.ExpectedVersion) throw new HandoffConcurrencyException("The candidate was modified by another reviewer.");
         if (candidate.Status is not ("pending" or "revision")) throw new HandoffStateException("The candidate is not awaiting review.");
+        if (command.Decision == "approve")
+        {
+            var distinct = tags.Distinct().ToArray();
+            var predicate = GuidBatchQuery.BuildPredicate<KnowledgeTagEntity>(distinct, tag => tag.Id);
+            if (await db.KnowledgeTags.Where(x => x.IsEnabled).Where(predicate).CountAsync(token) != distinct.Length)
+                throw new ArgumentException("Approval tags must exist and be enabled.");
+        }
         var answer = string.IsNullOrWhiteSpace(command.RevisedAnswer) ? candidate.Answer : command.RevisedAnswer.Trim();
         db.KnowledgeReviews.Add(new KnowledgeReviewEntity { KnowledgeCandidateId = candidate.Id, ReviewerUserId = command.ReviewerUserId,
-            Decision = command.Decision, TagIdsJson = JsonSerializer.Serialize(command.TagIds.Distinct().Order()), RevisedAnswer = command.RevisedAnswer,
-            IdempotencyKey = command.IdempotencyKey, CreatedAtUtc = nowUtc });
+            Decision = command.Decision, TagIdsJson = JsonSerializer.Serialize(tags.Distinct().Order()), RevisedAnswer = command.RevisedAnswer,
+            IdempotencyKey = command.IdempotencyKey, RequestFingerprint = fingerprint, CreatedAtUtc = nowUtc });
 
         if (command.Decision is "reject" or "revision")
         {
             candidate.Answer = answer; candidate.Status = command.Decision == "reject" ? "rejected" : "revision";
             candidate.Version++; candidate.UpdatedAtUtc = nowUtc;
-            try { await db.SaveChangesAsync(token); }
-            catch (DbUpdateConcurrencyException) { throw new HandoffConcurrencyException("The candidate was modified by another reviewer."); }
+            try { await db.SaveChangesAsync(token); if (transaction is not null) await transaction.CommitAsync(token); }
+            catch (DbUpdateConcurrencyException) { if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None); throw new HandoffConcurrencyException("The candidate was modified by another reviewer."); }
             catch (DbUpdateException exception) when (exception.InnerException is MySql.Data.MySqlClient.MySqlException { Number: 1062 })
-            { db.ChangeTracker.Clear(); return await ResultAsync(command.CandidateId, token); }
+            {
+                if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None);
+                return await ReplayUniqueConflictAsync(command, fingerprint, token);
+            }
             return await ResultAsync(candidate.Id, token);
         }
 
@@ -49,11 +64,14 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
         db.AddRange(document, version, chunk);
         candidate.Answer = answer; candidate.Status = "approved_pending_index"; candidate.KnowledgeDocumentVersionId = version.Id;
         candidate.Version++; candidate.UpdatedAtUtc = nowUtc;
-        db.DurableJobs.Add(PublishJob(candidate.Id, document.Id, version.Id, command.TagIds, nowUtc));
-        try { await db.SaveChangesAsync(token); }
-        catch (DbUpdateConcurrencyException) { throw new HandoffConcurrencyException("The candidate was modified by another reviewer."); }
+        db.DurableJobs.Add(PublishJob(candidate.Id, document.Id, version.Id, tags, nowUtc));
+        try { await db.SaveChangesAsync(token); if (transaction is not null) await transaction.CommitAsync(token); }
+        catch (DbUpdateConcurrencyException) { if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None); throw new HandoffConcurrencyException("The candidate was modified by another reviewer."); }
         catch (DbUpdateException exception) when (exception.InnerException is MySql.Data.MySqlClient.MySqlException { Number: 1062 })
-        { db.ChangeTracker.Clear(); return await ResultAsync(command.CandidateId, token); }
+        {
+            if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None);
+            return await ReplayUniqueConflictAsync(command, fingerprint, token);
+        }
 
         return new(candidate.Id, candidate.Status, version.Id, null, candidate.Version, candidate.Id);
     }
@@ -69,21 +87,33 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
         return new(item.Id, item.Status, item.KnowledgeDocumentVersionId, jobId, item.Version, publishJobId);
     }
 
+    private async Task<KnowledgeCandidateReviewResult> ReplayUniqueConflictAsync(ReviewKnowledgeCandidateCommand command, string fingerprint,
+        CancellationToken token)
+    {
+        db.ChangeTracker.Clear();
+        var committed = await db.KnowledgeReviews.AsNoTracking().SingleOrDefaultAsync(x => x.IdempotencyKey == command.IdempotencyKey, token);
+        if (committed is not null && committed.KnowledgeCandidateId == command.CandidateId &&
+            (committed.RequestFingerprint is null || string.Equals(committed.RequestFingerprint, fingerprint, StringComparison.Ordinal)))
+            return await ResultAsync(command.CandidateId, token);
+        throw new HandoffConcurrencyException("The candidate was modified by another reviewer.");
+    }
+
     private async Task EnsurePublishOutboxAsync(Guid candidateId, string tagIdsJson, DateTime nowUtc, CancellationToken token)
     {
         var candidate = await db.KnowledgeCandidates.SingleAsync(x => x.Id == candidateId, token);
         if (candidate.KnowledgeDocumentVersionId is not { } versionId) throw new HandoffStateException("Approved candidate has no knowledge version.");
         var version = await db.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(x => x.Id == versionId, token);
         var job = await db.DurableJobs.SingleOrDefaultAsync(x => x.Id == candidateId, token);
-        var hasIndexJob = await db.KnowledgeIndexJobs.AnyAsync(x => x.KnowledgeDocumentVersionId == versionId && x.Operation != "cleanup", token);
+        var hasUsableIndexJob = await db.KnowledgeIndexJobs.AnyAsync(x => x.KnowledgeDocumentVersionId == versionId && x.Operation != "cleanup" &&
+            (x.Status == "pending" || x.Status == "retrying" || x.Status == "leased" || x.Status == "activating" || x.Status == "completed"), token);
         if (job is null) db.DurableJobs.Add(PublishJob(candidateId, version.KnowledgeDocumentId, versionId,
             JsonSerializer.Deserialize<Guid[]>(tagIdsJson) ?? [], nowUtc));
-        else if (candidate.Status != "published" && (job.Status == "deadLetter" || job.Status == "completed" && !hasIndexJob))
+        else if (candidate.Status != "published" && (job.Status == "deadLetter" || job.Status == "completed" && !hasUsableIndexJob))
         {
             job.Status = "retrying"; job.AttemptCount = 0; job.NextAttemptAtUtc = nowUtc; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null;
             job.CompletedAtUtc = null; job.Version++; job.UpdatedAtUtc = nowUtc;
         }
-        if (candidate.Status == "indexing" && !hasIndexJob)
+        if (candidate.Status == "indexing" && !hasUsableIndexJob)
         { candidate.Status = "approved_pending_index"; candidate.Version++; candidate.UpdatedAtUtc = nowUtc; }
         await db.SaveChangesAsync(token);
     }
@@ -96,5 +126,7 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
     };
 
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    private static string Fingerprint(Guid candidateId, string decision, IReadOnlyList<Guid> tags, string? revisedAnswer) =>
+        Hash(JsonSerializer.Serialize(new { candidateId, decision, tags = tags.Distinct().Order().ToArray(), revisedAnswer = revisedAnswer?.Trim() }));
     private static string Limit(string value, int max) => value.Length <= max ? value : value[..max];
 }

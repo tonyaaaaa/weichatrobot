@@ -7,7 +7,8 @@ public interface IWorkToolClient
     Task<WorkToolSendResult> TestConnectionAsync(string workToolRobotId, CancellationToken cancellationToken);
 }
 
-public sealed record WorkToolSendRequest(string WorkToolRobotId, string GroupName, string Text, string IdempotencyKey);
+public sealed record WorkToolSendRequest(string WorkToolRobotId, string GroupName, string Text, string IdempotencyKey,
+    IReadOnlyList<string>? AtList = null);
 
 public sealed record WorkToolSendResult(bool Succeeded, string? FailureReason)
 {

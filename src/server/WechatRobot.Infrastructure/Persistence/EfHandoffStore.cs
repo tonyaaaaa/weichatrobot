@@ -18,7 +18,8 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
             : await db.GroupProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.RobotConfigId == message.RobotConfigId && x.IsEnabled &&
                 (x.Name == message.GroupName || x.ExternalGroupId == message.GroupName), token);
         if (group is null) throw new HandoffStateException("Source message has no enabled group mapping.");
-        var robot = await db.RobotConfigs.AsNoTracking().SingleAsync(x => x.Id == group.RobotConfigId && x.IsEnabled, token);
+        var robot = await db.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == group.RobotConfigId && x.IsEnabled, token)
+            ?? throw new HandoffStateException("Source message has no enabled robot mapping.");
         string target = "人工客服";
         if (command.AssigneeUserId is { } assignee)
         {
@@ -33,10 +34,18 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
     }
     public async Task<HandoffRecord> StartAsync(StartHandoffCommand command, DateTime nowUtc, CancellationToken token)
     {
-        var existing = await db.HandoffCases.AsNoTracking().SingleOrDefaultAsync(x => x.QuestionMessageId == command.QuestionMessageId, token);
-        if (existing is not null) return Map(existing);
         if (command.PauseScope == HandoffPauseScope.Sender && string.IsNullOrWhiteSpace(command.StableSenderId)) throw new ArgumentException("Stable sender id is required.");
         if (string.IsNullOrWhiteSpace(command.IdempotencyKey) || command.IdempotencyKey.Length > 96) throw new ArgumentException("Handoff idempotency key is required and must not exceed 96 characters.");
+        await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
+        if (transaction is not null)
+            _ = await db.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {command.GroupProfileId} FOR UPDATE")
+                .AsNoTracking().SingleAsync(token);
+        var existing = await db.HandoffCases.AsNoTracking().SingleOrDefaultAsync(x => x.QuestionMessageId == command.QuestionMessageId, token);
+        if (existing is not null)
+        {
+            if (transaction is not null) await transaction.CommitAsync(token);
+            return Map(existing);
+        }
         var domain = HandoffCase.Start(Guid.NewGuid(), command.GroupProfileId, command.QuestionMessageId, command.ReasonCode, command.EvidenceJson,
             Enum.Parse<PauseScope>(command.PauseScope.ToString()), command.StableSenderId, nowUtc);
         var entity = new HandoffCaseEntity { QuestionMessageId = command.QuestionMessageId, RobotConfigId = command.RobotConfigId,
@@ -55,10 +64,19 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
         var reason = Safe(command.ReasonCode, 96);
         db.SendCommands.Add(new SendCommandEntity { RobotConfigId = command.RobotConfigId, GroupProfileId = command.GroupProfileId,
             IdempotencyKey = command.IdempotencyKey, PayloadJson = JsonSerializer.Serialize(new { command.WorkToolRobotId, command.GroupName,
-                Text = $"@{target} 已转人工。原因：{reason}；关联：{entity.Id:N}" }), NextAttemptAtUtc = nowUtc, CreatedAtUtc = nowUtc });
-        try { await db.SaveChangesAsync(token); return Map(entity); }
+                Text = $"已转人工。原因：{reason}；关联：{entity.Id:N}", AtList = new[] { target } }), NextAttemptAtUtc = nowUtc, CreatedAtUtc = nowUtc });
+        try
+        {
+            await db.SaveChangesAsync(token);
+            if (transaction is not null) await transaction.CommitAsync(token);
+            return Map(entity);
+        }
         catch (DbUpdateException ex) when (ex.InnerException is MySqlException { Number: 1062 })
-        { db.ChangeTracker.Clear(); return Map(await db.HandoffCases.AsNoTracking().SingleAsync(x => x.QuestionMessageId == command.QuestionMessageId, token)); }
+        {
+            if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None);
+            db.ChangeTracker.Clear();
+            return Map(await db.HandoffCases.AsNoTracking().SingleAsync(x => x.QuestionMessageId == command.QuestionMessageId, token));
+        }
     }
 
     public async Task RecordUnverifiedWorkToolMessageAsync(Guid handoffId, string externalMessageId, string displayName, string text, DateTime nowUtc, CancellationToken token)
@@ -75,7 +93,12 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
     {
         var handoff = await db.HandoffCases.SingleOrDefaultAsync(x => x.Id == handoffId, token) ?? throw new KeyNotFoundException();
         var existing = await db.KnowledgeCandidates.AsNoTracking().SingleOrDefaultAsync(x => x.HandoffCaseId == handoffId, token);
-        if (handoff.State == "Resolved" && existing is not null) return Map(existing);
+        if (handoff.State == "Resolved" && existing is not null)
+        {
+            if (!string.Equals(existing.Answer, finalAnswer, StringComparison.Ordinal))
+                throw new HandoffStateException("Resolve idempotency key was already used with a different final answer.");
+            return Map(existing);
+        }
         if (handoff.State != "HumanHandling") throw new HandoffStateException("Only a handled case can be resolved.");
         if (handoff.Version != expectedVersion) throw new HandoffConcurrencyException("The handoff was modified by another operator.");
         var question = await db.ConversationMessages.AsNoTracking().SingleAsync(x => x.Id == handoff.QuestionMessageId, token);

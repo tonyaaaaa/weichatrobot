@@ -26,7 +26,8 @@ public sealed class RobotSendWorker(IServiceScopeFactory scopeFactory, TimeProvi
             var client = scope.ServiceProvider.GetRequiredService<IWorkToolClient>();
             using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var renewal = RenewLeasesUntilSendCompletesAsync(repository, command, renewalCancellation.Token);
-            var result = await client.SendTextAsync(new WorkToolSendRequest(command.WorkToolRobotId, command.GroupName, command.Text, command.IdempotencyKey), cancellationToken);
+            var result = await client.SendTextAsync(new WorkToolSendRequest(command.WorkToolRobotId, command.GroupName, command.Text,
+                command.IdempotencyKey, command.AtList), cancellationToken);
             renewalCancellation.Cancel();
             await renewal;
             if (result.Succeeded)

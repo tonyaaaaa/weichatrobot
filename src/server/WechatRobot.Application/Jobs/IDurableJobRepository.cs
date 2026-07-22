@@ -49,4 +49,5 @@ public sealed record LeasedSendCommand(
     string IdempotencyKey,
     int SendRateLimitPerMinute,
     int AttemptCount,
-    string LeaseOwner);
+    string LeaseOwner,
+    IReadOnlyList<string>? AtList = null);

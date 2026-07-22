@@ -6,7 +6,7 @@ using WechatRobot.Infrastructure.Persistence;
 
 namespace WechatRobot.Infrastructure.Knowledge;
 
-public sealed class KnowledgeCandidatePublishProcessor(WechatRobotDbContext db, QdrantKnowledgeService knowledge)
+public sealed class KnowledgeCandidatePublishProcessor(WechatRobotDbContext db, QdrantKnowledgeService knowledge, TimeProvider timeProvider)
 {
     public async Task ProcessAsync(LeasedDurableJob job, CancellationToken token)
     {
@@ -15,14 +15,18 @@ public sealed class KnowledgeCandidatePublishProcessor(WechatRobotDbContext db, 
             ?? throw new InvalidDataException("Candidate publish payload is invalid.");
         var candidate = await db.KnowledgeCandidates.AsNoTracking().SingleAsync(x => x.Id == payload.CandidateId, token);
         if (candidate.Status == "published") return;
-        var indexJobId = await knowledge.QueueIndexAsync(payload.DocumentId, payload.VersionId, payload.TagIds, false, token);
-        var now = DateTime.UtcNow;
-        var changed = await db.KnowledgeCandidates.Where(x => x.Id == payload.CandidateId &&
-                (x.Status == "approved_pending_index" || x.Status == "indexing") &&
-                db.DurableJobs.Any(jobRow => jobRow.Id == job.Id && jobRow.Status == "leased" && jobRow.LeaseOwner == job.LeaseOwner))
-            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Status, "indexing").SetProperty(x => x.Version, x => x.Version + 1)
-                .SetProperty(x => x.UpdatedAtUtc, now), token);
-        if (changed != 1) throw new HandoffConcurrencyException($"Candidate publish ownership was lost after queuing index job {indexJobId}.");
+        var active = await db.KnowledgeDocumentVersions.AsNoTracking()
+            .AnyAsync(x => x.Id == payload.VersionId && x.IsPublished && x.Status == "active", token);
+        if (active)
+        {
+            var now = timeProvider.GetUtcNow().UtcDateTime;
+            await db.KnowledgeCandidates.Where(x => x.Id == payload.CandidateId && x.Status != "published" &&
+                    db.DurableJobs.Any(jobRow => jobRow.Id == job.Id && jobRow.Status == "leased" && jobRow.LeaseOwner == job.LeaseOwner))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Status, "published").SetProperty(x => x.PublishedAtUtc, now)
+                    .SetProperty(x => x.Version, x => x.Version + 1).SetProperty(x => x.UpdatedAtUtc, now), token);
+            return;
+        }
+        await knowledge.QueueCandidateIndexAsync(payload.CandidateId, payload.DocumentId, payload.VersionId, payload.TagIds, job.LeaseOwner, token);
     }
 
     private sealed record Payload(Guid CandidateId, Guid DocumentId, Guid VersionId, Guid[] TagIds);

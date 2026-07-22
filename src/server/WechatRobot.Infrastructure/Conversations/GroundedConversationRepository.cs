@@ -139,6 +139,16 @@ public sealed class GroundedConversationRepository(
     public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(token);
+        _ = await database.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {request.GroupProfileId} FOR UPDATE")
+            .AsNoTracking().SingleAsync(token);
+        var handoffActive = await database.HandoffCases.AsNoTracking().AnyAsync(item => item.GroupProfileId == request.GroupProfileId &&
+            (item.State == "WaitingHuman" || item.State == "HumanHandling") &&
+            (item.PauseScope == "Group" || item.PauseScope == "Sender" && request.StableSenderId != null && item.StableSenderId == request.StableSenderId), token);
+        if (handoffActive)
+        {
+            await transaction.RollbackAsync(token);
+            throw new ConversationHandoffRaceException("A handoff became active before the answer transaction committed.");
+        }
         if (await database.RetrievalAudits.AnyAsync(item => item.ConversationMessageId == request.MessageId, token))
         {
             await database.ConversationMessages.Where(item => item.Id == request.MessageId)

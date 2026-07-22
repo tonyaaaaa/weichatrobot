@@ -3,6 +3,8 @@ using System.Text.Json;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Infrastructure.Identity;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using WechatRobot.Infrastructure.Persistence;
 
 namespace WechatRobot.Api.Handoffs;
 
@@ -11,12 +13,54 @@ public static class HandoffEndpoints
     public static IEndpointRouteBuilder MapHandoffEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/handoffs").RequireAuthorization(SystemRoles.HumanAgent);
+        group.MapGet("/", ListAsync);
+        group.MapGet("/{id:guid}", DetailAsync);
+        group.MapGet("/{id:guid}/messages", MessagesAsync);
+        group.MapGet("/{id:guid}/transitions", TransitionsAsync);
         group.MapPost("/manual", StartManualAsync);
         group.MapPost("/{id:guid}/assign", AssignAsync);
         group.MapPost("/{id:guid}/resolve", ResolveAsync);
         group.MapPost("/{id:guid}/restore-ai", RestoreAsync);
         return endpoints;
     }
+
+    private static async Task<IResult> ListAsync(string? state, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
+    {
+        (page, pageSize) = Page(page, pageSize);
+        var query = db.HandoffCases.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(state)) query = query.Where(x => x.State == state);
+        var total = await query.CountAsync(token);
+        var items = await query.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(x => new { x.Id, x.QuestionMessageId, x.GroupProfileId, x.State, x.ReasonCode, x.PauseScope, x.StableSenderId,
+                x.AssigneeUserId, x.ResolvedByUserId, x.Version, x.CreatedAtUtc, x.UpdatedAtUtc }).ToArrayAsync(token);
+        return TypedResults.Ok(new { items, total, page, pageSize });
+    }
+
+    private static async Task<IResult> DetailAsync(Guid id, WechatRobotDbContext db, CancellationToken token)
+    {
+        var item = await db.HandoffCases.AsNoTracking().Where(x => x.Id == id).Select(x => new { x.Id, x.QuestionMessageId,
+            x.RobotConfigId, x.GroupProfileId, x.State, x.ReasonCode, x.EvidenceJson, x.PauseScope, x.StableSenderId,
+            x.AssigneeUserId, x.ResolvedByUserId, x.FinalAnswer, x.Version, x.CreatedAtUtc, x.UpdatedAtUtc }).SingleOrDefaultAsync(token);
+        return item is null ? TypedResults.NotFound() : TypedResults.Ok(item);
+    }
+
+    private static async Task<IResult> MessagesAsync(Guid id, WechatRobotDbContext db, CancellationToken token)
+    {
+        if (!await db.HandoffCases.AnyAsync(x => x.Id == id, token)) return TypedResults.NotFound();
+        var items = await db.HandoffMessages.AsNoTracking().Where(x => x.HandoffCaseId == id).OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
+            .Select(x => new { x.Id, x.ExternalMessageId, x.SenderDisplayName, x.AuthenticatedUserId, x.AuthenticationKind, x.Text, x.CreatedAtUtc }).ToArrayAsync(token);
+        return TypedResults.Ok(items);
+    }
+
+    private static async Task<IResult> TransitionsAsync(Guid id, WechatRobotDbContext db, CancellationToken token)
+    {
+        if (!await db.HandoffCases.AnyAsync(x => x.Id == id, token)) return TypedResults.NotFound();
+        var items = await db.HandoffTransitions.AsNoTracking().Where(x => x.HandoffCaseId == id).OrderBy(x => x.Sequence)
+            .Select(x => new { x.Id, x.ActorUserId, x.Sequence, x.FromState, x.ToState, x.ReasonCode, x.CreatedAtUtc }).ToArrayAsync(token);
+        return TypedResults.Ok(items);
+    }
+
+    private static (int Page, int PageSize) Page(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize <= 0 ? 20 : pageSize, 1, 100));
 
     private static async Task<IResult> StartManualAsync(ManualHandoffRequest request, ClaimsPrincipal user, HandoffService service,
         UserManager<ApplicationUser> users, CancellationToken token)

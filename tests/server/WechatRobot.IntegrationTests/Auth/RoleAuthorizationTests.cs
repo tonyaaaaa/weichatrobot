@@ -38,6 +38,12 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
 
         Assert.Contains("/api/auth/probe/knowledge", routes);
         Assert.Contains("/api/handoffs/manual", routes);
+        Assert.Contains("/api/handoffs/", routes);
+        Assert.Contains("/api/handoffs/{id:guid}", routes);
+        Assert.Contains("/api/handoffs/{id:guid}/messages", routes);
+        Assert.Contains("/api/handoffs/{id:guid}/transitions", routes);
+        Assert.Contains("/api/knowledge/candidates/", routes);
+        Assert.Contains("/api/knowledge/candidates/{id:guid}", routes);
         Assert.Contains("/api/knowledge/candidates/{id:guid}/reviews", routes);
     }
 
@@ -83,6 +89,19 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
 
         Assert.Equal(HttpStatusCode.Forbidden, (await human.PostAsJsonAsync($"/api/knowledge/candidates/{Guid.NewGuid():D}/reviews", new { }, TestContext.Current.CancellationToken)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.PostAsJsonAsync("/api/handoffs/manual", new { }, TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await human.GetAsync("/api/knowledge/candidates/", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.GetAsync("/api/handoffs/", TestContext.Current.CancellationToken)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Review_with_null_tags_is_bad_request()
+    {
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.KnowledgeOperator));
+        var response = await client.PostAsJsonAsync($"/api/knowledge/candidates/{Guid.NewGuid():D}/reviews",
+            new { decision = "approve", tagIds = (Guid[]?)null, revisedAnswer = (string?)null, idempotencyKey = "null-tags", expectedVersion = 0 },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]

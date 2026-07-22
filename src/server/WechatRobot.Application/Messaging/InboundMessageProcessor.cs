@@ -90,7 +90,14 @@ public sealed class InboundMessageProcessor(
             committed = true;
             return;
         }
-        await conversations.PersistAnswerAndEnqueueAsync(request, result, cancellationToken);
+        try
+        {
+            await conversations.PersistAnswerAndEnqueueAsync(request, result, cancellationToken);
+        }
+        catch (ConversationHandoffRaceException)
+        {
+            await conversations.PersistHandoffTerminalAsync(request, HandoffResult("manual_handoff_commit_race", result.Audit), cancellationToken);
+        }
         committed = true;
         }
         finally

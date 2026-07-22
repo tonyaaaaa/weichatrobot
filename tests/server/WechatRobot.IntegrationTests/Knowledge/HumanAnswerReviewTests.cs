@@ -55,6 +55,8 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         db.DurableJobs.Remove(committedOutbox);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var duplicate = await service.ReviewAsync(new(candidate.Id, reviewer, "approve", [tag.Id], null, "review-1", 0), TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<HandoffStateException>(() => service.ReviewAsync(
+            new(candidate.Id, reviewer, "approve", [tag.Id], "不同答案", "review-1", 0), TestContext.Current.CancellationToken));
 
         Assert.Equal(approved.PublishJobId, duplicate.PublishJobId);
         Assert.Equal("approved_pending_index", approved.Status);
@@ -69,8 +71,7 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         var durable = new DurableJobRepository(db);
         var leasedPublish = await durable.LeaseNextJobAsync("PublishKnowledgeCandidate", "publisher", DateTime.UtcNow.AddMinutes(1), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
         Assert.NotNull(leasedPublish);
-        await new KnowledgeCandidatePublishProcessor(db, knowledge).ProcessAsync(leasedPublish!, TestContext.Current.CancellationToken);
-        await durable.CompleteJobAsync(publishJob.Id, "publisher", DateTime.UtcNow, TestContext.Current.CancellationToken);
+        await new KnowledgeCandidatePublishProcessor(db, knowledge, TimeProvider.System).ProcessAsync(leasedPublish!, TestContext.Current.CancellationToken);
         Assert.Equal("indexing", (await db.KnowledgeCandidates.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken)).Status);
 
         var leased = await knowledge.LeaseNextAsync("test", DateTime.UtcNow.AddMinutes(1), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
@@ -82,6 +83,8 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         var published = await db.KnowledgeCandidates.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
         Assert.Equal("published", published.Status);
         Assert.NotNull(published.PublishedAtUtc);
+        Assert.Equal("leased", (await db.DurableJobs.AsNoTracking().SingleAsync(x => x.Id == publishJob.Id, TestContext.Current.CancellationToken)).Status);
+        await durable.CompleteJobAsync(publishJob.Id, "publisher", DateTime.UtcNow, TestContext.Current.CancellationToken);
         var retrieval = new KnowledgeRetrievalEvidenceProvider(db, knowledge, embeddings, vectors);
         var evidence = await retrieval.RetrieveAsync("售后申请需要提供什么？", [tag.Id], 3, TestContext.Current.CancellationToken);
         Assert.Contains("请提交订单号。", Assert.Single(evidence).Text);
@@ -90,11 +93,17 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
                 new(false, 3, 30, 3000, false, false), new("https://fake.test", "fake", "fake", TimeSpan.FromSeconds(1), 0)), TestContext.Current.CancellationToken);
         Assert.Equal(AnswerDecisionKind.Answer, grounded.Decision.Kind);
         Assert.Equal("请提交订单号。", grounded.Decision.GroupText);
+        var unrelated = await new GroundedAnswerService(retrieval, new EvidenceAnswerChat(), new GroundedAnswerOptions(.1), new AnswerOutputFirewall())
+            .AnswerAsync(new(Guid.NewGuid(), group.Id, "group", "今天天气如何？", [tag.Id], new([], null, false, false, [], 0),
+                new(false, 3, 30, 3000, false, false), new("https://fake.test", "fake", "fake", TimeSpan.FromSeconds(1), 0)), TestContext.Current.CancellationToken);
+        Assert.Equal(AnswerDecisionKind.InsufficientEvidence, unrelated.Decision.Kind);
+        await VerifyApprovalValidationAndConcurrencyAsync(robot, group, reviewer, reviewerUser.UserName!, tag.Id);
         await vectors.DeleteCollectionAsync(new(published.KnowledgeDocumentVersionId is null ? "unused" :
             (await db.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(x => x.Id == published.KnowledgeDocumentVersionId, TestContext.Current.CancellationToken)).IndexCollectionName!, 3, VectorDistance.Cosine),
             TestContext.Current.CancellationToken);
 
         await VerifyRelationalHandoffConcurrencyAsync();
+        await VerifyHandoffWinsFinalAnswerCommitRaceAsync();
     }
 
     private WechatRobotDbContext Database() => new(new DbContextOptionsBuilder<WechatRobotDbContext>()
@@ -130,6 +139,111 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         Assert.Single(assignments, x => x is HandoffConcurrencyException);
     }
 
+    private async Task VerifyApprovalValidationAndConcurrencyAsync(RobotConfigEntity robot, GroupProfileEntity group, Guid reviewer,
+        string reviewerName, Guid enabledTagId)
+    {
+        var question = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name,
+            SenderDisplayName = "客户", Text = "并发审核问题", FallbackHash = Guid.NewGuid().ToString("N") };
+        Guid candidateId;
+        await using (var setup = Database())
+        {
+            setup.ConversationMessages.Add(question); await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
+            var handoff = new HandoffService(new EfHandoffStore(setup), TimeProvider.System);
+            var started = await handoff.StartAsync(new(question.Id, robot.Id, group.Id, robot.WorkToolRobotId, group.Name, "manual_transfer", "{}",
+                HandoffPauseScope.Group, null, reviewer, reviewerName, "approval-race-handoff"), TestContext.Current.CancellationToken);
+            candidateId = (await handoff.ResolveAsync(started.Id, reviewer, "并发审核答案", started.Version, TestContext.Current.CancellationToken)).Id;
+        }
+        await using (var invalid = Database())
+        {
+            var service = new KnowledgeCandidateService(new EfKnowledgeCandidateStore(invalid), TimeProvider.System);
+            await Assert.ThrowsAsync<ArgumentException>(() => service.ReviewAsync(new(candidateId, reviewer, "approve", [Guid.NewGuid()], null,
+                "invalid-tag", 0), TestContext.Current.CancellationToken));
+            Assert.Equal(0, await invalid.KnowledgeReviews.CountAsync(x => x.KnowledgeCandidateId == candidateId, TestContext.Current.CancellationToken));
+        }
+        async Task<Exception?> Approve(string key)
+        {
+            await using var context = Database();
+            try
+            {
+                await new KnowledgeCandidateService(new EfKnowledgeCandidateStore(context), TimeProvider.System)
+                    .ReviewAsync(new(candidateId, reviewer, "approve", [enabledTagId], null, key, 0), TestContext.Current.CancellationToken);
+                return null;
+            }
+            catch (Exception exception) { return exception; }
+        }
+        var outcomes = await Task.WhenAll(Approve("approval-race-left"), Approve("approval-race-right"));
+        Assert.Single(outcomes, x => x is null);
+        Assert.Single(outcomes, x => x is HandoffConcurrencyException or HandoffStateException);
+        await using var verify = Database();
+        Assert.Equal(1, await verify.KnowledgeReviews.CountAsync(x => x.KnowledgeCandidateId == candidateId, TestContext.Current.CancellationToken));
+        Assert.Equal(1, await verify.DurableJobs.CountAsync(x => x.Id == candidateId, TestContext.Current.CancellationToken));
+        var storedKey = await verify.KnowledgeReviews.Where(x => x.KnowledgeCandidateId == candidateId).Select(x => x.IdempotencyKey)
+            .SingleAsync(TestContext.Current.CancellationToken);
+        var originalKey = storedKey.EndsWith("approval-race-left", StringComparison.Ordinal) ? "approval-race-left" : "approval-race-right";
+        await using var failure = Database();
+        var durable = new DurableJobRepository(failure);
+        var publish = Assert.IsType<WechatRobot.Application.Jobs.LeasedDurableJob>(await durable.LeaseNextJobAsync("PublishKnowledgeCandidate",
+            "failure-publisher", DateTime.UtcNow.AddMinutes(1), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        var knowledge = new QdrantKnowledgeService(failure, new ModelConfigurationService(new FakeProtector()), new(3, VectorDistance.Cosine), TimeProvider.System);
+        await new KnowledgeCandidatePublishProcessor(failure, knowledge, TimeProvider.System).ProcessAsync(publish, TestContext.Current.CancellationToken);
+        await durable.CompleteJobAsync(publish.Id, publish.LeaseOwner, DateTime.UtcNow, TestContext.Current.CancellationToken);
+        var index = Assert.IsType<LeasedKnowledgeIndexJob>(await knowledge.LeaseNextAsync("failed-index", DateTime.UtcNow.AddMinutes(1),
+            TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        await knowledge.MarkIndexFailedAsync(index.Id, index.LeaseOwner, "forced terminal failure", false, TestContext.Current.CancellationToken);
+        await new KnowledgeCandidateService(new EfKnowledgeCandidateStore(failure), TimeProvider.System)
+            .ReviewAsync(new(candidateId, reviewer, "approve", [enabledTagId], null, originalKey, 0), TestContext.Current.CancellationToken);
+        Assert.Equal("approved_pending_index", (await failure.KnowledgeCandidates.AsNoTracking().SingleAsync(x => x.Id == candidateId,
+            TestContext.Current.CancellationToken)).Status);
+        Assert.Equal("retrying", (await failure.DurableJobs.AsNoTracking().SingleAsync(x => x.Id == candidateId,
+            TestContext.Current.CancellationToken)).Status);
+    }
+
+    private async Task VerifyHandoffWinsFinalAnswerCommitRaceAsync()
+    {
+        var robot = new RobotConfigEntity { Name = "commit-race-" + Guid.NewGuid().ToString("N"), WorkToolRobotId = Guid.NewGuid().ToString("N"), CallbackSecretHash = "hash" };
+        var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = Guid.NewGuid().ToString("N"), Name = "提交竞态群" };
+        var message = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name,
+            SenderDisplayName = "客户", StableSenderId = "stable-race", Text = "需要人工", FallbackHash = Guid.NewGuid().ToString("N"), ProcessingState = "processing" };
+        var session = new ConversationSessionEntity { GroupProfileId = group.Id, SenderScopeKey = "group", LeaseOwner = "answer-owner",
+            LeaseExpiresAtUtc = DateTime.UtcNow.AddMinutes(5), LastActivityAtUtc = DateTime.UtcNow };
+        await using (var setup = Database()) { setup.AddRange(robot, group, message, session); await setup.SaveChangesAsync(TestContext.Current.CancellationToken); }
+
+        var request = new ConversationProcessingRequest(message.Id, robot.Id, robot.WorkToolRobotId, group.Id, group.Name, message.SenderDisplayName,
+            message.StableSenderId, new("group", false, null), message.Text, DateTime.UtcNow, [], [], null,
+            new(false, 3, 30, 3000, false, false), new("https://fake.test", "fake", "fake", TimeSpan.FromSeconds(1), 0),
+            Guid.Empty, session.Id, "answer-owner", 0);
+        var result = new GroundedAnswerResult(new(AnswerDecisionKind.Answer, "不应发送的回答"), new([], .7, .9, "policy", "Answer", InputSummaryJson: "{}"));
+        var command = new StartHandoffCommand(message.Id, robot.Id, group.Id, robot.WorkToolRobotId, group.Name, "manual_transfer", "{}",
+            HandoffPauseScope.Group, null, null, "人工客服", "commit-race-handoff");
+
+        await using var gate = Database();
+        await using var gateTransaction = await gate.Database.BeginTransactionAsync(TestContext.Current.CancellationToken);
+        _ = await gate.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {group.Id} FOR UPDATE")
+            .SingleAsync(TestContext.Current.CancellationToken);
+        var handoffTask = Task.Run(async () => { await using var context = Database(); return await new EfHandoffStore(context)
+            .StartAsync(command, DateTime.UtcNow, TestContext.Current.CancellationToken); });
+        await Task.Delay(150, TestContext.Current.CancellationToken);
+        var answerTask = Task.Run(async () =>
+        {
+            await using var context = Database();
+            try
+            {
+                await new GroundedConversationRepository(context, new ModelConfigurationService(new FakeProtector()), TimeProvider.System)
+                    .PersistAnswerAndEnqueueAsync(request, result, TestContext.Current.CancellationToken);
+                return (Exception?)null;
+            }
+            catch (Exception exception) { return exception; }
+        });
+        await Task.Delay(150, TestContext.Current.CancellationToken);
+        await gateTransaction.CommitAsync(TestContext.Current.CancellationToken);
+        _ = await handoffTask;
+        Assert.IsType<ConversationHandoffRaceException>(await answerTask);
+        await using var verify = Database();
+        Assert.Equal(1, await verify.SendCommands.CountAsync(x => x.GroupProfileId == group.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(0, await verify.RetrievalAudits.CountAsync(x => x.GroupProfileId == group.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(0, await verify.ConversationMessages.CountAsync(x => x.InReplyToMessageId == message.Id, TestContext.Current.CancellationToken));
+    }
+
     private sealed class FakeProtector : ISecretProtector
     {
         public string Protect(string plaintext) => plaintext;
@@ -139,8 +253,8 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
     private sealed class FakeEmbeddingClient : IEmbeddingClient
     {
         public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(ModelProviderConfiguration configuration, EmbeddingBatchRequest request,
-            CancellationToken cancellationToken = default) => Task.FromResult(new EmbeddingBatchResponse(request.Inputs.Select(_ =>
-                (IReadOnlyList<float>)[0.9f, 0.1f, 0.2f]).ToArray()));
+            CancellationToken cancellationToken = default) => Task.FromResult(new EmbeddingBatchResponse(request.Inputs.Select(input =>
+                (IReadOnlyList<float>)(input.Contains("天气", StringComparison.Ordinal) ? [0f, 1f, 0f] : [1f, 0f, 0f])).ToArray()));
     }
 
     private sealed class EvidenceAnswerChat : IChatCompletionClient
