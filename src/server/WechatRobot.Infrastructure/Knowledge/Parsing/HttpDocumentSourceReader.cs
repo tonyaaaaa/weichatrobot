@@ -1,5 +1,6 @@
 using WechatRobot.Application.Knowledge.Parsing;
 using Microsoft.Extensions.Options;
+using WechatRobot.Infrastructure.Storage;
 
 namespace WechatRobot.Infrastructure.Knowledge.Parsing;
 
@@ -23,7 +24,7 @@ public sealed class HttpDocumentSourceReader : IDocumentSourceReader
     public async Task<Stream> OpenReadAsync(Uri publicUrl, DocumentProcessingContext context)
     {
         if (publicUrl.Scheme != Uri.UriSchemeHttps &&
-            !(_allowLoopbackHttp && publicUrl.Scheme == Uri.UriSchemeHttp && publicUrl.IsLoopback))
+            !(_allowLoopbackHttp && LoopbackHttpPolicy.IsStrictLoopbackHttp(publicUrl)))
             throw new InvalidOperationException("Document source URLs must use HTTPS, except an explicitly enabled loopback development source.");
         context.Checkpoint("source-http");
         try

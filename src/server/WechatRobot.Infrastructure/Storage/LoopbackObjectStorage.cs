@@ -22,7 +22,7 @@ public sealed class LoopbackObjectStorage : IObjectStorage
     {
         _httpClient = httpClient;
         if (!Uri.TryCreate(options.Value.BaseUrl, UriKind.Absolute, out var baseUrl) ||
-            baseUrl.Scheme != Uri.UriSchemeHttp || !baseUrl.IsLoopback)
+            !LoopbackHttpPolicy.IsStrictLoopbackHttp(baseUrl))
         {
             throw new InvalidOperationException("Loopback object storage must use an HTTP loopback URL.");
         }

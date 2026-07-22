@@ -21,9 +21,16 @@ OCR_PORT=18010
 只启动本检查点需要的两个容器；OCR 使用回环假服务，不构建 PaddleOCR 镜像：
 
 ```powershell
+$checkpointEnv = @{}
+Get-Content .superpowers/sdd/checkpoint-2.env | Where-Object { $_ -match '^[^#].+=' } | ForEach-Object {
+  $name,$value = $_.Split('=',2)
+  $checkpointEnv[$name] = $value
+}
+$env:CHECKPOINT2_MYSQL_PASSWORD = $checkpointEnv.MYSQL_PASSWORD
+$env:CHECKPOINT2_QDRANT_API_KEY = $checkpointEnv.QDRANT_API_KEY
 docker compose --env-file .superpowers/sdd/checkpoint-2.env -p wechatrobot-checkpoint2 up -d --wait --wait-timeout 180 mysql qdrant
 docker compose --env-file .superpowers/sdd/checkpoint-2.env -p wechatrobot-checkpoint2 ps
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:36343/readyz -Headers @{ 'api-key' = '<local-only-qdrant-key>' }
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:36343/readyz -Headers @{ 'api-key' = $env:CHECKPOINT2_QDRANT_API_KEY }
 ```
 
 ## 2. 启动回环假提供商
@@ -41,7 +48,7 @@ $fakeProvider = Start-Process powershell -PassThru -WindowStyle Hidden -Argument
 Test-NetConnection 127.0.0.1 -Port 5591
 ```
 
-`LoopbackObjectStorage` 只接受显式启用的 `http://localhost` 或 `http://127.0.0.1`，且 API/Worker 仅允许在 `Development` 环境注册它。生产默认仍是阿里云 OSS。
+`LoopbackObjectStorage` 和回环 HTTP 文档源只接受显式启用的 `http://localhost` 或 `http://127.0.0.1`，禁用自动重定向，且 API/Worker 仅允许在 `Development` 环境注册。生产默认仍是阿里云 OSS。
 
 ## 3. 启动 API 和 Worker
 
@@ -109,11 +116,47 @@ Invoke-RestMethod -Method Put -Uri http://127.0.0.1:5502/api/admin/model-configu
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5502/api/admin/model-configurations/checkpoint-embedding/test-connection -Headers $headers
 ```
 
-在隔离 MySQL 中创建固定测试机器人、`技术部`、`产品`、`售后`、`财务` 和唯一的全局公开标签。为避免 PowerShell 管道编码影响中文，SQL 可使用 UTF-8 十六进制字面量。随后调用真实群配置 API，把产品和售后绑定到技术部。响应的 `allowedTagIds` 必须同时包含产品、售后和全局公开 ID，且不包含财务 ID。
+在隔离 MySQL 中幂等创建测试数据。中文使用 UTF-8 十六进制字面量，避免终端代码页污染：
+
+```sql
+INSERT IGNORE INTO robot_config
+  (Id,Name,WorkToolRobotId,CallbackSecretHash,IsEnabled,SendRateLimitPerMinute,SendRateTokens,SendRateUpdatedAtUtc,SendCoordinationVersion,CreatedAtUtc,UpdatedAtUtc)
+VALUES
+  ('20000000-0000-0000-0000-000000000001','checkpoint-2','checkpoint-2-robot','local-only',1,50,50,UTC_TIMESTAMP(),0,UTC_TIMESTAMP(),UTC_TIMESTAMP());
+INSERT IGNORE INTO group_profile
+  (Id,RobotConfigId,ExternalGroupId,Name,IsEnabled,CreatedAtUtc,UpdatedAtUtc)
+VALUES
+  ('30000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','checkpoint-2-group',CONVERT(0xE68A80E69CAFE983A8 USING utf8mb4),1,UTC_TIMESTAMP(),UTC_TIMESTAMP());
+INSERT IGNORE INTO knowledge_tag (Id,Name,NormalizedName,IsEnabled,IsGlobalPublic,CreatedAtUtc) VALUES
+  ('10000000-0000-0000-0000-000000000001',CONVERT(0xE4BAA7E59381 USING utf8mb4),CONVERT(0xE4BAA7E59381 USING utf8mb4),1,0,UTC_TIMESTAMP()),
+  ('10000000-0000-0000-0000-000000000002',CONVERT(0xE594AEE5908E USING utf8mb4),CONVERT(0xE594AEE5908E USING utf8mb4),1,0,UTC_TIMESTAMP()),
+  ('10000000-0000-0000-0000-000000000003',CONVERT(0xE8B4A2E58AA1 USING utf8mb4),CONVERT(0xE8B4A2E58AA1 USING utf8mb4),1,0,UTC_TIMESTAMP()),
+  ('10000000-0000-0000-0000-000000000004',CONVERT(0xE585A8E5B180E585ACE5BC80 USING utf8mb4),CONVERT(0xE585A8E5B180E585ACE5BC80 USING utf8mb4),1,1,UTC_TIMESTAMP());
+```
+
+把 SQL 保存为忽略文件 `.superpowers/sdd/checkpoint-2-bootstrap.sql`，再执行：
+
+```powershell
+Get-Content -Raw .superpowers/sdd/checkpoint-2-bootstrap.sql |
+  docker exec -i wechatrobot-checkpoint2-mysql-1 mysql --default-character-set=utf8mb4 `
+    -ucheckpoint2 -p$env:CHECKPOINT2_MYSQL_PASSWORD wechatrobot_checkpoint2
+
+$groupBody = @{
+  includeRules = @(); excludeRules = @()
+  boundTagIds = @('10000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002')
+  context = @{ senderIsolated=$null; historyTurns=$null; idleTimeoutMinutes=$null; tokenCap=$null; summaryEnabled=$null; includeBotHistory=$null }
+  clearContext = $false
+} | ConvertTo-Json -Depth 5
+$group = Invoke-RestMethod -Method Put -Uri http://127.0.0.1:5502/api/groups/30000000-0000-0000-0000-000000000001/configuration `
+  -Headers $headers -ContentType application/json -Body $groupBody
+$expected = @('10000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000004')
+if (@($group.allowedTagIds | Where-Object { $_ -in $expected }).Count -ne 3 -or
+    '10000000-0000-0000-0000-000000000003' -in $group.allowedTagIds) { throw 'Group tag visibility failed.' }
+```
 
 ## 5. 上传、预览、批准和索引
 
-用 `HttpClient` 的 `MultipartFormDataContent` 向 `/api/knowledge/documents` 上传以下真实夹具，并分别传入固定 `documentId` 作为关联 ID：
+下面的完整 PowerShell 块上传四种真实夹具，并分别传入固定 `documentId` 作为关联 ID：
 
 | 关联 ID 末位 | 文件 | Content-Type | 标签 |
 | --- | --- | --- | --- |
@@ -122,31 +165,81 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5502/api/admin/model-config
 | `...0003` | `tests/fixtures/documents/text-pages.pdf` | `application/pdf` | 全局公开 |
 | `...0004` | `tests/fixtures/documents/headings-table.docx` | DOCX MIME | 财务 |
 
-每个上传响应必须是 201，并断言：
+```powershell
+$base = 'http://127.0.0.1:5502'
+$fixtures = @(
+  @{ id='40000000-0000-0000-0000-000000000001'; path='tests/fixtures/documents/headings.md'; type='text/markdown'; tags=@('10000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002') },
+  @{ id='40000000-0000-0000-0000-000000000002'; path='tests/fixtures/documents/utf8.txt'; type='text/plain'; tags=@('10000000-0000-0000-0000-000000000002') },
+  @{ id='40000000-0000-0000-0000-000000000003'; path='tests/fixtures/documents/text-pages.pdf'; type='application/pdf'; tags=@('10000000-0000-0000-0000-000000000004') },
+  @{ id='40000000-0000-0000-0000-000000000004'; path='tests/fixtures/documents/headings-table.docx'; type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'; tags=@('10000000-0000-0000-0000-000000000003') }
+)
+$client = [System.Net.Http.HttpClient]::new()
+$client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer',$login.accessToken)
+$uploaded = foreach ($fixture in $fixtures) {
+  $form = [System.Net.Http.MultipartFormDataContent]::new()
+  $file = [System.Net.Http.ByteArrayContent]::new([IO.File]::ReadAllBytes((Resolve-Path $fixture.path)))
+  $file.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new($fixture.type)
+  $form.Add($file,'file',[IO.Path]::GetFileName($fixture.path))
+  $form.Add([System.Net.Http.StringContent]::new($fixture.id),'documentId')
+  $response = $client.PostAsync("$base/api/knowledge/documents",$form).GetAwaiter().GetResult()
+  if ($response.StatusCode -ne 201) { throw $response.Content.ReadAsStringAsync().Result }
+  $value = $response.Content.ReadFromJsonAsync([System.Text.Json.JsonElement]).Result
+  if ($value.GetProperty('state').GetString() -ne 'uploaded' -or
+      -not $value.GetProperty('publicReadRiskAccepted').GetBoolean()) { throw 'Upload contract failed.' }
+  [pscustomobject]@{ documentId=$fixture.id; versionId=$value.GetProperty('versionId').GetGuid(); tags=$fixture.tags }
+}
 
-- `state=uploaded`，对象键位于 `wechatrobot/knowledge/<关联ID>/...`；
-- 公共 URL 指向 `http://127.0.0.1:5591/objects/...`；
-- `publicReadRiskAccepted=true`；
-- `publicReadWarning` 明确说明文档标签不是公开 URL 的访问控制。
+$deadline = (Get-Date).AddMinutes(3)
+do {
+  $completed = docker exec wechatrobot-checkpoint2-mysql-1 mysql -N -B -ucheckpoint2 -p$env:CHECKPOINT2_MYSQL_PASSWORD `
+    -D wechatrobot_checkpoint2 -e "SELECT COUNT(*) FROM durable_job WHERE JobType='ParseKnowledgeDocument' AND Status='completed' AND CorrelationId LIKE '40000000-%'"
+  if ([int]$completed -lt 4) { Start-Sleep 2 }
+} while ([int]$completed -lt 4 -and (Get-Date) -lt $deadline)
+if ([int]$completed -lt 4) { throw 'Parse jobs timed out.' }
 
-等待 `ParseKnowledgeDocument` 四条任务全部 `completed`。对每个 `versionId`：
+foreach ($item in $uploaded) {
+  $preview = Invoke-RestMethod -Uri "$base/api/knowledge/versions/$($item.versionId)/previews" -Headers $headers
+  $edited = Invoke-RestMethod -Method Put -Uri "$base/api/knowledge/versions/$($item.versionId)/previews/$($preview.items[0].id)" `
+    -Headers $headers -ContentType application/json -Body (@{ text="$($preview.items[0].text) [checkpoint-2 edited]"; expectedRevision=$preview.revision } | ConvertTo-Json)
+  $approved = Invoke-RestMethod -Method Post -Uri "$base/api/knowledge/versions/$($item.versionId)/previews/approve" `
+    -Headers $headers -ContentType application/json -Body (@{ expectedRevision=$edited.revision } | ConvertTo-Json)
+  if ($approved.Count -eq 0) { throw 'No chunks approved.' }
+  Invoke-RestMethod -Method Post -Uri "$base/api/knowledge/documents/$($item.documentId)/versions/$($item.versionId)/index" `
+    -Headers $headers -ContentType application/json -Body (@{ tagIds=$item.tags } | ConvertTo-Json)
+}
 
-1. GET `/api/knowledge/versions/{versionId}/previews`；
-2. PUT `/api/knowledge/versions/{versionId}/previews/{previewId}`，使用当前 `expectedRevision` 修改首段；
-3. POST `/api/knowledge/versions/{versionId}/previews/approve`，使用新修订号；
-4. POST `/api/knowledge/documents/{documentId}/versions/{versionId}/index`；需要多标签回归时对首文档调用 `/reindex` 并传产品、售后两个 ID。
-
-最后 GET `/api/knowledge/documents/{documentId}/index-status?checkConsistency=true`。四个响应都必须满足 `documentStatus=active`、`activeVersionId` 等于关联版本、批准分段数等于 Qdrant 活跃点数、`consistency=consistent`。
+$deadline = (Get-Date).AddMinutes(5)
+do {
+  $statuses = @($uploaded | ForEach-Object { Invoke-RestMethod -Uri "$base/api/knowledge/documents/$($_.documentId)/index-status?checkConsistency=true" -Headers $headers })
+  $ready = @($statuses | Where-Object { $_.documentStatus -eq 'active' -and $_.consistency -eq 'consistent' -and $_.approvedChunkCount -eq $_.activePointCount }).Count -eq 4
+  if (-not $ready) { Start-Sleep 5 }
+} while (-not $ready -and (Get-Date) -lt $deadline)
+if (-not $ready) { throw 'Index consistency timed out.' }
+```
 
 ## 6. 可见性断言
 
-从群配置响应取得允许标签集合 `{产品, 售后, 全局公开}`，对四个活跃集合执行带以下三个 `must` 条件的 Qdrant search：
+从群配置响应取得允许标签集合 `{产品, 售后, 全局公开}`，下列块对四个活跃集合执行 Qdrant search。查询同时要求 `active=true`、当前 `version_id` 和标签 OR 命中：
 
 - `active=true`；
 - `version_id` 等于文档当前活跃版本；
 - `tag_ids` 命中群允许集合中的任一 ID。
 
-预期产品/售后文档、售后文档、全局公开文档分别返回 `2/1/2` 个点；仅财务标签的 DOCX 返回 `0`。另外写入一条 `active=false` 的测试点，确认同一 active search 结果不增加，从而证明未激活或部分生成的数据不可检索。
+```powershell
+$qdrantHeaders = @{ 'api-key'=$env:CHECKPOINT2_QDRANT_API_KEY }
+$expectedCounts = @(2,1,2,0)
+for ($index=0; $index -lt $statuses.Count; $index++) {
+  $status = $statuses[$index]
+  $body = @{ vector=@(1,0,0,0,0,0,0,0); limit=50; with_payload=$true; with_vector=$false; filter=@{ must=@(
+    @{ key='active'; match=@{ value=$true } },
+    @{ key='version_id'; match=@{ value=$status.activeVersionId } },
+    @{ key='tag_ids'; match=@{ any=$group.allowedTagIds } }
+  ) } } | ConvertTo-Json -Depth 8
+  $result = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:36343/collections/$($status.collectionName)/points/search" `
+    -Headers $qdrantHeaders -ContentType application/json -Body $body
+  if ($result.result.Count -ne $expectedCounts[$index]) { throw "Visibility failed for $($uploaded[$index].documentId)." }
+}
+```
 
 ## 7. 2026-07-22 实测结果
 

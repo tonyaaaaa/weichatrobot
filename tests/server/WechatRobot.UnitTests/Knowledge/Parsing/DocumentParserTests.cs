@@ -166,6 +166,21 @@ public sealed class DocumentParserTests
 
         Assert.Equal("loopback source", await text.ReadToEndAsync(TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<InvalidOperationException>(() => reader.OpenReadAsync(new Uri("http://192.0.2.1/source.txt"), Context()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.OpenReadAsync(new Uri("http://[::1]:5591/source.txt"), Context()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.OpenReadAsync(new Uri("http://user@127.0.0.1:5591/source.txt"), Context()));
+    }
+
+    [Theory]
+    [InlineData("https://example.test/private")]
+    [InlineData("http://127.0.0.1:5592/other")]
+    public async Task Http_source_never_follows_redirects(string location)
+    {
+        var handler = new RedirectHandler(location);
+        var reader = new HttpDocumentSourceReader(new HttpClient(handler), Options.Create(new DocumentSourceOptions { AllowLoopbackHttp = true }));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => reader.OpenReadAsync(new Uri("http://127.0.0.1:5591/source.txt"), Context()));
+
+        Assert.Equal(1, handler.Calls);
     }
 
     private static DocumentParsingLimits Limits() => new(1024 * 1024, 20, 2 * 1024 * 1024, TimeSpan.FromSeconds(5));
@@ -196,5 +211,18 @@ public sealed class DocumentParserTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) });
+    }
+
+    private sealed class RedirectHandler(string location) : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.Found)
+            {
+                Headers = { Location = new Uri(location) }
+            });
+        }
     }
 }

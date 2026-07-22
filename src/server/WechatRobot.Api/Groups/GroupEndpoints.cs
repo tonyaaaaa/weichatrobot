@@ -36,7 +36,8 @@ public static class GroupEndpoints
         GroupConfigurationService service,
         CancellationToken cancellationToken)
     {
-        if (request.IncludeRules.Count > MaximumRulesPerKind || request.ExcludeRules.Count > MaximumRulesPerKind || request.BoundTagIds.Count > 100)
+        var selectedTagIds = request.BoundTagIds.Distinct().ToArray();
+        if (request.IncludeRules.Count > MaximumRulesPerKind || request.ExcludeRules.Count > MaximumRulesPerKind || selectedTagIds.Length > 100)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["configuration"] = ["Too many rules or tags."] });
         }
@@ -58,10 +59,10 @@ public static class GroupEndpoints
         var group = await database.GroupProfiles.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (group is null) return Results.NotFound();
 
-        var selectedTagIds = request.BoundTagIds.Distinct().ToArray();
-        foreach (var tagId in selectedTagIds)
+        if (selectedTagIds.Length > 0)
         {
-            if (!await database.KnowledgeTags.AnyAsync(tag => tag.IsEnabled && tag.Id == tagId, cancellationToken))
+            var selectedTags = GuidBatchQuery.BuildPredicate<KnowledgeTagEntity>(selectedTagIds, tag => tag.Id);
+            if (await database.KnowledgeTags.Where(tag => tag.IsEnabled).Where(selectedTags).CountAsync(cancellationToken) != selectedTagIds.Length)
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["boundTagIds"] = ["Only existing enabled tags can be bound to a group."] });
             }
