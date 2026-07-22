@@ -33,6 +33,7 @@ public static class DocumentEndpoints
         }
         catch (DocumentUploadValidationException exception) { return Results.ValidationProblem(Problem("file", exception.Message)); }
         catch (DuplicateDocumentContentException) { return Duplicate(); }
+        catch (DocumentDeletedException) { return Results.Conflict(new { error = "document-deleted" }); }
         catch (InvalidOperationException) { return Results.Conflict(new { error = "document-not-writable" }); }
     }
 
@@ -43,6 +44,7 @@ public static class DocumentEndpoints
             var result = await service.RetryAsync(documentId, cancellationToken);
             return result.ProviderSucceeded ? Results.Ok(ToResponse(result)) : Results.Json(ToResponse(result), statusCode: StatusCodes.Status503ServiceUnavailable);
         }
+        catch (DocumentDeletedException) { return Results.Conflict(new { error = "document-deleted" }); }
         catch (DocumentNotRetryableException) { return Results.NotFound(); }
     }
 

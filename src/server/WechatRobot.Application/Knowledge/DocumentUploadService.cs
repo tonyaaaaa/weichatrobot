@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using WechatRobot.Application.Storage;
+using WechatRobot.Application.Jobs;
+using System.Text.Json;
 
 namespace WechatRobot.Application.Knowledge;
 
@@ -128,14 +130,40 @@ public static class DocumentUploadValidator
                 if (expanded > options.MaximumExpandedArchiveBytes || expanded > Math.Max(content.LongLength, 1) * options.MaximumArchiveExpansionRatio)
                     throw Failure(DocumentUploadError.ArchiveExpansionLimitExceeded, "The DOCX exceeds configured archive expansion limits.");
             }
-            if (archive.GetEntry("[Content_Types].xml") is null || archive.GetEntry("word/document.xml") is null)
+            var contentTypes = archive.GetEntry("[Content_Types].xml");
+            var document = archive.GetEntry("word/document.xml");
+            if (contentTypes is null || document is null)
                 throw Failure(DocumentUploadError.MalformedArchive, "The archive is not a valid DOCX document.");
+            ReadEntryFully(contentTypes);
+            ReadEntryFully(document);
         }
         catch (DocumentUploadValidationException) { throw; }
         catch (Exception exception) when (exception is InvalidDataException or IOException or OverflowException)
         {
             throw Failure(DocumentUploadError.MalformedArchive, "The DOCX archive is malformed.");
         }
+    }
+
+    private static void ReadEntryFully(ZipArchiveEntry entry)
+    {
+        using var source = entry.Open();
+        Span<byte> buffer = stackalloc byte[16 * 1024];
+        long readTotal = 0;
+        var crc = uint.MaxValue;
+        while (true)
+        {
+            var read = source.Read(buffer);
+            if (read == 0) break;
+            readTotal += read;
+            if (readTotal > entry.Length) throw new InvalidDataException("DOCX entry expanded beyond its declared length.");
+            foreach (var value in buffer[..read])
+            {
+                crc ^= value;
+                for (var bit = 0; bit < 8; bit++) crc = (crc >> 1) ^ (0xedb88320u & (uint)-(int)(crc & 1));
+            }
+        }
+        if (readTotal != entry.Length) throw new InvalidDataException("DOCX entry ended before its declared length.");
+        if (~crc != entry.Crc32) throw new InvalidDataException("DOCX entry checksum is invalid.");
     }
 
     private static string CanonicalContentType(string extension) => extension switch
@@ -160,7 +188,8 @@ public interface IKnowledgeDocumentStore
 {
     Task<PendingDocumentUpload?> StageAsync(DocumentStageRequest request, CancellationToken cancellationToken);
     Task<PendingDocumentUpload?> GetRetryableAsync(Guid documentId, CancellationToken cancellationToken);
-    Task MarkUploadedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken);
+    Task<PendingDocumentUpload?> GetRecoverableAsync(Guid versionId, CancellationToken cancellationToken);
+    Task<bool> MarkUploadedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken);
     Task MarkFailedAsync(PendingDocumentUpload upload, CancellationToken cancellationToken);
     Task<bool> RequestPhysicalDeleteAsync(Guid documentId, CancellationToken cancellationToken);
 }
@@ -174,6 +203,7 @@ public sealed record DocumentUploadResult(Guid DocumentId, Guid VersionId, int V
 public sealed class DuplicateDocumentContentException : Exception { }
 public sealed class DocumentNotFoundException : Exception { }
 public sealed class DocumentNotRetryableException : Exception { }
+public sealed class DocumentDeletedException : Exception { }
 
 public sealed class DocumentUploadService(
     DocumentUploadOptions options,
@@ -195,6 +225,17 @@ public sealed class DocumentUploadService(
         return await UploadPendingAsync(pending, cancellationToken);
     }
 
+    public async Task<bool> RecoverAsync(LeasedDurableJob job, CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Deserialize<UploadJobPayload>(job.PayloadJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+            ?? throw new InvalidOperationException("Knowledge upload job payload is invalid.");
+        if (payload.VersionId == Guid.Empty) throw new InvalidOperationException("Knowledge upload job version is missing.");
+        var pending = await store.GetRecoverableAsync(payload.VersionId, cancellationToken);
+        if (pending is null) return true;
+        try { return (await UploadPendingAsync(pending, cancellationToken)).ProviderSucceeded; }
+        catch (DocumentDeletedException) { return true; }
+    }
+
     public async Task RequestPhysicalDeleteAsync(Guid documentId, CancellationToken cancellationToken)
     {
         if (!await store.RequestPhysicalDeleteAsync(documentId, cancellationToken)) throw new DocumentNotFoundException();
@@ -208,15 +249,21 @@ public sealed class DocumentUploadService(
             var stored = await storage.PutAsync(pending.ObjectKey, content, pending.ContentType, cancellationToken);
             if (!string.Equals(stored.ObjectKey, pending.ObjectKey, StringComparison.Ordinal))
                 throw new IOException("The object storage response did not preserve the requested key.");
-            await store.MarkUploadedAsync(pending, stored, cancellationToken);
+            if (!await store.MarkUploadedAsync(pending, stored, cancellationToken)) throw new DocumentDeletedException();
             return ToResult(pending with { State = "uploaded", PublicUrl = stored.PublicUrl.AbsoluteUri }, true);
         }
         catch (OperationCanceledException) { throw; }
+        catch (DocumentDeletedException) { throw; }
         catch
         {
             await store.MarkFailedAsync(pending, cancellationToken);
             return ToResult(pending with { State = "failed", PublicUrl = null }, false);
         }
+    }
+
+    private sealed class UploadJobPayload
+    {
+        public Guid VersionId { get; init; }
     }
 
     private DocumentUploadResult ToResult(PendingDocumentUpload upload, bool succeeded) => new(upload.DocumentId, upload.VersionId,

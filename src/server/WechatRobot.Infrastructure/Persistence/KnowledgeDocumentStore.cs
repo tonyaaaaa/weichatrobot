@@ -32,7 +32,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
             StagedContent = request.Document.Content
         };
         database.KnowledgeDocumentVersions.Add(version);
-        database.DurableJobs.AddRange(NewJob("UploadKnowledgeDocument", documentId, version.Id), NewJob("ParseKnowledgeDocument", documentId, version.Id));
+        database.DurableJobs.AddRange(NewJob("UploadKnowledgeDocument", documentId, version.Id), NewJob("ParseKnowledgeDocument", documentId, version.Id, "blocked"));
 
         await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
         try
@@ -51,18 +51,40 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
 
     public async Task<PendingDocumentUpload?> GetRetryableAsync(Guid documentId, CancellationToken cancellationToken)
     {
+        var document = await database.KnowledgeDocuments.AsNoTracking().SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken);
+        if (document is null) return null;
+        if (document.IsDeleteRequested || document.Status == "disabled") throw new DocumentDeletedException();
         var version = await database.KnowledgeDocumentVersions.AsNoTracking()
             .Where(item => item.KnowledgeDocumentId == documentId && item.Status == "failed")
             .OrderByDescending(item => item.Version).FirstOrDefaultAsync(cancellationToken);
         return version is null || version.StagedContent.Length == 0 ? null : ToPending(version);
     }
 
-    public async Task MarkUploadedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken)
+    public async Task<PendingDocumentUpload?> GetRecoverableAsync(Guid versionId, CancellationToken cancellationToken)
+    {
+        var version = await database.KnowledgeDocumentVersions.AsNoTracking().SingleOrDefaultAsync(item => item.Id == versionId, cancellationToken);
+        if (version is null || version.Status == "uploaded" || version.StagedContent.Length == 0) return null;
+        var document = await database.KnowledgeDocuments.AsNoTracking().SingleAsync(item => item.Id == version.KnowledgeDocumentId, cancellationToken);
+        return document.IsDeleteRequested || document.Status == "disabled" || version.Status == "disabled" ? null : ToPending(version);
+    }
+
+    public async Task<bool> MarkUploadedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken)
     {
         database.ChangeTracker.Clear();
+        await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
         var document = await database.KnowledgeDocuments.SingleAsync(item => item.Id == upload.DocumentId, cancellationToken);
         var version = await database.KnowledgeDocumentVersions.SingleAsync(item => item.Id == upload.VersionId, cancellationToken);
         var job = await UploadJobAsync(upload.VersionId, cancellationToken);
+        if (document.IsDeleteRequested || document.Status == "disabled" || version.Status == "disabled" || job.Status == "cancelled")
+        {
+            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+        if (version.Status == "uploaded")
+        {
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
         version.PublicUrl = stored.PublicUrl.AbsoluteUri;
         version.Status = "uploaded";
         version.FailureReason = null;
@@ -73,7 +95,16 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         job.UpdatedAtUtc = DateTime.UtcNow;
         document.Status = "uploaded";
         document.UpdatedAtUtc = DateTime.UtcNow;
+        var parseJob = await database.DurableJobs.SingleAsync(item => item.JobType == "ParseKnowledgeDocument" && item.PayloadJson.Contains(upload.VersionId.ToString()), cancellationToken);
+        if (parseJob.Status == "blocked")
+        {
+            parseJob.Status = "pending";
+            parseJob.NextAttemptAtUtc = DateTime.UtcNow;
+            parseJob.UpdatedAtUtc = DateTime.UtcNow;
+        }
         await database.SaveChangesAsync(cancellationToken);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task MarkFailedAsync(PendingDocumentUpload upload, CancellationToken cancellationToken)
@@ -82,6 +113,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         var document = await database.KnowledgeDocuments.SingleAsync(item => item.Id == upload.DocumentId, cancellationToken);
         var version = await database.KnowledgeDocumentVersions.SingleAsync(item => item.Id == upload.VersionId, cancellationToken);
         var job = await UploadJobAsync(upload.VersionId, cancellationToken);
+        if (document.IsDeleteRequested || document.Status == "disabled" || version.Status is "disabled" or "uploaded" || job.Status is "cancelled" or "completed") return;
         version.Status = "failed";
         version.FailureReason = "Object storage upload failed; retry is available.";
         version.UpdatedAtUtc = DateTime.UtcNow;
@@ -96,14 +128,46 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
 
     public async Task<bool> RequestPhysicalDeleteAsync(Guid documentId, CancellationToken cancellationToken)
     {
+        await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
         var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken);
         if (document is null) return false;
         document.IsDeleteRequested = true;
         document.Status = "disabled";
+        document.ActiveVersionId = null;
         document.UpdatedAtUtc = DateTime.UtcNow;
-        database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null));
-        await database.SaveChangesAsync(cancellationToken);
-        return true;
+        var versions = await database.KnowledgeDocumentVersions.Where(item => item.KnowledgeDocumentId == documentId).ToArrayAsync(cancellationToken);
+        foreach (var version in versions)
+        {
+            version.Status = "disabled";
+            version.IsPublished = false;
+            version.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        var relatedJobs = await database.DurableJobs.Where(job =>
+            (job.JobType == "UploadKnowledgeDocument" || job.JobType == "ParseKnowledgeDocument") &&
+            job.PayloadJson.Contains(documentId.ToString()) && job.Status != "completed" && job.Status != "cancelled").ToArrayAsync(cancellationToken);
+        foreach (var job in relatedJobs)
+        {
+            job.Status = "cancelled";
+            job.LeaseOwner = null;
+            job.LeaseExpiresAtUtc = null;
+            job.UpdatedAtUtc = DateTime.UtcNow;
+            job.Version++;
+        }
+        var cleanupId = CleanupJobId(documentId);
+        if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken))
+            database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is MySqlException { Number: 1062 })
+        {
+            if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+            return true;
+        }
     }
 
     private Task<DurableJobEntity> UploadJobAsync(Guid versionId, CancellationToken cancellationToken) => database.DurableJobs
@@ -114,10 +178,16 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         version.Id, version.Version, version.ObjectKey, version.SafeFileName, version.ContentType, version.Sha256, version.StagedContent,
         version.Status, version.PublicUrl);
 
-    private static DurableJobEntity NewJob(string type, Guid documentId, Guid? versionId) => new()
+    private static DurableJobEntity NewJob(string type, Guid documentId, Guid? versionId, string status = "pending", Guid? id = null) => new()
     {
-        JobType = type, PayloadJson = JsonSerializer.Serialize(new { documentId, versionId }), NextAttemptAtUtc = DateTime.UtcNow
+        Id = id ?? Guid.NewGuid(), JobType = type, Status = status, PayloadJson = JsonSerializer.Serialize(new { documentId, versionId }), NextAttemptAtUtc = DateTime.UtcNow
     };
+
+    private static Guid CleanupJobId(Guid documentId)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"CleanupKnowledgeDocument:{documentId:N}"));
+        return new Guid(hash.AsSpan(0, 16));
+    }
 
     private async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction?> BeginTransactionIfRelationalAsync(CancellationToken cancellationToken) =>
         database.Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true

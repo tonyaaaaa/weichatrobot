@@ -14,8 +14,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WechatRobot.Application.Storage;
+using WechatRobot.Application.Knowledge;
+using WechatRobot.Application.Jobs;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Worker.Jobs;
 
 namespace WechatRobot.IntegrationTests.Knowledge;
 
@@ -98,6 +101,194 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         Assert.Contains(await db.DurableJobs.ToArrayAsync(TestContext.Current.CancellationToken), job => job.JobType == "CleanupKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString()));
     }
 
+    [Fact]
+    public async Task Worker_recovers_stage_before_oss_cancellation_and_activates_one_parse_job()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.CancelBeforePut = true;
+        Guid documentId;
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DocumentUploadService>();
+            var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => service.UploadAsync(null, "cancel.txt", "text/plain",
+                new MemoryStream("cancel-before-provider"u8.ToArray()), TestContext.Current.CancellationToken));
+            Assert.NotNull(exception);
+            var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            documentId = (await db.KnowledgeDocuments.OrderByDescending(item => item.CreatedAtUtc).FirstAsync(TestContext.Current.CancellationToken)).Id;
+            Assert.Contains(await db.DurableJobs.ToArrayAsync(TestContext.Current.CancellationToken), job => job.JobType == "ParseKnowledgeDocument" && job.Status == "blocked");
+            var uploadJob = await db.DurableJobs.SingleAsync(job => job.JobType == "UploadKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString()), TestContext.Current.CancellationToken);
+            uploadJob.Status = "leased";
+            uploadJob.LeaseOwner = "crashed-api";
+            uploadJob.LeaseExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        _factory.Storage.CancelBeforePut = false;
+        var worker = new KnowledgeUploadWorker(_factory.Services.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        Assert.True(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+
+        await AssertUploadedWithOneParseJobAsync(documentId);
+        Assert.Equal(1, _factory.Storage.SuccessfulPuts);
+    }
+
+    [Fact]
+    public async Task Worker_reclaims_retryable_failed_upload_when_delay_is_due()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.FailPut = true;
+        using var client = CreateClient(SystemRoles.KnowledgeOperator);
+        var failed = await UploadTextAsync(client, "worker-retry.txt", "worker-retry-content");
+        var documentId = (await failed.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("documentId").GetGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var uploadJob = await db.DurableJobs.SingleAsync(job => job.JobType == "UploadKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString()), TestContext.Current.CancellationToken);
+            Assert.Equal("retrying", uploadJob.Status);
+            uploadJob.NextAttemptAtUtc = DateTime.UtcNow.AddSeconds(-1);
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        _factory.Storage.FailPut = false;
+        var worker = new KnowledgeUploadWorker(_factory.Services.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        Assert.True(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        await AssertUploadedWithOneParseJobAsync(documentId);
+    }
+
+    [Fact]
+    public async Task Worker_replays_same_key_after_oss_side_effect_before_database_mark()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.CancelAfterPut = true;
+        Guid documentId;
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DocumentUploadService>();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => service.UploadAsync(null, "provider-crash.txt", "text/plain",
+                new MemoryStream("provider-side-effect"u8.ToArray()), TestContext.Current.CancellationToken));
+            var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            documentId = (await db.KnowledgeDocuments.OrderByDescending(item => item.CreatedAtUtc).FirstAsync(TestContext.Current.CancellationToken)).Id;
+        }
+
+        _factory.Storage.CancelAfterPut = false;
+        var worker = new KnowledgeUploadWorker(_factory.Services.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        Assert.True(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+
+        await AssertUploadedWithOneParseJobAsync(documentId);
+        Assert.Equal(2, _factory.Storage.PutCalls);
+        Assert.Single(_factory.Storage.ObjectKeys.Distinct(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task Failed_upload_cannot_parse_and_delete_cancels_jobs_blocks_retry_and_is_idempotent()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.FailPut = true;
+        using var operatorClient = CreateClient(SystemRoles.KnowledgeOperator);
+        using var failed = await UploadTextAsync(operatorClient, "race.txt", "delete-race");
+        var body = await failed.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        var documentId = body.GetProperty("documentId").GetGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+            Assert.Null(await repository.LeaseNextJobAsync("ParseKnowledgeDocument", "parser", DateTime.UtcNow.AddMinutes(1), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        }
+
+        using var adminClient = CreateClient(SystemRoles.Admin);
+        Assert.Equal(HttpStatusCode.Accepted, (await adminClient.DeleteAsync($"/api/knowledge/documents/{documentId}/physical", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await adminClient.DeleteAsync($"/api/knowledge/documents/{documentId}/physical", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await operatorClient.PostAsync($"/api/knowledge/documents/{documentId}/retry-upload", null, TestContext.Current.CancellationToken)).StatusCode);
+
+        await using var verify = _factory.Services.CreateAsyncScope();
+        var db = verify.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var jobs = await db.DurableJobs.Where(job => job.PayloadJson.Contains(documentId.ToString())).ToArrayAsync(TestContext.Current.CancellationToken);
+        Assert.Single(jobs, job => job.JobType == "CleanupKnowledgeDocument" && job.Status != "completed");
+        Assert.All(jobs.Where(job => job.JobType is "UploadKnowledgeDocument" or "ParseKnowledgeDocument"), job => Assert.Equal("cancelled", job.Status));
+    }
+
+    [Fact]
+    public async Task Delete_wins_when_provider_put_finished_before_database_activation()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.CancelBeforePut = true;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DocumentUploadService>();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.UploadAsync(null, "delete-wins.txt", "text/plain",
+            new MemoryStream("delete-wins-content"u8.ToArray()), TestContext.Current.CancellationToken));
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var document = await db.KnowledgeDocuments.OrderByDescending(item => item.CreatedAtUtc).FirstAsync(TestContext.Current.CancellationToken);
+        var version = await db.KnowledgeDocumentVersions.SingleAsync(item => item.KnowledgeDocumentId == document.Id, TestContext.Current.CancellationToken);
+        var store = scope.ServiceProvider.GetRequiredService<IKnowledgeDocumentStore>();
+        var pending = await store.GetRecoverableAsync(version.Id, TestContext.Current.CancellationToken);
+        Assert.NotNull(pending);
+
+        await service.RequestPhysicalDeleteAsync(document.Id, TestContext.Current.CancellationToken);
+        var activated = await store.MarkUploadedAsync(pending!, new StoredObject(pending!.ObjectKey, new Uri($"https://public.example.test/{pending.ObjectKey}")), TestContext.Current.CancellationToken);
+        Assert.False(activated);
+        db.ChangeTracker.Clear();
+        Assert.Equal("disabled", (await db.KnowledgeDocumentVersions.SingleAsync(item => item.Id == version.Id, TestContext.Current.CancellationToken)).Status);
+        Assert.Equal("cancelled", (await db.DurableJobs.SingleAsync(job => job.JobType == "ParseKnowledgeDocument" && job.PayloadJson.Contains(document.Id.ToString()), TestContext.Current.CancellationToken)).Status);
+    }
+
+    [Fact]
+    public async Task Stale_worker_failure_cannot_regress_an_already_completed_upload()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.CancelBeforePut = true;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DocumentUploadService>();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.UploadAsync(null, "stale-worker.txt", "text/plain",
+            new MemoryStream("stale-worker-content"u8.ToArray()), TestContext.Current.CancellationToken));
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var version = await db.KnowledgeDocumentVersions.OrderByDescending(item => item.CreatedAtUtc).FirstAsync(TestContext.Current.CancellationToken);
+        var store = scope.ServiceProvider.GetRequiredService<IKnowledgeDocumentStore>();
+        var pending = await store.GetRecoverableAsync(version.Id, TestContext.Current.CancellationToken);
+        Assert.NotNull(pending);
+        Assert.True(await store.MarkUploadedAsync(pending!, new StoredObject(pending!.ObjectKey, new Uri($"https://public.example.test/{pending.ObjectKey}")), TestContext.Current.CancellationToken));
+
+        await store.MarkFailedAsync(pending, TestContext.Current.CancellationToken);
+        db.ChangeTracker.Clear();
+        Assert.Equal("uploaded", (await db.KnowledgeDocumentVersions.SingleAsync(item => item.Id == version.Id, TestContext.Current.CancellationToken)).Status);
+        Assert.Equal("completed", (await db.DurableJobs.SingleAsync(job => job.JobType == "UploadKnowledgeDocument" && job.PayloadJson.Contains(version.Id.ToString()), TestContext.Current.CancellationToken)).Status);
+    }
+
+    [Fact]
+    public async Task Upload_retry_and_delete_enforce_the_role_matrix()
+    {
+        _factory.Storage.Reset();
+        using var anonymous = _factory.CreateClient();
+        using var human = CreateClient(SystemRoles.HumanAgent);
+        using var admin = CreateClient(SystemRoles.Admin);
+        using var knowledgeOperator = CreateClient(SystemRoles.KnowledgeOperator);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await UploadTextAsync(anonymous, "anonymous.txt", "auth-anon")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await UploadTextAsync(human, "human.txt", "auth-human")).StatusCode);
+        Assert.True((await UploadTextAsync(admin, "admin.txt", "auth-admin")).IsSuccessStatusCode);
+        Assert.True((await UploadTextAsync(knowledgeOperator, "operator.txt", "auth-operator")).IsSuccessStatusCode);
+
+        _factory.Storage.FailPut = true;
+        var adminFailed = await UploadTextAsync(admin, "admin-retry.txt", "auth-admin-retry");
+        var adminId = (await adminFailed.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("documentId").GetGuid();
+        var operatorFailed = await UploadTextAsync(knowledgeOperator, "operator-retry.txt", "auth-operator-retry");
+        var operatorId = (await operatorFailed.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("documentId").GetGuid();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PostAsync($"/api/knowledge/documents/{adminId}/retry-upload", null, TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await human.PostAsync($"/api/knowledge/documents/{adminId}/retry-upload", null, TestContext.Current.CancellationToken)).StatusCode);
+        _factory.Storage.FailPut = false;
+        Assert.True((await admin.PostAsync($"/api/knowledge/documents/{adminId}/retry-upload", null, TestContext.Current.CancellationToken)).IsSuccessStatusCode);
+        Assert.True((await knowledgeOperator.PostAsync($"/api/knowledge/documents/{operatorId}/retry-upload", null, TestContext.Current.CancellationToken)).IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await knowledgeOperator.DeleteAsync($"/api/knowledge/documents/{operatorId}/physical", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await admin.DeleteAsync($"/api/knowledge/documents/{operatorId}/physical", TestContext.Current.CancellationToken)).StatusCode);
+    }
+
+    private async Task AssertUploadedWithOneParseJobAsync(Guid documentId)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        Assert.Equal("uploaded", (await db.KnowledgeDocumentVersions.SingleAsync(item => item.KnowledgeDocumentId == documentId, TestContext.Current.CancellationToken)).Status);
+        var parseJobs = await db.DurableJobs.Where(job => job.JobType == "ParseKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString())).ToArrayAsync(TestContext.Current.CancellationToken);
+        Assert.Single(parseJobs);
+        Assert.Equal("pending", parseJobs[0].Status);
+        Assert.Equal("completed", (await db.DurableJobs.SingleAsync(job => job.JobType == "UploadKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString()), TestContext.Current.CancellationToken)).Status);
+    }
+
     private HttpClient CreateClient(string role)
     {
         var client = _factory.CreateClient();
@@ -147,8 +338,10 @@ public sealed class DocumentUploadApiFactory : WebApplicationFactory<Program>
             services.Remove(descriptor);
             services.AddDbContext<WechatRobotDbContext>(options => options.UseInMemoryDatabase(_databaseName).UseInternalServiceProvider(InMemoryProvider));
             foreach (var item in services.Where(service => service.ServiceType == typeof(IObjectStorage)).ToArray()) services.Remove(item);
+            foreach (var item in services.Where(service => service.ServiceType == typeof(IDurableJobRepository)).ToArray()) services.Remove(item);
             services.AddSingleton(Storage);
             services.AddSingleton<IObjectStorage>(Storage);
+            services.AddScoped<IDurableJobRepository, InMemoryKnowledgeJobRepository>();
             services.AddAuthentication(options =>
             {
                 options.DefaultAuthenticateScheme = "document-tests";
@@ -159,19 +352,62 @@ public sealed class DocumentUploadApiFactory : WebApplicationFactory<Program>
     }
 }
 
+public sealed class InMemoryKnowledgeJobRepository(WechatRobotDbContext database) : IDurableJobRepository
+{
+    public async Task<LeasedDurableJob?> LeaseNextJobAsync(string jobType, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
+    {
+        var job = await database.DurableJobs.Where(item => item.JobType == jobType &&
+                (((item.Status == "pending" || item.Status == "retrying") && item.NextAttemptAtUtc <= nowUtc) ||
+                 (item.Status == "leased" && item.LeaseExpiresAtUtc <= nowUtc)))
+            .OrderBy(item => item.NextAttemptAtUtc).ThenBy(item => item.CreatedAtUtc).FirstOrDefaultAsync(cancellationToken);
+        if (job is null) return null;
+        job.Status = "leased"; job.LeaseOwner = leaseOwner; job.LeaseExpiresAtUtc = nowUtc.Add(leaseDuration); job.Version++;
+        await database.SaveChangesAsync(cancellationToken);
+        return new LeasedDurableJob(job.Id, job.JobType, job.PayloadJson, job.AttemptCount, leaseOwner);
+    }
+    public async Task CompleteJobAsync(Guid jobId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken)
+    {
+        var job = await database.DurableJobs.SingleAsync(item => item.Id == jobId, cancellationToken);
+        if (job.Status != "leased" || job.LeaseOwner != leaseOwner) return;
+        job.Status = "completed"; job.CompletedAtUtc = completedAtUtc; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null;
+        await database.SaveChangesAsync(cancellationToken);
+    }
+    public async Task FailJobAsync(LeasedDurableJob leased, string reason, DateTime failedAtUtc, CancellationToken cancellationToken)
+    {
+        var job = await database.DurableJobs.SingleAsync(item => item.Id == leased.Id, cancellationToken);
+        if (job.Status != "leased" || job.LeaseOwner != leased.LeaseOwner) return;
+        job.Status = "retrying"; job.AttemptCount++; job.NextAttemptAtUtc = failedAtUtc; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null;
+        await database.SaveChangesAsync(cancellationToken);
+    }
+    public Task<InboundMessageIngestResult> IngestInboundMessageAsync(InboundMessageIngestRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<bool> RenewSendLeasesAsync(LeasedSendCommand command, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken) => throw new NotSupportedException();
+}
+
 public sealed class FakeObjectStorage : IObjectStorage
 {
     public bool FailPut { get; set; }
+    public bool CancelBeforePut { get; set; }
+    public bool CancelAfterPut { get; set; }
     public int SuccessfulPuts { get; private set; }
+    public int PutCalls { get; private set; }
     public int Deletes { get; private set; }
+    public List<string> ObjectKeys { get; } = [];
     public Task<StoredObject> PutAsync(string objectKey, Stream content, string contentType, CancellationToken cancellationToken)
     {
+        PutCalls++;
+        if (CancelBeforePut) throw new OperationCanceledException("simulated cancellation before provider side effect");
         if (FailPut) throw new IOException("simulated provider failure");
         SuccessfulPuts++;
+        ObjectKeys.Add(objectKey);
+        if (CancelAfterPut) throw new OperationCanceledException("simulated cancellation after provider side effect");
         return Task.FromResult(new StoredObject(objectKey, new Uri($"https://public.example.test/{objectKey}")));
     }
     public Task DeleteAsync(string objectKey, CancellationToken cancellationToken) { Deletes++; return Task.CompletedTask; }
-    public void Reset() { FailPut = false; SuccessfulPuts = 0; Deletes = 0; }
+    public void Reset() { FailPut = false; CancelBeforePut = false; CancelAfterPut = false; SuccessfulPuts = 0; PutCalls = 0; Deletes = 0; ObjectKeys.Clear(); }
 }
 
 public sealed class RoleHeaderAuthenticationHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, System.Text.Encodings.Web.UrlEncoder encoder)

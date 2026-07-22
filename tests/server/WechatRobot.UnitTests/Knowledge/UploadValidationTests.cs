@@ -61,6 +61,16 @@ public sealed class UploadValidationTests
     }
 
     [Fact]
+    public async Task Corrupted_required_docx_entry_is_rejected_before_staging()
+    {
+        var bytes = CreateDocx("required-entry-corruption-" + new string('x', 256), CompressionLevel.Fastest);
+        CorruptEntryPayload(bytes, "word/document.xml");
+
+        var error = await ValidateFailureAsync("corrupt.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes);
+        Assert.Equal(DocumentUploadError.MalformedArchive, error);
+    }
+
+    [Fact]
     public async Task Validated_content_has_stable_hash_and_server_generated_safe_name()
     {
         var bytes = Encoding.UTF8.GetBytes("# safe markdown");
@@ -83,5 +93,33 @@ public sealed class UploadValidationTests
     {
         using var writer = new StreamWriter(archive.CreateEntry(name, CompressionLevel.SmallestSize).Open(), Encoding.UTF8);
         writer.Write(content);
+    }
+
+    private static byte[] CreateDocx(string documentXml, CompressionLevel level)
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteEntry(archive, "[Content_Types].xml", "<Types />");
+            using var writer = new StreamWriter(archive.CreateEntry("word/document.xml", level).Open(), Encoding.UTF8);
+            writer.Write(documentXml);
+        }
+        return stream.ToArray();
+    }
+
+    private static void CorruptEntryPayload(byte[] archive, string entryName)
+    {
+        var name = Encoding.UTF8.GetBytes(entryName);
+        for (var offset = 0; offset <= archive.Length - 30 - name.Length; offset++)
+        {
+            if (BitConverter.ToUInt32(archive, offset) != 0x04034b50) continue;
+            var nameLength = BitConverter.ToUInt16(archive, offset + 26);
+            var extraLength = BitConverter.ToUInt16(archive, offset + 28);
+            if (nameLength != name.Length || !archive.AsSpan(offset + 30, nameLength).SequenceEqual(name)) continue;
+            var compressedLength = BitConverter.ToInt32(archive, offset + 18);
+            archive[offset + 30 + nameLength + extraLength + Math.Max(1, compressedLength / 2)] ^= 0xff;
+            return;
+        }
+        throw new InvalidOperationException("Test ZIP entry was not found.");
     }
 }
