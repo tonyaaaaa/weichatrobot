@@ -43,6 +43,8 @@ public sealed class ConversationContextTests
 
         Assert.Empty(result.Messages);
         Assert.True(result.WasIdleReset);
+        Assert.Empty(result.EvictedMessages);
+        Assert.Null(result.Summary);
     }
 
     [Fact]
@@ -55,7 +57,7 @@ public sealed class ConversationContextTests
             Message("user", "alice", new string('c', 40), Now.AddMinutes(-1))
         };
 
-        var result = new ConversationContextService().Build(messages, Policy(tokenCap: 12, includeBotHistory: false), "alice", Now);
+        var result = new ConversationContextService().Build(messages, Policy(tokenCap: 17, includeBotHistory: false), "alice", Now);
 
         Assert.Single(result.Messages);
         Assert.Equal(new string('c', 40), result.Messages[0].Content);
@@ -93,6 +95,30 @@ public sealed class ConversationContextTests
 
         Assert.Equal("earlier summary", enabled.Summary);
         Assert.Null(disabled.Summary);
+    }
+
+    [Fact]
+    public void Summary_and_history_share_one_hard_context_budget()
+    {
+        var messages = new[]
+        {
+            Message("user", "alice", new string('h', 80), Now.AddMinutes(-2)),
+            Message("assistant", "alice", new string('a', 80), Now.AddMinutes(-1))
+        };
+
+        var result = new ConversationContextService().Build(messages, Policy(tokenCap: 25, summaryEnabled: true), "alice", Now, new string('s', 200));
+
+        Assert.InRange(result.ContextTokenCount, 0, 25);
+        Assert.True(result.WasTokenLimited);
+    }
+
+    [Fact]
+    public void One_long_summary_is_truncated_or_dropped_within_cap()
+    {
+        var result = new ConversationContextService().Build([], Policy(tokenCap: 8, summaryEnabled: true), "alice", Now, new string('s', 400));
+
+        Assert.InRange(result.ContextTokenCount, 0, 8);
+        Assert.True(result.WasTokenLimited);
     }
 
     private static IEnumerable<ConversationHistoryMessage> Turn(int number)

@@ -10,7 +10,7 @@ public sealed record RetrievalEvidence(Guid DocumentId, Guid VersionId, Guid Chu
     IReadOnlyList<Guid> TagIds, string DocumentTitle, string Text, string? SourceUri = null, string? SourceFileName = null);
 public sealed record RetrievalAuditDraft(IReadOnlyList<RetrievalEvidence> Evidence, double ConfidenceThreshold, double? ConfidenceValue,
     string ContextPolicy, string Decision, string? FailureCode = null, string InputSummaryJson = "{}");
-public sealed record GroundedAnswerResult(AnswerDecision Decision, RetrievalAuditDraft Audit, string? UpdatedSummary = null);
+public sealed record GroundedAnswerResult(AnswerDecision Decision, RetrievalAuditDraft Audit, string? UpdatedSummary = null, bool ResetContextBeforeCurrent = false);
 public sealed record GroundedAnswerRequest(Guid MessageId, Guid GroupProfileId, string SessionScopeKey, string Question,
     IReadOnlyList<Guid> AllowedTagIds, ConversationContextResult Context, GroupContextSettings ContextPolicy,
     ModelProviderConfiguration ChatConfiguration, RetrievalQueryResult? RetrievalQuery = null, Guid? ModelConfigurationId = null,

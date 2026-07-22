@@ -22,10 +22,12 @@ public sealed class AnswerOutputFirewall
                 return new(false, "evidence_uri_marker");
             if (!string.IsNullOrWhiteSpace(item.SourceFileName) && output.Contains(item.SourceFileName, StringComparison.OrdinalIgnoreCase))
                 return new(false, "evidence_filename_marker");
-            if (output.Contains(item.ChunkId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
-                output.Contains(item.VersionId.ToString("D"), StringComparison.OrdinalIgnoreCase))
+            if (ContainsId(output, item.DocumentId) || ContainsId(output, item.VersionId) || ContainsId(output, item.ChunkId))
                 return new(false, "evidence_identifier_marker");
         }
         return new(true);
     }
+
+    private static bool ContainsId(string output, Guid id) => output.Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
+        output.Contains(id.ToString("N"), StringComparison.OrdinalIgnoreCase);
 }

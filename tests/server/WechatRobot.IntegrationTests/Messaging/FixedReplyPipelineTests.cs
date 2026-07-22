@@ -151,7 +151,7 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
             _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.GroupName, result.Decision.GroupText,
                 $"grounded-reply:{request.MessageId:D}"), token);
-        public Task<int> ClearContextAsync(Guid groupProfileId, string? senderExternalUserId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
+        public Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
         public Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
         public Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
     }

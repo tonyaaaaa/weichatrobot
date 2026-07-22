@@ -46,5 +46,18 @@ public sealed class AnswerOutputFirewallTests
         Assert.False(firewall.Validate("See oss://bucket/private-object", [evidence]).IsSafe);
     }
 
+    [Fact]
+    public void Every_internal_evidence_id_format_is_rejected()
+    {
+        var evidence = Evidence();
+        var firewall = new AnswerOutputFirewall();
+
+        foreach (var id in new[] { evidence.DocumentId, evidence.VersionId, evidence.ChunkId })
+        {
+            Assert.False(firewall.Validate($"internal {id:D}", [evidence]).IsSafe);
+            Assert.False(firewall.Validate($"internal {id:N}".ToUpperInvariant(), [evidence]).IsSafe);
+        }
+    }
+
     private static RetrievalEvidence Evidence() => new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 4, .9, [], "manual.pdf", "safe evidence");
 }

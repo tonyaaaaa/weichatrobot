@@ -68,14 +68,86 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         Assert.Equal(0, (await repository.GetHistoryAsync(otherGroupId, 1, 20, TestContext.Current.CancellationToken)).Total);
 
         var clearedAt = DateTime.UtcNow.AddSeconds(1);
-        Assert.True(await repository.ClearContextAsync(groupId, "alice", clearedAt, TestContext.Current.CancellationToken) > 0);
+        Assert.True(await repository.ClearGroupContextAsync(groupId, clearedAt, TestContext.Current.CancellationToken) > 0);
         await verify.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(
             new(robotId, $"after-clear-{Guid.NewGuid():N}", $"after-clear-fallback-{Guid.NewGuid():N}", clearedAt.AddSeconds(1),
                 "Support", "alice", "new question", clearedAt.AddSeconds(1)), TestContext.Current.CancellationToken);
         var latest = await database.ConversationMessages.Where(item => item.RobotConfigId == robotId && item.Text == "new question")
             .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
         var afterClear = await repository.LoadForProcessingAsync(latest, TestContext.Current.CancellationToken);
-        Assert.Empty(new ConversationContextService().Build(afterClear.History, afterClear.ContextPolicy, "alice", clearedAt.AddSeconds(1), afterClear.Summary).Messages);
+        Assert.Empty(new ConversationContextService().Build(afterClear.History, afterClear.ContextPolicy, afterClear.Scope.ScopeKey, clearedAt.AddSeconds(1), afterClear.Summary).Messages);
+    }
+
+    [Fact]
+    public async Task Idle_reset_worker_commit_clears_summary_and_advances_sequence_without_reusing_old_context()
+    {
+        using var services = Services();
+        Guid sessionId;
+        Guid newMessageId;
+        await using (var scope = services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            var oldAt = DateTime.UtcNow.AddMinutes(-31);
+            var robot = new RobotConfigEntity { Name = $"idle-{Guid.NewGuid():N}", WorkToolRobotId = $"idle-{Guid.NewGuid():N}", CallbackSecretHash = "test" };
+            var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = "IdleSupport", Name = "IdleSupport", ContextSummaryEnabled = true };
+            var session = new ConversationSessionEntity
+            {
+                GroupProfileId = group.Id, SenderScopeKey = "group", Summary = "OLD-SUMMARY-INJECTION", NextSequence = 2,
+                LastActivityAtUtc = oldAt, CreatedAtUtc = oldAt, UpdatedAtUtc = oldAt
+            };
+            var oldUser = new ConversationMessageEntity
+            {
+                RobotConfigId = robot.Id, GroupProfileId = group.Id, ConversationSessionId = session.Id, SessionSequence = 1, GroupName = group.Name,
+                Direction = "inbound", Role = "user", FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = oldAt,
+                SenderDisplayName = "Alice", Text = "OLD-HISTORY-INJECTION", ReceivedAtUtc = oldAt, CreatedAtUtc = oldAt
+            };
+            var oldAnswer = new ConversationMessageEntity
+            {
+                RobotConfigId = robot.Id, GroupProfileId = group.Id, ConversationSessionId = session.Id, SessionSequence = 2, GroupName = group.Name,
+                Direction = "outbound", Role = "assistant", InReplyToMessageId = oldUser.Id, FallbackHash = Guid.NewGuid().ToString("N"),
+                FallbackWindowStartUtc = oldAt, SenderDisplayName = "Alice", Text = "OLD-ANSWER-INJECTION", ReceivedAtUtc = oldAt, CreatedAtUtc = oldAt
+            };
+            db.AddRange(robot, group, session, oldUser, oldAnswer, new RetrievalAuditEntity
+            {
+                ConversationMessageId = oldUser.Id, GroupProfileId = group.Id, Decision = "Answer", ConfidenceThreshold = .7,
+                ContextPolicy = "historical", EvidenceJson = "[]", InputSummaryJson = "{}", CreatedAtUtc = oldAt
+            }, new ModelConfigEntity
+            {
+                Name = $"chat-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test",
+                Model = "fake", EncryptedApiKey = "fake", IsDefault = true
+            });
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            var workToolMessageId = $"idle-message-{Guid.NewGuid():N}";
+            Assert.Equal(InboundMessageIngestResult.Accepted, await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(
+                new(robot.Id, workToolMessageId, $"idle-fallback-{Guid.NewGuid():N}", DateTime.UtcNow,
+                    group.Name, "Alice", "current question", DateTime.UtcNow), TestContext.Current.CancellationToken));
+            sessionId = session.Id;
+            newMessageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == workToolMessageId)
+                .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
+        }
+
+        var worker = new DurableJobWorker(services.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        var processedTarget = false;
+        for (var attempt = 0; attempt < 20 && !processedTarget; attempt++)
+        {
+            if (!await worker.ProcessOnceAsync(TestContext.Current.CancellationToken)) break;
+            await using var check = services.CreateAsyncScope();
+            processedTarget = await check.ServiceProvider.GetRequiredService<WechatRobotDbContext>().RetrievalAudits.AsNoTracking()
+                .AnyAsync(item => item.ConversationMessageId == newMessageId, TestContext.Current.CancellationToken);
+        }
+        Assert.True(processedTarget);
+
+        await using var verify = services.CreateAsyncScope();
+        var database = verify.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var persisted = await database.ConversationSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId, TestContext.Current.CancellationToken);
+        Assert.Null(persisted.Summary);
+        Assert.Equal(2, persisted.ClearedThroughSequence);
+        Assert.Equal(1, await database.RetrievalAudits.CountAsync(item => item.ConversationMessageId == newMessageId, TestContext.Current.CancellationToken));
+        var retrieval = services.GetRequiredService<FakeEvidence>();
+        Assert.DoesNotContain(retrieval.Queries, query => query.Contains("OLD-", StringComparison.Ordinal));
+        var chat = services.GetRequiredService<FakeChat>();
+        Assert.DoesNotContain(chat.Requests.SelectMany(request => request.Messages), message => message.Content.Contains("OLD-", StringComparison.Ordinal));
     }
 
     private ServiceProvider Services() => new ServiceCollection()
@@ -89,8 +161,10 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         .AddSingleton(new RetrievalQueryOptions())
         .AddSingleton<RetrievalQueryBuilder>()
         .AddSingleton<IConversationSummarizer, NoOpSummarizer>()
-        .AddSingleton<IRetrievalEvidenceProvider, FakeEvidence>()
-        .AddSingleton<IChatCompletionClient, FakeChat>()
+        .AddSingleton<FakeEvidence>()
+        .AddSingleton<IRetrievalEvidenceProvider>(provider => provider.GetRequiredService<FakeEvidence>())
+        .AddSingleton<FakeChat>()
+        .AddSingleton<IChatCompletionClient>(provider => provider.GetRequiredService<FakeChat>())
         .AddSingleton(new GroundedAnswerOptions(.7, 8, "insufficient", "failure", "handoff"))
         .AddScoped<GroundedAnswerService>()
         .AddScoped<InboundMessageProcessor>()
@@ -105,14 +179,22 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
 
     private sealed class FakeEvidence : IRetrievalEvidenceProvider
     {
-        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token) =>
-            Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 4, .94, [], "manual.pdf", "Warranty is two years.")]);
+        public List<string> Queries { get; } = [];
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token)
+        {
+            Queries.Add(question);
+            return Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 4, .94, [], "manual.pdf", "Warranty is two years.")]);
+        }
     }
 
     private sealed class FakeChat : IChatCompletionClient
     {
-        public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ChatCompletionResponse("Warranty is two years."));
+        public List<ChatCompletionRequest> Requests { get; } = [];
+        public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            return Task.FromResult(new ChatCompletionResponse("Warranty is two years."));
+        }
     }
 
     private sealed class NoOpSummarizer : IConversationSummarizer

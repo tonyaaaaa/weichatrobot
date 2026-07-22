@@ -91,37 +91,6 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
     }
 
     [Fact]
-    public async Task Configuration_clear_context_deletes_only_the_authorized_groups_persisted_messages()
-    {
-        var groupId = await SeedGroupAndTagsAsync();
-        await using (var scope = _factory.Services.CreateAsyncScope())
-        {
-            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-            database.ConversationMessages.AddRange(
-                new ConversationMessageEntity { RobotConfigId = RobotId, GroupProfileId = groupId, GroupName = "group-a", FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = DateTime.UtcNow, SenderDisplayName = "member-a", Text = "clear me", ReceivedAtUtc = DateTime.UtcNow },
-                new ConversationMessageEntity { RobotConfigId = RobotId, GroupProfileId = Guid.NewGuid(), GroupName = "group-b", FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = DateTime.UtcNow, SenderDisplayName = "member-b", Text = "keep me", ReceivedAtUtc = DateTime.UtcNow });
-            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
-        }
-
-        using var client = _factory.CreateClient();
-        var response = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
-        {
-            includeRules = new[] { new { pattern = "技术", patternKind = "contains", ignoreCase = true } },
-            excludeRules = Array.Empty<object>(),
-            boundTagIds = Array.Empty<Guid>(),
-            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null },
-            clearContext = true
-        }, TestContext.Current.CancellationToken);
-
-        response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(1, document.RootElement.GetProperty("clearedContextMessages").GetInt32());
-        await using var verifyScope = _factory.Services.CreateAsyncScope();
-        var databaseAfter = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-        Assert.Equal(1, await databaseAfter.ConversationMessages.CountAsync(TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
     public async Task Disabled_bound_tag_is_exposed_for_removal_but_cannot_be_newly_or_still_bound_on_save()
     {
         var groupId = await SeedGroupAndTagsAsync();

@@ -101,7 +101,9 @@ public sealed class GroundedConversationRepository(
         var maximumRows = Math.Min(232, policyRows + (policy.SummaryEnabled ? MaximumSummaryCandidateRows : 0));
         var history = session is null || maximumRows == 0 ? [] : (await database.ConversationMessages.AsNoTracking()
             .Where(item => item.ConversationSessionId == session.Id && item.Id != message.Id &&
-                (session.ClearedAtUtc == null || item.CreatedAtUtc > session.ClearedAtUtc))
+                (item.SessionSequence != null
+                    ? item.SessionSequence > session.ClearedThroughSequence
+                    : session.ClearedAtUtc == null || item.CreatedAtUtc > session.ClearedAtUtc))
             .Where(item => policy.IncludeBotHistory || item.Role == "user")
             .OrderByDescending(item => item.SessionSequence ?? 0).ThenByDescending(item => item.CreatedAtUtc).ThenByDescending(item => item.Id).Take(maximumRows)
             .Select(item => new ConversationHistoryMessage(item.Role, scope.ScopeKey, item.Text, item.CreatedAtUtc, item.Id)).ToArrayAsync(token))
@@ -193,7 +195,10 @@ public sealed class GroundedConversationRepository(
             .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.LeaseOwner, (string?)null).SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
                 .SetProperty(item => item.LastActivityAtUtc, now).SetProperty(item => item.UpdatedAtUtc, now)
                 .SetProperty(item => item.NextSequence, sequenceState.NextSequence + 2)
-                .SetProperty(item => item.Summary, item => result.UpdatedSummary ?? item.Summary).SetProperty(item => item.Version, item => item.Version + 1), token);
+                .SetProperty(item => item.Summary, item => result.ResetContextBeforeCurrent ? result.UpdatedSummary : result.UpdatedSummary ?? item.Summary)
+                .SetProperty(item => item.ClearedThroughSequence, item => result.ResetContextBeforeCurrent ? sequenceState.NextSequence : item.ClearedThroughSequence)
+                .SetProperty(item => item.ClearedAtUtc, item => result.ResetContextBeforeCurrent ? request.ReceivedAtUtc : item.ClearedAtUtc)
+                .SetProperty(item => item.Version, item => item.Version + 1), token);
         if (guarded != 1)
         {
             await transaction.RollbackAsync(token);
@@ -203,19 +208,29 @@ public sealed class GroundedConversationRepository(
         await transaction.CommitAsync(token);
     }
 
-    public async Task<int> ClearContextAsync(Guid groupProfileId, string? senderExternalUserId, DateTime clearedAtUtc, CancellationToken token)
+    public async Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token)
     {
-        var scope = string.IsNullOrWhiteSpace(senderExternalUserId) ? "*" : senderExternalUserId.Trim();
-        var session = await database.ConversationSessions.SingleOrDefaultAsync(item => item.GroupProfileId == groupProfileId && item.SenderScopeKey == scope, token);
-        if (session is null)
+        await using var transaction = await database.Database.BeginTransactionAsync(token);
+        var cleared = await database.ConversationSessions.Where(item => item.GroupProfileId == groupProfileId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ClearedAtUtc, clearedAtUtc)
+                .SetProperty(item => item.ClearedThroughSequence, item => item.NextSequence)
+                .SetProperty(item => item.Summary, (string?)null)
+                .SetProperty(item => item.LeaseOwner, (string?)null)
+                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(item => item.UpdatedAtUtc, clearedAtUtc)
+                .SetProperty(item => item.Version, item => item.Version + 1), token);
+        if (!await database.ConversationSessions.AnyAsync(item => item.GroupProfileId == groupProfileId && item.SenderScopeKey == "group", token))
         {
-            session = new ConversationSessionEntity { GroupProfileId = groupProfileId, SenderScopeKey = scope, LastActivityAtUtc = clearedAtUtc };
-            database.ConversationSessions.Add(session);
+            database.ConversationSessions.Add(new ConversationSessionEntity
+            {
+                GroupProfileId = groupProfileId, SenderScopeKey = "group", LastActivityAtUtc = clearedAtUtc,
+                ClearedAtUtc = clearedAtUtc, ClearedThroughSequence = 0, CreatedAtUtc = clearedAtUtc, UpdatedAtUtc = clearedAtUtc
+            });
+            await database.SaveChangesAsync(token);
+            cleared++;
         }
-        session.ClearedAtUtc = clearedAtUtc;
-        session.Summary = null;
-        session.UpdatedAtUtc = clearedAtUtc;
-        return await database.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
+        return cleared;
     }
 
     public async Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token)

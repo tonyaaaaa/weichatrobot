@@ -39,7 +39,7 @@ async function preview() {
 async function save(clearContext = false) {
   if (!canSave.value) { notice.value = '请先输入群配置 ID。'; return; }
   const saved = await props.api.updateConfiguration(activeGroupId.value, request(clearContext));
-  Object.assign(configured, saved.context.configured); effective.value = saved.context.effective; notice.value = clearContext ? `已清空 ${saved.clearedContextMessages} 条本群上下文。` : '群配置已保存。';
+  Object.assign(configured, saved.context.configured); effective.value = saved.context.effective; notice.value = clearContext ? `已清空 ${saved.clearedContextSessions} 个本群会话上下文，历史和审计记录已保留。` : '群配置已保存。';
 }
 onMounted(load);
 </script>

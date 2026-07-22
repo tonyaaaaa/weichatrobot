@@ -46,17 +46,19 @@ public sealed class InboundMessageProcessor(
             try
             {
                 updatedSummary = await summarizer.SummarizeAsync(request.ChatConfiguration, request.Summary, effectiveContext.EvictedMessages, cancellationToken);
-                effectiveContext = new(effectiveContext.Messages, updatedSummary, effectiveContext.WasIdleReset, effectiveContext.WasTokenLimited, effectiveContext.EvictedMessages);
+                effectiveContext = context.Build(effectiveContext.Messages, request.ContextPolicy, request.Scope.ScopeKey, request.ReceivedAtUtc, updatedSummary);
             }
             catch (ModelUnavailableException)
             {
                 summaryFailureCode = "summary_provider_unavailable";
-                effectiveContext = new(effectiveContext.Messages, null, effectiveContext.WasIdleReset, effectiveContext.WasTokenLimited, effectiveContext.EvictedMessages);
+                effectiveContext = new(effectiveContext.Messages, null, effectiveContext.WasIdleReset, effectiveContext.WasTokenLimited,
+                    effectiveContext.EvictedMessages, effectiveContext.ContextTokenCount);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 summaryFailureCode = "summary_provider_timeout";
-                effectiveContext = new(effectiveContext.Messages, null, effectiveContext.WasIdleReset, effectiveContext.WasTokenLimited, effectiveContext.EvictedMessages);
+                effectiveContext = new(effectiveContext.Messages, null, effectiveContext.WasIdleReset, effectiveContext.WasTokenLimited,
+                    effectiveContext.EvictedMessages, effectiveContext.ContextTokenCount);
             }
         }
         var retrievalQuery = retrievalQueries.Build(request.Question, effectiveContext);
@@ -64,6 +66,7 @@ public sealed class InboundMessageProcessor(
         var result = await answers.AnswerAsync(new(request.MessageId, request.GroupProfileId, request.Scope.ScopeKey, request.Question,
             request.AllowedTagIds, effectiveContext, request.ContextPolicy, request.ChatConfiguration, retrievalQuery, request.ModelConfigurationId,
             request.Scope.DegradationReason, summaryFailureCode), cancellationToken);
+        if (effectiveContext.WasIdleReset) result = result with { ResetContextBeforeCurrent = true, UpdatedSummary = null };
         if (updatedSummary is not null) result = result with { UpdatedSummary = updatedSummary };
         await EnsureLeaseAsync(request, cancellationToken);
         await conversations.PersistAnswerAndEnqueueAsync(request, result, cancellationToken);

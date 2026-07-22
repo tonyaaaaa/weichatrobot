@@ -12,6 +12,7 @@ using WechatRobot.Api.Knowledge;
 using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Knowledge.Chunking;
 using WechatRobot.Application.Knowledge.Parsing;
@@ -22,6 +23,7 @@ using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Infrastructure.Conversations;
 using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Knowledge.Parsing;
 using WechatRobot.Infrastructure.Models;
@@ -48,6 +50,7 @@ builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
+builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
 builder.Services.AddOptions<DocumentUploadOptions>()
     .BindConfiguration(DocumentUploadOptions.SectionName)
     .Validate(options => options.MaximumBytes is > 0 and <= int.MaxValue && options.MaximumArchiveEntries > 0 && options.MaximumExpandedArchiveBytes > 0 && options.MaximumArchiveExpansionRatio > 0, "Document upload limits are invalid.")

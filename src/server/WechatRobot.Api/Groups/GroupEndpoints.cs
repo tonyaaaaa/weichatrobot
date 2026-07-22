@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
 using WechatRobot.Domain.Groups;
 using WechatRobot.Domain.Knowledge;
@@ -34,6 +35,7 @@ public static class GroupEndpoints
         UpdateGroupConfigurationRequest request,
         WechatRobotDbContext database,
         GroupConfigurationService service,
+        IGroundedConversationRepository conversations,
         CancellationToken cancellationToken)
     {
         var selectedTagIds = request.BoundTagIds.Distinct().ToArray();
@@ -77,16 +79,11 @@ public static class GroupEndpoints
 
         ApplyContext(group, context);
         group.UpdatedAtUtc = DateTime.UtcNow;
-        var clearedMessages = 0;
-        if (request.ClearContext)
-        {
-            var messages = await database.ConversationMessages.Where(message => message.GroupProfileId == id).ToListAsync(cancellationToken);
-            clearedMessages = messages.Count;
-            database.ConversationMessages.RemoveRange(messages);
-        }
-
         await database.SaveChangesAsync(cancellationToken);
-        return Results.Ok(await ToResponseAsync(group, database, service, clearedMessages, cancellationToken));
+        var clearedSessions = request.ClearContext
+            ? await conversations.ClearGroupContextAsync(id, DateTime.UtcNow, cancellationToken)
+            : 0;
+        return Results.Ok(await ToResponseAsync(group, database, service, clearedSessions, cancellationToken));
     }
 
     private static IResult PreviewAsync(PreviewGroupRulesRequest request, GroupConfigurationService service)
@@ -125,7 +122,7 @@ public static class GroupEndpoints
         return Results.Ok(new PreviewGroupRulesResponse(results));
     }
 
-    private static async Task<GroupConfigurationResponse> ToResponseAsync(GroupProfileEntity group, WechatRobotDbContext database, GroupConfigurationService service, int clearedMessages, CancellationToken cancellationToken)
+    private static async Task<GroupConfigurationResponse> ToResponseAsync(GroupProfileEntity group, WechatRobotDbContext database, GroupConfigurationService service, int clearedSessions, CancellationToken cancellationToken)
     {
         var rules = await database.GroupRules.AsNoTracking().Where(rule => rule.GroupProfileId == group.Id).OrderBy(rule => rule.CreatedAtUtc).ThenBy(rule => rule.Id).ToArrayAsync(cancellationToken);
         var boundTagIds = await database.GroupProfileTags.AsNoTracking().Where(binding => binding.GroupProfileId == group.Id).Select(binding => binding.KnowledgeTagId).ToArrayAsync(cancellationToken);
@@ -145,7 +142,7 @@ public static class GroupEndpoints
                 .Select(tag => new KnowledgeTagResponse(tag.Id, tag.Name, tag.IsGlobalPublic, tag.IsEnabled, boundTagIds.Contains(tag.Id))).ToArray(),
             AnyBoundTagOrGlobalPublic,
             new GroupContextResponse(configured, service.GetEffectiveContext(configured)),
-            clearedMessages);
+            clearedSessions);
     }
 
     private static GroupContextOverrides ToConfiguredContext(GroupProfileEntity group) => new(group.ContextSenderIsolated, group.ContextHistoryTurns,
@@ -205,7 +202,7 @@ public static class GroupEndpoints
     public sealed record RuleRequest(string Pattern, string PatternKind, bool IgnoreCase = true);
     public sealed record ContextOverridesRequest(bool? SenderIsolated, int? HistoryTurns, int? IdleTimeoutMinutes, int? TokenCap, bool? SummaryEnabled, bool? IncludeBotHistory);
     public sealed record GroupConfigurationResponse(Guid Id, string Name, GroupRulesResponse Rules, IReadOnlyList<Guid> BoundTagIds, IReadOnlyList<Guid> AllowedTagIds,
-        IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context, int ClearedContextMessages);
+        IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context, int ClearedContextSessions);
     public sealed record GroupRulesResponse(IReadOnlyList<RuleResponse> Include, IReadOnlyList<RuleResponse> Exclude);
     public sealed record RuleResponse(Guid Id, string Pattern, string PatternKind, bool IgnoreCase);
     public sealed record KnowledgeTagResponse(Guid Id, string Name, bool IsGlobalPublic, bool IsEnabled, bool IsBound);

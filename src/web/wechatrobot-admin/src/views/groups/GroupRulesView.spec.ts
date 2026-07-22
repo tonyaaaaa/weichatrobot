@@ -17,7 +17,7 @@ describe('GroupRulesView', () => {
     });
     api.previewRules.mockResolvedValue({ results: [{ groupName: '技术测试群', isMatch: false, isExcluded: true }] });
     api.updateConfiguration.mockResolvedValue({
-      clearedContextMessages: 1,
+      clearedContextSessions: 1,
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
     const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });
@@ -43,7 +43,7 @@ describe('GroupRulesView', () => {
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
     api.updateConfiguration.mockResolvedValue({
-      clearedContextMessages: 0,
+      clearedContextSessions: 0,
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
     const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });

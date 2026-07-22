@@ -35,6 +35,32 @@ public sealed class InboundMessageProcessorTests
         Assert.Equal(AnswerDecisionKind.Answer, repository.Result.Decision.Kind);
     }
 
+    [Fact]
+    public async Task Idle_reset_does_not_summarize_or_send_old_summary_or_history_to_retrieval_and_model()
+    {
+        var now = DateTime.UtcNow;
+        var request = Request() with
+        {
+            ReceivedAtUtc = now,
+            History = [new("user", "sender:stable", "OLD-HISTORY-INJECTION", now.AddMinutes(-31), Guid.NewGuid())],
+            Summary = "OLD-SUMMARY-INJECTION"
+        };
+        var repository = new FakeRepository(request);
+        var summarizer = new FakeSummarizer("must not run");
+        var retrieval = new FakeRetrieval();
+        var chat = new FakeChat();
+        var processor = new InboundMessageProcessor(repository, new ConversationContextService(), new RetrievalQueryBuilder(new(256)), summarizer,
+            new GroundedAnswerService(retrieval, chat, new GroundedAnswerOptions(), new AnswerOutputFirewall()), TimeProvider.System);
+
+        await processor.ProcessAsync(Job(request.MessageId), TestContext.Current.CancellationToken);
+
+        Assert.True(repository.Result!.ResetContextBeforeCurrent);
+        Assert.Null(repository.Result.UpdatedSummary);
+        Assert.Equal(0, summarizer.CallCount);
+        Assert.DoesNotContain("OLD-", retrieval.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain(chat.LastRequest!.Messages, message => message.Content.Contains("OLD-", StringComparison.Ordinal));
+    }
+
     private static InboundMessageProcessor Processor(FakeRepository repository, IConversationSummarizer summarizer)
     {
         var answer = new GroundedAnswerService(new FakeRetrieval(), new FakeChat(), new GroundedAnswerOptions(), new AnswerOutputFirewall());
@@ -68,7 +94,7 @@ public sealed class InboundMessageProcessorTests
         public Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) { RenewCount++; return Task.FromResult(true); }
         public Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token) => Task.CompletedTask;
         public Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) { Result = result; return Task.CompletedTask; }
-        public Task<int> ClearContextAsync(Guid groupProfileId, string? senderExternalUserId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
+        public Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
         public Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
         public Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
     }
@@ -79,8 +105,10 @@ public sealed class InboundMessageProcessorTests
         private readonly Exception? exception;
         public FakeSummarizer(string result) => this.result = result;
         public FakeSummarizer(Exception exception) => this.exception = exception;
+        public int CallCount { get; private set; }
         public Task<string> SummarizeAsync(ModelProviderConfiguration configuration, string? existingSummary, IReadOnlyList<ConversationHistoryMessage> evictedMessages, CancellationToken token)
         {
+            CallCount++;
             if (exception is not null) throw exception;
             return Task.FromResult(result!);
         }
@@ -88,13 +116,21 @@ public sealed class InboundMessageProcessorTests
 
     private sealed class FakeRetrieval : IRetrievalEvidenceProvider
     {
-        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token) =>
-            Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1, .9, [], "internal", "evidence")]);
+        public string Query { get; private set; } = string.Empty;
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token)
+        {
+            Query = question;
+            return Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1, .9, [], "internal", "evidence")]);
+        }
     }
 
     private sealed class FakeChat : IChatCompletionClient
     {
-        public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ChatCompletionResponse("clean answer"));
+        public ChatCompletionRequest? LastRequest { get; private set; }
+        public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default)
+        {
+            LastRequest = request;
+            return Task.FromResult(new ChatCompletionResponse("clean answer"));
+        }
     }
 }
