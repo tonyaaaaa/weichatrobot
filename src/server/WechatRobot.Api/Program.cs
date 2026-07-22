@@ -59,7 +59,8 @@ builder.Services.AddSingleton<IOssTransport, AliyunOssTransport>();
 builder.Services.AddSingleton<IObjectStorage, AliyunOssStorage>();
 builder.Services.AddScoped<IKnowledgeDocumentStore, KnowledgeDocumentStore>();
 builder.Services.AddOptions<DocumentParsingOptions>().BindConfiguration(DocumentParsingOptions.SectionName)
-    .Validate(options => options.MaximumSourceBytes > 0 && options.MaximumPages > 0 && options.MaximumMemoryBytes >= options.MaximumSourceBytes && options.ExecutionTimeoutSeconds > 0, "Document parsing limits are invalid.")
+    .Validate(options => options.MaximumSourceBytes > 0 && options.MaximumPages > 0 && options.MaximumMemoryBytes > 0 && options.ExecutionTimeoutSeconds > 0 &&
+        options.MaximumPageCharacters > 0 && options.MaximumExpandedEntryBytes > 0 && options.MaximumResultCharacters > 0, "Document parsing limits are invalid.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<IDocumentSourceReader, HttpDocumentSourceReader>();
 builder.Services.AddSingleton<MarkdownTextParser>();
@@ -71,7 +72,7 @@ builder.Services.AddSingleton<ChunkingService>();
 builder.Services.AddScoped<ChunkPreviewRepository>();
 builder.Services.AddScoped(services => new KnowledgePreviewService(services.GetRequiredService<WechatRobotDbContext>(), services.GetRequiredService<IDocumentSourceReader>(),
     services.GetRequiredService<DocumentParserSelector>(), services.GetRequiredService<ChunkingService>(), services.GetRequiredService<ChunkPreviewRepository>(),
-    services.GetRequiredService<IOptions<DocumentParsingOptions>>().Value));
+    services.GetRequiredService<IOptions<DocumentParsingOptions>>().Value, services.GetRequiredService<TimeProvider>()));
 builder.Services.AddScoped(services => new DocumentUploadService(
     services.GetRequiredService<IOptions<DocumentUploadOptions>>().Value,
     services.GetRequiredService<IOptions<OssOptions>>().Value.PublicReadRiskAccepted,

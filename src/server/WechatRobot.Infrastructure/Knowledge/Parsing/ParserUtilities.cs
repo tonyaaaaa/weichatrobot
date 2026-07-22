@@ -4,33 +4,41 @@ namespace WechatRobot.Infrastructure.Knowledge.Parsing;
 
 internal static class ParserUtilities
 {
-    public static async Task<byte[]> ReadBoundedAsync(Stream source, DocumentParsingLimits limits, CancellationToken cancellationToken)
+    public static async Task<ReadOnlyMemory<byte>> ReadBoundedAsync(Stream source, DocumentProcessingContext context)
     {
-        Validate(limits);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(limits.ExecutionTimeout);
-        await using var destination = new MemoryStream((int)Math.Min(limits.MaximumSourceBytes, 1024 * 1024));
-        var buffer = new byte[64 * 1024];
+        context.Checkpoint("source-read");
+        if (source is MemoryStream memory && memory.TryGetBuffer(out var segment))
+        {
+            context.EnsureSourceReservation(memory.Length);
+            context.Checkpoint("source-buffered");
+            return segment.Array!.AsMemory(segment.Offset, checked((int)memory.Length));
+        }
+        if (!source.CanSeek || source.Length > int.MaxValue)
+            throw new DocumentParsingException(DocumentParsingError.SourceTooLarge, "Parser sources must be bounded seekable streams.");
+        var length = source.Length;
+        context.EnsureSourceReservation(length);
+        var buffer = GC.AllocateUninitializedArray<byte>(checked((int)length));
+        var offset = 0;
         try
         {
-            while (true)
+            while (offset < buffer.Length)
             {
-                var read = await source.ReadAsync(buffer, timeout.Token);
-                if (read == 0) break;
-                if (destination.Length + read > limits.MaximumSourceBytes) throw new DocumentParsingException(DocumentParsingError.SourceTooLarge, "The source exceeds the parsing size limit.");
-                if (destination.Length + read > limits.MaximumMemoryBytes) throw new DocumentParsingException(DocumentParsingError.MemoryLimitExceeded, "The source exceeds the parsing memory limit.");
-                await destination.WriteAsync(buffer.AsMemory(0, read), timeout.Token);
+                context.Checkpoint("source-read");
+                var read = await source.ReadAsync(buffer.AsMemory(offset), context.Token);
+                if (read == 0) throw new EndOfStreamException("Document source ended before its declared length.");
+                offset += read;
             }
         }
-        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-        { throw new DocumentParsingException(DocumentParsingError.Timeout, "Document parsing timed out.", exception); }
-        return destination.ToArray();
+        catch (OperationCanceledException) { context.Checkpoint("source-read"); throw; }
+        context.Checkpoint("source-buffered");
+        return buffer;
     }
 
-    private static void Validate(DocumentParsingLimits limits)
+    public static MemoryStream OpenReadOnlyStream(ReadOnlyMemory<byte> bytes)
     {
-        if (limits.MaximumSourceBytes < 1 || limits.MaximumPages < 1 || limits.MaximumMemoryBytes < limits.MaximumSourceBytes || limits.ExecutionTimeout <= TimeSpan.Zero)
-            throw new InvalidOperationException("Document parsing limits are invalid.");
+        if (!System.Runtime.InteropServices.MemoryMarshal.TryGetArray(bytes, out var segment) || segment.Array is null)
+            throw new InvalidOperationException("The bounded parser buffer is not array-backed.");
+        return new MemoryStream(segment.Array, segment.Offset, segment.Count, writable: false, publiclyVisible: true);
     }
 }
 

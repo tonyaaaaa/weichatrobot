@@ -66,7 +66,7 @@ public sealed class ChunkPreviewPersistenceTests
         var repository = new ChunkPreviewRepository(db);
         var service = new KnowledgePreviewService(db, new MemorySourceReader("# 标题\n第一段\n\n第二段"u8.ToArray()),
             new DocumentParserSelector([new MarkdownTextParser(), new DocxParser(), new PdfTextParser()]), new ChunkingService(), repository,
-            new DocumentParsingOptions { MaximumSourceBytes = 1024, MaximumMemoryBytes = 2048, MaximumPages = 10, ExecutionTimeoutSeconds = 5 });
+            new DocumentParsingOptions { MaximumSourceBytes = 1024, MaximumMemoryBytes = 4096, MaximumPages = 10, ExecutionTimeoutSeconds = 5 }, TimeProvider.System);
         var payload = System.Text.Json.JsonSerializer.Serialize(new { documentId, versionId });
         Assert.True(await service.GenerateFromJobAsync(payload, TestContext.Current.CancellationToken));
         var first = (await repository.GetAsync(versionId, TestContext.Current.CancellationToken)).Items.Select(Signature).ToArray();
@@ -79,7 +79,10 @@ public sealed class ChunkPreviewPersistenceTests
 
     private sealed class MemorySourceReader(byte[] content) : IDocumentSourceReader
     {
-        public Task<Stream> OpenReadAsync(Uri publicUrl, long maximumBytes, CancellationToken cancellationToken) =>
-            Task.FromResult<Stream>(new MemoryStream(content, writable: false));
+        public Task<Stream> OpenReadAsync(Uri publicUrl, DocumentProcessingContext context)
+        {
+            context.ReserveSource(content.Length);
+            return Task.FromResult<Stream>(new MemoryStream(content, 0, content.Length, writable: false, publiclyVisible: true));
+        }
     }
 }

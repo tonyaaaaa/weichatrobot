@@ -14,6 +14,7 @@ public sealed class KnowledgeChunkPreviewEntity
     public string? Question { get; set; }
     public string SynonymsJson { get; set; } = "[]";
     public string? Answer { get; set; }
+    public int OverlapPrefixCharacters { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

@@ -103,11 +103,11 @@ public sealed class ChunkPreviewRepository(WechatRobotDbContext database)
     {
         Id = item.Id, KnowledgeDocumentVersionId = versionId, Sequence = item.Sequence, Text = item.Text, PageNumber = item.PageNumber,
         HeadingsJson = JsonSerializer.Serialize(item.Headings), IsTable = item.IsTable, TableRows = item.TableRows, TableColumns = item.TableColumns,
-        Question = item.Question, SynonymsJson = JsonSerializer.Serialize(item.Synonyms ?? []), Answer = item.Answer
+        Question = item.Question, SynonymsJson = JsonSerializer.Serialize(item.Synonyms ?? []), Answer = item.Answer, OverlapPrefixCharacters = item.OverlapPrefixCharacters
     };
     private static ChunkPreview ToModel(KnowledgeChunkPreviewEntity item) => new(item.Id, item.Sequence, item.Text, item.PageNumber,
         JsonSerializer.Deserialize<string[]>(item.HeadingsJson) ?? [], item.IsTable, item.TableRows, item.TableColumns, item.Question,
-        JsonSerializer.Deserialize<string[]>(item.SynonymsJson) ?? [], item.Answer);
+        JsonSerializer.Deserialize<string[]>(item.SynonymsJson) ?? [], item.Answer, item.OverlapPrefixCharacters);
     private static KnowledgeChunkEntity ToActive(KnowledgeChunkPreviewEntity item) => new()
     {
         Id = item.Id, KnowledgeDocumentVersionId = item.KnowledgeDocumentVersionId, Sequence = item.Sequence, Text = item.Text, PageNumber = item.PageNumber,

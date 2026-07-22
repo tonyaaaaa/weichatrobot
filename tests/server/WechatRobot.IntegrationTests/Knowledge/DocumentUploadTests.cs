@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WechatRobot.Application.Storage;
 using WechatRobot.Application.Knowledge;
+using WechatRobot.Application.Knowledge.Parsing;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
@@ -339,9 +340,11 @@ public sealed class DocumentUploadApiFactory : WebApplicationFactory<Program>
             services.AddDbContext<WechatRobotDbContext>(options => options.UseInMemoryDatabase(_databaseName).UseInternalServiceProvider(InMemoryProvider));
             foreach (var item in services.Where(service => service.ServiceType == typeof(IObjectStorage)).ToArray()) services.Remove(item);
             foreach (var item in services.Where(service => service.ServiceType == typeof(IDurableJobRepository)).ToArray()) services.Remove(item);
+            foreach (var item in services.Where(service => service.ServiceType == typeof(IDocumentSourceReader)).ToArray()) services.Remove(item);
             services.AddSingleton(Storage);
             services.AddSingleton<IObjectStorage>(Storage);
             services.AddScoped<IDurableJobRepository, InMemoryKnowledgeJobRepository>();
+            services.AddSingleton<IDocumentSourceReader, FakeDocumentSourceReader>();
             services.AddAuthentication(options =>
             {
                 options.DefaultAuthenticateScheme = "document-tests";
@@ -349,6 +352,17 @@ public sealed class DocumentUploadApiFactory : WebApplicationFactory<Program>
                 options.DefaultForbidScheme = "document-tests";
             }).AddScheme<AuthenticationSchemeOptions, RoleHeaderAuthenticationHandler>("document-tests", _ => { });
         });
+    }
+}
+
+public sealed class FakeDocumentSourceReader : IDocumentSourceReader
+{
+    public Task<Stream> OpenReadAsync(Uri publicUrl, DocumentProcessingContext context)
+    {
+        context.Checkpoint("source-http");
+        var bytes = "alpha beta"u8.ToArray();
+        context.ReserveSource(bytes.Length);
+        return Task.FromResult<Stream>(new MemoryStream(bytes, 0, bytes.Length, writable: false, publiclyVisible: true));
     }
 }
 

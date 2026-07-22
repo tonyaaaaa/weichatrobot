@@ -14,6 +14,9 @@ public sealed class DocumentParsingOptions
     public int MaximumPages { get; set; } = 500;
     public long MaximumMemoryBytes { get; set; } = 64 * 1024 * 1024;
     public int ExecutionTimeoutSeconds { get; set; } = 30;
+    public int MaximumPageCharacters { get; set; } = 1_000_000;
+    public long MaximumExpandedEntryBytes { get; set; } = 16 * 1024 * 1024;
+    public long MaximumResultCharacters { get; set; } = 10_000_000;
 }
 
 public sealed class KnowledgePreviewService(
@@ -22,7 +25,8 @@ public sealed class KnowledgePreviewService(
     DocumentParserSelector selector,
     ChunkingService chunking,
     ChunkPreviewRepository repository,
-    DocumentParsingOptions options)
+    DocumentParsingOptions options,
+    TimeProvider timeProvider)
 {
     public async Task<ChunkPreviewSet> GenerateAsync(Guid versionId, ChunkPolicy policy, int expectedRevision, CancellationToken cancellationToken)
     {
@@ -30,10 +34,20 @@ public sealed class KnowledgePreviewService(
             ?? throw new KeyNotFoundException();
         if (version.Status is not ("uploaded" or "preview")) throw new ChunkPreviewStateException();
         if (!Uri.TryCreate(version.PublicUrl, UriKind.Absolute, out var url)) throw new ChunkPreviewStateException();
-        var limits = new DocumentParsingLimits(options.MaximumSourceBytes, options.MaximumPages, options.MaximumMemoryBytes, TimeSpan.FromSeconds(options.ExecutionTimeoutSeconds));
-        await using var source = await sourceReader.OpenReadAsync(url, limits.MaximumSourceBytes, cancellationToken);
-        var parsed = await selector.Select(version.ContentType).ParseAsync(source, version.ContentType, limits, cancellationToken);
-        return await repository.ReplaceAsync(versionId, chunking.Generate(parsed.Blocks, policy), expectedRevision, cancellationToken);
+        var limits = new DocumentParsingLimits(options.MaximumSourceBytes, options.MaximumPages, options.MaximumMemoryBytes, TimeSpan.FromSeconds(options.ExecutionTimeoutSeconds))
+        {
+            MaximumPageCharacters = options.MaximumPageCharacters,
+            MaximumExpandedEntryBytes = options.MaximumExpandedEntryBytes,
+            MaximumResultCharacters = options.MaximumResultCharacters
+        };
+        using var context = new DocumentProcessingContext(limits, cancellationToken, timeProvider);
+        await using var source = await sourceReader.OpenReadAsync(url, context);
+        context.Checkpoint("parse-start");
+        var parsed = await selector.Select(version.ContentType).ParseAsync(source, version.ContentType, context);
+        context.Checkpoint("chunk-start");
+        var previews = chunking.Generate(parsed.Blocks, policy, context);
+        context.Checkpoint("preview-persist");
+        return await repository.ReplaceAsync(versionId, previews, expectedRevision, context.Token);
     }
 
     public async Task<bool> GenerateFromJobAsync(string payloadJson, CancellationToken cancellationToken)
