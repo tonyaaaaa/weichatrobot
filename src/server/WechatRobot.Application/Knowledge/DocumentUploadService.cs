@@ -38,7 +38,14 @@ public sealed record ValidatedDocument(byte[] Content, string Sha256, string Saf
 public static class DocumentUploadValidator
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly Encoding StrictGb18030;
     private const string DocxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    static DocumentUploadValidator()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        StrictGb18030 = Encoding.GetEncoding("GB18030", EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+    }
 
     public static async Task<ValidatedDocument> ValidateAndBufferAsync(
         string clientFileName,
@@ -110,7 +117,16 @@ public static class DocumentUploadValidator
         if (content.AsSpan().IndexOf((byte)0) >= 0 || content.AsSpan().StartsWith("%PDF-"u8) || content.AsSpan().StartsWith(new byte[] { 0x50, 0x4b }))
             throw Failure(DocumentUploadError.InvalidFileHeader, "The text document contains a binary signature.");
         try { _ = StrictUtf8.GetString(content); }
-        catch (DecoderFallbackException) { throw Failure(DocumentUploadError.InvalidFileHeader, "The text document must be valid UTF-8."); }
+        catch (DecoderFallbackException) when (extension == ".txt")
+        {
+            try
+            {
+                var decoded = StrictGb18030.GetString(content);
+                if (!StrictGb18030.GetBytes(decoded).AsSpan().SequenceEqual(content)) throw new DecoderFallbackException();
+            }
+            catch (DecoderFallbackException) { throw Failure(DocumentUploadError.InvalidFileHeader, "The TXT document must be valid UTF-8 or GB18030."); }
+        }
+        catch (DecoderFallbackException) { throw Failure(DocumentUploadError.InvalidFileHeader, "The Markdown document must be valid UTF-8."); }
     }
 
     private static void ValidateDocx(byte[] content, DocumentUploadOptions options)

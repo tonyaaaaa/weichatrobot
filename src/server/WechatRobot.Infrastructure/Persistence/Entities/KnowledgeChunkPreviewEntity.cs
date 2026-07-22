@@ -1,6 +1,6 @@
 namespace WechatRobot.Infrastructure.Persistence.Entities;
 
-public sealed class KnowledgeChunkEntity
+public sealed class KnowledgeChunkPreviewEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid KnowledgeDocumentVersionId { get; set; }
@@ -14,7 +14,6 @@ public sealed class KnowledgeChunkEntity
     public string? Question { get; set; }
     public string SynonymsJson { get; set; } = "[]";
     public string? Answer { get; set; }
-    public string Status { get; set; } = "draft";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

@@ -82,6 +82,16 @@ public sealed class UploadValidationTests
         Assert.Equal(bytes, first.Content);
     }
 
+    [Fact]
+    public async Task Gb18030_txt_is_accepted_for_the_parser_pipeline()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var bytes = Encoding.GetEncoding("GB18030").GetBytes("中文内容");
+        var result = await DocumentUploadValidator.ValidateAndBufferAsync("legacy.txt", "text/plain", new MemoryStream(bytes), Options, TestContext.Current.CancellationToken);
+        Assert.Equal("text/plain", result.ContentType);
+        Assert.Equal(bytes, result.Content);
+    }
+
     private static async Task<DocumentUploadError> ValidateFailureAsync(string fileName, string contentType, byte[] bytes)
     {
         var exception = await Assert.ThrowsAsync<DocumentUploadValidationException>(() =>

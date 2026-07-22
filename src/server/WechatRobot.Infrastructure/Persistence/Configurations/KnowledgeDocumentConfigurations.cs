@@ -29,6 +29,8 @@ internal sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigu
         builder.Property(entity => entity.ObjectKey).HasMaxLength(1024).IsRequired();
         builder.Property(entity => entity.PublicUrl).HasMaxLength(2048);
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.Status).IsConcurrencyToken();
+        builder.Property(entity => entity.PreviewRevision).IsConcurrencyToken();
         builder.Property(entity => entity.FailureReason).HasMaxLength(512);
         builder.Property(entity => entity.StagedContent).HasColumnType("longblob").IsRequired();
         builder.HasIndex(entity => entity.Sha256).IsUnique();
@@ -44,7 +46,27 @@ internal sealed class KnowledgeChunkConfiguration : IEntityTypeConfiguration<Kno
         builder.ToTable("knowledge_chunk");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
+        builder.Property(entity => entity.HeadingsJson).HasColumnType("json").HasDefaultValueSql("(JSON_ARRAY())").IsRequired();
+        builder.Property(entity => entity.SynonymsJson).HasColumnType("json").HasDefaultValueSql("(JSON_ARRAY())").IsRequired();
+        builder.Property(entity => entity.Question).HasMaxLength(2048);
+        builder.Property(entity => entity.Answer).HasColumnType("longtext");
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.Sequence }).IsUnique();
+        builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class KnowledgeChunkPreviewConfiguration : IEntityTypeConfiguration<KnowledgeChunkPreviewEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeChunkPreviewEntity> builder)
+    {
+        builder.ToTable("knowledge_chunk_preview");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
+        builder.Property(entity => entity.HeadingsJson).HasColumnType("json").IsRequired();
+        builder.Property(entity => entity.SynonymsJson).HasColumnType("json").IsRequired();
+        builder.Property(entity => entity.Question).HasMaxLength(2048);
+        builder.Property(entity => entity.Answer).HasColumnType("longtext");
         builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.Sequence }).IsUnique();
         builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
     }

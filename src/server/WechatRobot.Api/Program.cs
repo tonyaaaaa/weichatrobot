@@ -13,6 +13,8 @@ using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
+using WechatRobot.Application.Knowledge.Chunking;
+using WechatRobot.Application.Knowledge.Parsing;
 using WechatRobot.Application.Storage;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Messaging;
@@ -20,6 +22,8 @@ using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Infrastructure.Knowledge;
+using WechatRobot.Infrastructure.Knowledge.Parsing;
 using WechatRobot.Infrastructure.Models;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Security;
@@ -54,6 +58,20 @@ builder.Services.AddOptions<OssOptions>().BindConfiguration(OssOptions.SectionNa
 builder.Services.AddSingleton<IOssTransport, AliyunOssTransport>();
 builder.Services.AddSingleton<IObjectStorage, AliyunOssStorage>();
 builder.Services.AddScoped<IKnowledgeDocumentStore, KnowledgeDocumentStore>();
+builder.Services.AddOptions<DocumentParsingOptions>().BindConfiguration(DocumentParsingOptions.SectionName)
+    .Validate(options => options.MaximumSourceBytes > 0 && options.MaximumPages > 0 && options.MaximumMemoryBytes >= options.MaximumSourceBytes && options.ExecutionTimeoutSeconds > 0, "Document parsing limits are invalid.")
+    .ValidateOnStart();
+builder.Services.AddHttpClient<IDocumentSourceReader, HttpDocumentSourceReader>();
+builder.Services.AddSingleton<MarkdownTextParser>();
+builder.Services.AddSingleton<DocxParser>();
+builder.Services.AddSingleton<PdfTextParser>();
+builder.Services.AddSingleton<DocumentParserSelector>(services => new DocumentParserSelector([
+    services.GetRequiredService<MarkdownTextParser>(), services.GetRequiredService<DocxParser>(), services.GetRequiredService<PdfTextParser>()]));
+builder.Services.AddSingleton<ChunkingService>();
+builder.Services.AddScoped<ChunkPreviewRepository>();
+builder.Services.AddScoped(services => new KnowledgePreviewService(services.GetRequiredService<WechatRobotDbContext>(), services.GetRequiredService<IDocumentSourceReader>(),
+    services.GetRequiredService<DocumentParserSelector>(), services.GetRequiredService<ChunkingService>(), services.GetRequiredService<ChunkPreviewRepository>(),
+    services.GetRequiredService<IOptions<DocumentParsingOptions>>().Value));
 builder.Services.AddScoped(services => new DocumentUploadService(
     services.GetRequiredService<IOptions<DocumentUploadOptions>>().Value,
     services.GetRequiredService<IOptions<OssOptions>>().Value.PublicReadRiskAccepted,
@@ -145,6 +163,7 @@ app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
 app.MapGroupEndpoints();
 app.MapDocumentEndpoints();
+app.MapChunkPreviewEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
 app.MapGet("/", () => Results.Ok());
