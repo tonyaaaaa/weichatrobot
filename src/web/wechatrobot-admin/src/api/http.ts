@@ -28,8 +28,12 @@ function isTrustedApiRequest(
 ): boolean {
   const currentOrigin = window.location.origin;
   const trustedBase = new URL(configuredApiBaseUrl || currentOrigin, currentOrigin);
-  const requestBase = new URL(effectiveBaseUrl ?? trustedBase.href, currentOrigin);
-  const requestUrl = new URL(url ?? '', requestBase);
+  if (effectiveBaseUrl !== undefined
+    && new URL(effectiveBaseUrl || currentOrigin, currentOrigin).href !== trustedBase.href) {
+    return false;
+  }
+
+  const requestUrl = new URL(url ?? '', trustedBase);
   return requestUrl.origin === trustedBase.origin
     && (requestUrl.pathname === '/api' || requestUrl.pathname.startsWith('/api/'));
 }

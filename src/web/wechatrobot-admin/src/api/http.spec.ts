@@ -62,6 +62,21 @@ describe('API HTTP client', () => {
     expect(request?.headers?.Authorization).toBeUndefined();
   });
 
+  it('does not trust a same-origin base URL override with a different path', async () => {
+    const client = createApiClient(() => 'access-token', vi.fn(), 'https://api.example.test');
+    let request: AxiosRequestConfig | undefined;
+
+    await client.get('/api/auth/me', {
+      baseURL: 'https://api.example.test/non-api',
+      adapter: async config => {
+        request = config;
+        return { config, data: {}, headers: {}, status: 200, statusText: 'OK' };
+      }
+    });
+
+    expect(request?.headers?.Authorization).toBeUndefined();
+  });
+
   it('notifies the session owner after a 401 response', async () => {
     const onUnauthorized = vi.fn();
     const client = createApiClient(() => 'access-token', onUnauthorized);
