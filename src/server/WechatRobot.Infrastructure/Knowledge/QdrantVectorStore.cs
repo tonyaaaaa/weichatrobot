@@ -38,7 +38,8 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
                 payload = new
                 {
                     chunk_id = point.Id.ToString("D"), document_id = point.DocumentId.ToString("D"),
-                    version_id = point.VersionId.ToString("D"), tag_ids = point.TagIds.Select(tag => tag.ToString("D")).ToArray(), active = point.Active
+                    version_id = point.VersionId.ToString("D"), tag_ids = point.TagIds.Select(tag => tag.ToString("D")).ToArray(), active = point.Active,
+                    generation = point.Generation
                 }
             })
         }, cancellationToken);
@@ -60,20 +61,34 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
         {
             filter = VersionFilter(versionId)
         }, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return;
         if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "delete version", cancellationToken);
     }
 
-    public async Task<long> CountVersionAsync(VectorCollection collection, Guid versionId, bool activeOnly, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken)
     {
-        var must = new List<object> { new { key = "version_id", match = new { value = versionId.ToString("D") } } };
-        if (activeOnly) must.Add(new { key = "active", match = new { value = true } });
-        using var response = await httpClient.PostAsJsonAsync($"/collections/{Uri.EscapeDataString(collection.Name)}/points/count", new
+        var result = new List<VectorPointMetadata>();
+        string? offset = null;
+        do
         {
-            exact = true, filter = new { must }
-        }, cancellationToken);
-        if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "count version", cancellationToken);
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        return json.RootElement.GetProperty("result").GetProperty("count").GetInt64();
+            using var response = await httpClient.PostAsJsonAsync($"/collections/{Uri.EscapeDataString(collection.Name)}/points/scroll", new
+            {
+                filter = VersionFilter(versionId), limit = 256, offset, with_payload = true, with_vector = false
+            }, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "inspect version", cancellationToken);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+            var page = json.RootElement.GetProperty("result");
+            foreach (var item in page.GetProperty("points").EnumerateArray())
+            {
+                var payload = item.GetProperty("payload");
+                result.Add(new VectorPointMetadata(Guid.Parse(payload.GetProperty("chunk_id").GetString()!),
+                    Guid.Parse(payload.GetProperty("document_id").GetString()!), Guid.Parse(payload.GetProperty("version_id").GetString()!),
+                    payload.GetProperty("tag_ids").EnumerateArray().Select(value => Guid.Parse(value.GetString()!)).ToArray(),
+                    payload.GetProperty("active").GetBoolean(), payload.TryGetProperty("generation", out var generation) ? generation.GetInt32() : 1));
+            }
+            offset = page.TryGetProperty("next_page_offset", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
+        } while (offset is not null);
+        return result;
     }
 
     public async Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken cancellationToken)

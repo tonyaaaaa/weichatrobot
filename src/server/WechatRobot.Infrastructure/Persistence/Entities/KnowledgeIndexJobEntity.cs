@@ -6,6 +6,10 @@ public sealed class KnowledgeIndexJobEntity
     public Guid KnowledgeDocumentId { get; set; }
     public Guid KnowledgeDocumentVersionId { get; set; }
     public Guid? PreviousActiveVersionId { get; set; }
+    public string? PreviousActiveCollectionName { get; set; }
+    public int? PreviousActiveEmbeddingDimension { get; set; }
+    public string? PreviousActiveDistance { get; set; }
+    public int Generation { get; set; } = 1;
     public string Operation { get; set; } = "index";
     public string CollectionName { get; set; } = string.Empty;
     public int Dimension { get; set; }

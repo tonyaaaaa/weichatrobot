@@ -110,6 +110,8 @@ internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<
         builder.ToTable("knowledge_index_job");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Operation).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.PreviousActiveCollectionName).HasMaxLength(128);
+        builder.Property(entity => entity.PreviousActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.CollectionName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Distance).HasMaxLength(16).IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();

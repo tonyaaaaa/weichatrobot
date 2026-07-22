@@ -50,6 +50,7 @@ var knowledgeIndexOptions = builder.Configuration.GetSection(KnowledgeIndexOptio
 if (knowledgeIndexOptions.Dimension <= 0 || knowledgeIndexOptions.BatchSize <= 0 || knowledgeIndexOptions.MaximumAttempts <= 0)
     throw new InvalidOperationException("Knowledge index configuration is invalid.");
 builder.Services.AddSingleton(knowledgeIndexOptions);
+builder.Services.AddSingleton(KnowledgeIndexWorkerOptions.Default);
 builder.Services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
 builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<QdrantKnowledgeService>();
@@ -105,6 +106,7 @@ builder.Services.AddHostedService<RobotSendWorker>();
 builder.Services.AddHostedService<KnowledgeUploadWorker>();
 builder.Services.AddHostedService<KnowledgeParseWorker>();
 builder.Services.AddHostedService<KnowledgeIndexWorker>();
+builder.Services.AddHostedService<KnowledgeDocumentCleanupWorker>();
 
 var host = builder.Build();
 host.Run();

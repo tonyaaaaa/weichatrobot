@@ -20,9 +20,10 @@ public sealed class KnowledgeIndexService(
 {
     public async Task IndexAsync(Guid jobId, CancellationToken cancellationToken)
     {
+        KnowledgeIndexWork? work = null;
         try
         {
-            var work = await knowledge.LoadIndexWorkAsync(jobId, cancellationToken);
+            work = await knowledge.LoadIndexWorkAsync(jobId, cancellationToken);
             Validate(work);
             var collection = new VectorCollection(work.CollectionName, work.Dimension, work.Distance);
             await vectorStore.EnsureCollectionAsync(collection, cancellationToken);
@@ -41,7 +42,7 @@ public sealed class KnowledgeIndexService(
                     var vector = response.Vectors[index];
                     if (vector.Count != work.Dimension)
                         throw new EmbeddingDimensionMismatchException(work.Dimension, vector.Count);
-                    points.Add(new VectorPoint(chunk.Id, chunk.DocumentId, chunk.VersionId, chunk.TagIds, vector, false));
+                    points.Add(new VectorPoint(chunk.Id, chunk.DocumentId, chunk.VersionId, chunk.TagIds, vector, false, work.Generation));
                 }
                 await RetryVectorAsync(() => vectorStore.UpsertAsync(collection, points, cancellationToken));
             }
@@ -56,23 +57,28 @@ public sealed class KnowledgeIndexService(
         }
         catch (EmbeddingDimensionMismatchException exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, false, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, work?.LeaseOwner, exception.Message, false, CancellationToken.None);
             throw;
         }
         catch (VectorStoreUnavailableException exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, true, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, work?.LeaseOwner, exception.Message, true, CancellationToken.None);
             throw;
         }
         catch (VectorCollectionConfigurationException exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, false, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, work?.LeaseOwner, exception.Message, false, CancellationToken.None);
+            throw;
+        }
+        catch (InvalidDataException exception)
+        {
+            await knowledge.MarkIndexFailedAsync(jobId, work?.LeaseOwner, exception.Message, false, CancellationToken.None);
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, true, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, work?.LeaseOwner, exception.Message, true, CancellationToken.None);
             throw;
         }
     }
@@ -81,7 +87,8 @@ public sealed class KnowledgeIndexService(
     {
         if (options.Dimension <= 0 || options.BatchSize <= 0 || options.MaximumAttempts <= 0)
             throw new InvalidOperationException("Knowledge index options are invalid.");
-        if (work.Dimension != options.Dimension || work.Distance != options.Distance || work.CollectionName != options.CollectionName)
+        if (work.Dimension != options.Dimension || work.Distance != options.Distance ||
+            !(work.CollectionName == options.CollectionName || work.CollectionName.StartsWith(options.CollectionName + "_g", StringComparison.Ordinal)))
             throw new VectorCollectionConfigurationException("The queued index job does not match the configured collection. Explicit reindex is required.");
     }
 

@@ -80,6 +80,30 @@ public sealed class QdrantKnowledgeTests : IAsyncLifetime
             _store.EnsureCollectionAsync(new VectorCollection("kb_contract_test", 3, VectorDistance.Dot), TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Same_version_reindex_stages_in_another_generation_and_failure_leaves_live_points_retrievable()
+    {
+        var version = Guid.NewGuid();
+        var tag = Guid.NewGuid();
+        var chunk = Guid.NewGuid();
+        var live = new VectorCollection("kb_cosine_3_live", 3, VectorDistance.Cosine);
+        var staging = new VectorCollection("kb_cosine_3_staging", 3, VectorDistance.Cosine);
+        await _store.EnsureCollectionAsync(live, TestContext.Current.CancellationToken);
+        await _store.EnsureCollectionAsync(staging, TestContext.Current.CancellationToken);
+        await _store.UpsertAsync(live, [new VectorPoint(chunk, Guid.NewGuid(), version, [tag], [1, 0, 0], true, 1)], TestContext.Current.CancellationToken);
+        await _store.UpsertAsync(staging, [new VectorPoint(chunk, Guid.NewGuid(), version, [tag], [0, 1, 0], false, 2)], TestContext.Current.CancellationToken);
+
+        Assert.Single(await _store.SearchAsync(new VectorSearchRequest(live, [1, 0, 0], [tag], [version], null), TestContext.Current.CancellationToken));
+        Assert.Empty(await _store.SearchAsync(new VectorSearchRequest(staging, [0, 1, 0], [tag], [version], null), TestContext.Current.CancellationToken));
+        var staged = Assert.Single(await _store.InspectVersionAsync(staging, version, TestContext.Current.CancellationToken));
+        Assert.Equal(2, staged.Generation);
+
+        await _store.SetVersionActiveAsync(staging, version, true, TestContext.Current.CancellationToken);
+        Assert.Single(await _store.SearchAsync(new VectorSearchRequest(staging, [0, 1, 0], [tag], [version], null), TestContext.Current.CancellationToken));
+        await _store.DeleteVersionAsync(live, version, TestContext.Current.CancellationToken);
+        Assert.Empty(await _store.SearchAsync(new VectorSearchRequest(live, [1, 0, 0], [tag], [version], null), TestContext.Current.CancellationToken));
+    }
+
     private static VectorPoint Point(Guid id, Guid version, Guid tag) => new(id, Guid.NewGuid(), version, [tag], [1, 0, 0], false);
 
     private async Task<JsonDocument> ReadPayloadAsync(string collection, Guid id)

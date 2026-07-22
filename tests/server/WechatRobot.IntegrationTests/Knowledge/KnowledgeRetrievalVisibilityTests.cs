@@ -39,6 +39,64 @@ public sealed class KnowledgeRetrievalVisibilityTests
         Assert.Equal([activeVersion.Id], vectors.Request.ActiveVersionIds);
     }
 
+    [Fact]
+    public async Task Runtime_contract_change_keeps_old_active_collection_visible_and_requires_explicit_reindex()
+    {
+        var dbOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var database = new WechatRobotDbContext(dbOptions);
+        var tag = new KnowledgeTagEntity { Name = "公开", NormalizedName = "公开", IsGlobalPublic = true };
+        var document = new KnowledgeDocumentEntity { Status = "active", ActiveCollectionName = "kb_cosine_3_g1_old", ActiveEmbeddingDimension = 3, ActiveDistance = "cosine", ActiveIndexGeneration = 1 };
+        var version = Version(document.Id, "active", true);
+        version.IndexCollectionName = document.ActiveCollectionName; version.EmbeddingDimension = 3; version.VectorDistance = "cosine"; version.IndexGeneration = 1;
+        document.ActiveVersionId = version.Id;
+        var chunk = Chunk(version.Id);
+        database.AddRange(tag, document, version, chunk, new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tag.Id });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new RecordingVectorStore(new VectorSearchHit(chunk.Id, document.Id, version.Id, 1));
+        var changedRuntime = new QdrantKnowledgeService(database, new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(4, VectorDistance.Dot), TimeProvider.System);
+
+        var stillVisible = await changedRuntime.SearchVisibleAsync([1, 0, 0], [], vectors, 5, TestContext.Current.CancellationToken);
+        Assert.Equal(chunk.Id, Assert.Single(stillVisible).ChunkId);
+        Assert.Equal("kb_cosine_3_g1_old", vectors.Request!.Collection.Name);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => changedRuntime.QueueIndexAsync(document.Id, version.Id, [tag.Id], false, TestContext.Current.CancellationToken));
+
+        var jobId = await changedRuntime.QueueIndexAsync(document.Id, version.Id, [tag.Id], true, TestContext.Current.CancellationToken);
+        var job = await database.KnowledgeIndexJobs.SingleAsync(item => item.Id == jobId, TestContext.Current.CancellationToken);
+        Assert.StartsWith("kb_dot_4_g", job.CollectionName, StringComparison.Ordinal);
+        Assert.Equal("kb_cosine_3_g1_old", document.ActiveCollectionName);
+        job.Status = "failed";
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(chunk.Id, Assert.Single(await changedRuntime.SearchVisibleAsync([1, 0, 0], [], vectors, 5, TestContext.Current.CancellationToken)).ChunkId);
+        Assert.Equal("kb_cosine_3_g1_old", vectors.Request!.Collection.Name);
+    }
+
+    [Fact]
+    public async Task Consistency_check_reports_payload_drift_even_when_point_count_matches()
+    {
+        var dbOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var database = new WechatRobotDbContext(dbOptions);
+        var expectedTag = new KnowledgeTagEntity { Name = "售后", NormalizedName = "售后" };
+        var wrongTag = Guid.NewGuid();
+        var document = new KnowledgeDocumentEntity { Status = "active", ActiveCollectionName = "kb_cosine_3_g2", ActiveEmbeddingDimension = 3, ActiveDistance = "cosine", ActiveIndexGeneration = 2 };
+        var version = Version(document.Id, "active", true);
+        document.ActiveVersionId = version.Id;
+        var chunk = Chunk(version.Id);
+        database.AddRange(expectedTag, document, version, chunk, new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = expectedTag.Id });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new RecordingVectorStore(new VectorSearchHit(chunk.Id, document.Id, version.Id, 1),
+            [new VectorPointMetadata(chunk.Id, document.Id, version.Id, [wrongTag], true, 2)]);
+        var service = new QdrantKnowledgeService(database, new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
+
+        var status = await service.GetStatusAsync(document.Id, vectors, true, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, status.ApprovedChunkCount);
+        Assert.Equal(1, status.ActivePointCount);
+        Assert.Equal("drift", status.Consistency);
+        Assert.Contains(status.DriftDetails, detail => detail == $"payload:{chunk.Id:D}");
+    }
+
     private static KnowledgeDocumentVersionEntity Version(Guid documentId, string status, bool published) => new()
     {
         KnowledgeDocumentId = documentId, Version = 1, OriginalFileName = Guid.NewGuid() + ".txt", SafeFileName = "file.txt", ContentType = "text/plain",
@@ -60,7 +118,19 @@ public sealed class KnowledgeRetrievalVisibilityTests
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
-        public Task<long> CountVersionAsync(VectorCollection collection, Guid versionId, bool activeOnly, CancellationToken token) => Task.FromResult(0L);
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
+    }
+    private sealed class RecordingVectorStore(VectorSearchHit hit, IReadOnlyList<VectorPointMetadata>? metadata = null) : IVectorStore
+    {
+        public VectorSearchRequest? Request { get; private set; }
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) { Request = request; return Task.FromResult<IReadOnlyList<VectorSearchHit>>([hit]); }
+        public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
+        public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;
+        public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
+            Task.FromResult(metadata ?? (IReadOnlyList<VectorPointMetadata>)[]);
     }
     private sealed class PassThroughProtector : ISecretProtector
     {
