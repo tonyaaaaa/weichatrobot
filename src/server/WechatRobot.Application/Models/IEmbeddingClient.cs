@@ -2,11 +2,11 @@ namespace WechatRobot.Application.Models;
 
 public interface IEmbeddingClient
 {
-    Task<EmbeddingResponse> CreateEmbeddingAsync(
+    Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(
         ModelProviderConfiguration configuration,
-        EmbeddingRequest request,
+        EmbeddingBatchRequest request,
         CancellationToken cancellationToken = default);
 }
 
-public sealed record EmbeddingRequest(string Input);
-public sealed record EmbeddingResponse(IReadOnlyList<float> Vector);
+public sealed record EmbeddingBatchRequest(IReadOnlyList<string> Inputs);
+public sealed record EmbeddingBatchResponse(IReadOnlyList<IReadOnlyList<float>> Vectors);

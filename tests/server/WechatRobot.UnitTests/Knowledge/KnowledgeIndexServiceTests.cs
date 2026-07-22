@@ -13,12 +13,14 @@ public sealed class KnowledgeIndexServiceTests
     {
         var knowledge = new FakeKnowledgeService(Work(5));
         var vectors = new FakeVectorStore();
-        var service = new KnowledgeIndexService(new FakeEmbeddingClient(3), vectors, knowledge,
+        var embeddings = new FakeEmbeddingClient(3);
+        var service = new KnowledgeIndexService(embeddings, vectors, knowledge,
             new KnowledgeIndexOptions(3, VectorDistance.Cosine, 2, 2));
 
         await service.IndexAsync(Guid.NewGuid(), TestContext.Current.CancellationToken);
 
         Assert.Equal([2, 2, 1], vectors.BatchSizes);
+        Assert.Equal([2, 2, 1], embeddings.BatchSizes);
         Assert.Equal(["ensure", "upsert", "upsert", "upsert", "activate-vector", "activate-mysql", "cleanup"],
             vectors.Events.Concat(knowledge.Events).OrderBy(item => item.Sequence).Select(item => item.Name));
     }
@@ -28,12 +30,14 @@ public sealed class KnowledgeIndexServiceTests
     {
         var knowledge = new FakeKnowledgeService(Work(2));
         var vectors = new FakeVectorStore { RetryableFailuresRemaining = 1 };
-        var service = new KnowledgeIndexService(new FakeEmbeddingClient(3), vectors, knowledge,
+        var embeddings = new FakeEmbeddingClient(3);
+        var service = new KnowledgeIndexService(embeddings, vectors, knowledge,
             new KnowledgeIndexOptions(3, VectorDistance.Cosine, 2, 2));
 
         await service.IndexAsync(Guid.NewGuid(), TestContext.Current.CancellationToken);
 
         Assert.Equal(2, vectors.UpsertAttempts);
+        Assert.Equal([2], embeddings.BatchSizes);
         Assert.True(knowledge.Activated);
     }
 
@@ -76,8 +80,14 @@ public sealed class KnowledgeIndexServiceTests
 
     private sealed class FakeEmbeddingClient(int dimension) : IEmbeddingClient
     {
-        public Task<EmbeddingResponse> CreateEmbeddingAsync(ModelProviderConfiguration configuration, EmbeddingRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new EmbeddingResponse(Enumerable.Repeat(1f, dimension).ToArray()));
+        public List<int> BatchSizes { get; } = [];
+
+        public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(ModelProviderConfiguration configuration, EmbeddingBatchRequest request, CancellationToken cancellationToken = default)
+        {
+            BatchSizes.Add(request.Inputs.Count);
+            return Task.FromResult(new EmbeddingBatchResponse(request.Inputs
+                .Select(_ => (IReadOnlyList<float>)Enumerable.Repeat(1f, dimension).ToArray()).ToArray()));
+        }
     }
 
     private sealed class FakeVectorStore : IVectorStore
@@ -99,7 +109,8 @@ public sealed class KnowledgeIndexServiceTests
         }
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) { Events.Add((EventClock.Next(), "activate-vector")); return Task.CompletedTask; }
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
-        public Task<long> CountVersionAsync(VectorCollection collection, Guid versionId, bool activeOnly, CancellationToken token) => Task.FromResult(0L);
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
         public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => Task.FromResult<IReadOnlyList<VectorSearchHit>>([]);
     }
 
@@ -113,7 +124,7 @@ public sealed class KnowledgeIndexServiceTests
         public Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(CancellationToken token) => Task.FromResult(new ModelProviderConfiguration("https://fake/", "fake", "cipher", TimeSpan.FromSeconds(1), 0));
         public Task<bool> ActivateVersionAsync(KnowledgeIndexWork value, CancellationToken token) { Activated = true; Events.Add((EventClock.Next(), "activate-mysql")); return Task.FromResult(true); }
         public Task EnqueueCleanupAsync(KnowledgeIndexWork value, CancellationToken token) { Events.Add((EventClock.Next(), "cleanup")); return Task.CompletedTask; }
-        public Task MarkIndexFailedAsync(Guid jobId, string reason, bool retryable, CancellationToken token) { Failed = true; RetryableFailure = retryable; return Task.CompletedTask; }
+        public Task MarkIndexFailedAsync(Guid jobId, string? leaseOwner, string reason, bool retryable, CancellationToken token) { Failed = true; RetryableFailure = retryable; return Task.CompletedTask; }
     }
 
     private static class EventClock { private static long _value; public static long Next() => Interlocked.Increment(ref _value); }

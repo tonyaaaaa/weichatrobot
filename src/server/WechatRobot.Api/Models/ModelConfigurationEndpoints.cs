@@ -80,7 +80,7 @@ public static class ModelConfigurationEndpoints
             }
             else if (entity.ConfigurationType.Equals("embedding", StringComparison.OrdinalIgnoreCase))
             {
-                await embeddingClient.CreateEmbeddingAsync(configuration, new EmbeddingRequest("connection test"), cancellationToken);
+                await embeddingClient.CreateEmbeddingsAsync(configuration, new EmbeddingBatchRequest(["connection test"]), cancellationToken);
             }
             else
             {

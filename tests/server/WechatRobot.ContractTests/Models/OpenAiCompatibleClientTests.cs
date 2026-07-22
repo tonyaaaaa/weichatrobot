@@ -14,7 +14,7 @@ public sealed class OpenAiCompatibleClientTests
     public async Task Chat_and_embedding_clients_use_their_independent_provider_configurations()
     {
         await using var chatServer = await FakeOpenAiServer.StartAsync("{\"choices\":[{\"message\":{\"content\":\"chat-result\"}}]}");
-        await using var embeddingServer = await FakeOpenAiServer.StartAsync("{\"data\":[{\"embedding\":[0.25,0.5]}]}");
+        await using var embeddingServer = await FakeOpenAiServer.StartAsync("{\"data\":[{\"index\":0,\"embedding\":[0.25,0.5]}]}");
         var protector = new PassthroughSecretProtector();
         var chat = new OpenAiCompatibleChatClient(new HttpClient(), protector);
         var embedding = new OpenAiCompatibleEmbeddingClient(new HttpClient(), protector);
@@ -23,19 +23,49 @@ public sealed class OpenAiCompatibleClientTests
             new ModelProviderConfiguration(chatServer.BaseUrl, "chat-model", "chat-key", TimeSpan.FromSeconds(5), 0),
             new ChatCompletionRequest([new ChatMessage("user", "hello")]),
             TestContext.Current.CancellationToken);
-        var embeddingResponse = await embedding.CreateEmbeddingAsync(
+        var embeddingResponse = await embedding.CreateEmbeddingsAsync(
             new ModelProviderConfiguration(embeddingServer.BaseUrl, "embedding-model", "embedding-key", TimeSpan.FromSeconds(5), 0),
-            new EmbeddingRequest("hello"),
+            new EmbeddingBatchRequest(["hello"]),
             TestContext.Current.CancellationToken);
 
         Assert.Equal("chat-result", chatResponse.Content);
-        Assert.Equal([0.25f, 0.5f], embeddingResponse.Vector);
+        Assert.Equal([0.25f, 0.5f], embeddingResponse.Vectors.Single());
         Assert.Equal("/v1/chat/completions", chatServer.Request.Path);
         Assert.Equal("/v1/embeddings", embeddingServer.Request.Path);
         Assert.Equal("Bearer chat-key", chatServer.Request.Authorization);
         Assert.Equal("Bearer embedding-key", embeddingServer.Request.Authorization);
         Assert.Equal("chat-model", chatServer.Request.Json.RootElement.GetProperty("model").GetString());
         Assert.Equal("embedding-model", embeddingServer.Request.Json.RootElement.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task Embedding_client_sends_an_input_array_and_orders_vectors_by_response_index()
+    {
+        await using var server = await FakeOpenAiServer.StartAsync(
+            "{\"data\":[{\"index\":1,\"embedding\":[2,2]},{\"index\":0,\"embedding\":[1,1]}]}");
+        var client = new OpenAiCompatibleEmbeddingClient(new HttpClient(), new PassthroughSecretProtector());
+
+        var response = await client.CreateEmbeddingsAsync(
+            new ModelProviderConfiguration(server.BaseUrl, "embedding-model", "key", TimeSpan.FromSeconds(5), 0),
+            new EmbeddingBatchRequest(["first", "second"]),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("{\"model\":\"embedding-model\",\"input\":[\"first\",\"second\"]}", server.Request.Json.RootElement.GetRawText());
+        Assert.Equal([1f, 1f], response.Vectors[0]);
+        Assert.Equal([2f, 2f], response.Vectors[1]);
+    }
+
+    [Fact]
+    public async Task Embedding_client_rejects_a_response_with_the_wrong_vector_count()
+    {
+        await using var server = await FakeOpenAiServer.StartAsync(
+            "{\"data\":[{\"index\":0,\"embedding\":[1,1]}]}");
+        var client = new OpenAiCompatibleEmbeddingClient(new HttpClient(), new PassthroughSecretProtector());
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.CreateEmbeddingsAsync(
+            new ModelProviderConfiguration(server.BaseUrl, "embedding-model", "key", TimeSpan.FromSeconds(5), 0),
+            new EmbeddingBatchRequest(["first", "second"]),
+            TestContext.Current.CancellationToken));
     }
 
     private sealed class PassthroughSecretProtector : ISecretProtector

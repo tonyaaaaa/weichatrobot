@@ -30,13 +30,18 @@ public sealed class KnowledgeIndexService(
 
             foreach (var batch in work.Chunks.Chunk(options.BatchSize))
             {
+                var response = await embeddingClient.CreateEmbeddingsAsync(provider,
+                    new EmbeddingBatchRequest(batch.Select(chunk => chunk.Text).ToArray()), cancellationToken);
+                if (response.Vectors.Count != batch.Length)
+                    throw new InvalidDataException($"Embedding response count mismatch. Expected {batch.Length}, received {response.Vectors.Count}.");
                 var points = new List<VectorPoint>(batch.Length);
-                foreach (var chunk in batch)
+                for (var index = 0; index < batch.Length; index++)
                 {
-                    var response = await embeddingClient.CreateEmbeddingAsync(provider, new EmbeddingRequest(chunk.Text), cancellationToken);
-                    if (response.Vector.Count != work.Dimension)
-                        throw new EmbeddingDimensionMismatchException(work.Dimension, response.Vector.Count);
-                    points.Add(new VectorPoint(chunk.Id, chunk.DocumentId, chunk.VersionId, chunk.TagIds, response.Vector, false));
+                    var chunk = batch[index];
+                    var vector = response.Vectors[index];
+                    if (vector.Count != work.Dimension)
+                        throw new EmbeddingDimensionMismatchException(work.Dimension, vector.Count);
+                    points.Add(new VectorPoint(chunk.Id, chunk.DocumentId, chunk.VersionId, chunk.TagIds, vector, false));
                 }
                 await RetryVectorAsync(() => vectorStore.UpsertAsync(collection, points, cancellationToken));
             }
@@ -51,23 +56,23 @@ public sealed class KnowledgeIndexService(
         }
         catch (EmbeddingDimensionMismatchException exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, exception.Message, false, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, false, CancellationToken.None);
             throw;
         }
         catch (VectorStoreUnavailableException exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, exception.Message, true, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, true, CancellationToken.None);
             throw;
         }
         catch (VectorCollectionConfigurationException exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, exception.Message, false, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, false, CancellationToken.None);
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception)
         {
-            await knowledge.MarkIndexFailedAsync(jobId, exception.Message, true, CancellationToken.None);
+            await knowledge.MarkIndexFailedAsync(jobId, null, exception.Message, true, CancellationToken.None);
             throw;
         }
     }
