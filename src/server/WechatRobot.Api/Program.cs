@@ -87,8 +87,7 @@ builder.Services.AddSingleton<ChunkingService>();
 builder.Services.AddScoped<ChunkPreviewRepository>();
 var knowledgeIndexOptions = builder.Configuration.GetSection(KnowledgeIndexOptions.SectionName).Get<KnowledgeIndexOptions>()
     ?? new KnowledgeIndexOptions(1536, VectorDistance.Cosine);
-if (knowledgeIndexOptions.Dimension <= 0 || knowledgeIndexOptions.BatchSize <= 0 || knowledgeIndexOptions.MaximumAttempts <= 0)
-    throw new InvalidOperationException("Knowledge index configuration is invalid.");
+knowledgeIndexOptions.Validate();
 builder.Services.AddSingleton(knowledgeIndexOptions);
 builder.Services.AddScoped<QdrantKnowledgeService>();
 builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());

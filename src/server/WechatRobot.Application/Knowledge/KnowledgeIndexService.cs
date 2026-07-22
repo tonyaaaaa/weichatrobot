@@ -2,15 +2,32 @@ using WechatRobot.Application.Models;
 
 namespace WechatRobot.Application.Knowledge;
 
-public sealed record KnowledgeIndexOptions(int Dimension, VectorDistance Distance, int BatchSize = 32, int MaximumAttempts = 3)
+public sealed record KnowledgeIndexOptions(
+    int Dimension,
+    VectorDistance Distance,
+    int BatchSize = 32,
+    int MaximumAttempts = 3,
+    int MaximumCollectionsPerSearch = 64)
 {
     public const string SectionName = "KnowledgeIndex";
     public string CollectionName => $"kb_{Distance.ToString().ToLowerInvariant()}_{Dimension}";
+
+    public void Validate()
+    {
+        if (Dimension <= 0 || BatchSize <= 0 || MaximumAttempts <= 0 || MaximumCollectionsPerSearch is < 1 or > 256)
+            throw new InvalidOperationException("Knowledge index configuration is invalid.");
+    }
 }
 
 public sealed class EmbeddingDimensionMismatchException(int expected, int actual)
     : Exception($"Embedding dimension mismatch. Expected {expected}, received {actual}.");
 public sealed class KnowledgeActivationConflictException : Exception;
+public sealed class KnowledgeSearchCapacityException(int eligibleCollectionCount, int maximumCollections)
+    : Exception($"Knowledge search requires {eligibleCollectionCount} eligible collections, exceeding the configured limit of {maximumCollections}.")
+{
+    public int EligibleCollectionCount { get; } = eligibleCollectionCount;
+    public int MaximumCollections { get; } = maximumCollections;
+}
 
 public sealed class KnowledgeIndexService(
     IEmbeddingClient embeddingClient,

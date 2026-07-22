@@ -341,22 +341,63 @@ public sealed class QdrantKnowledgeService(
         var allowedSet = allowedTagIds.Distinct().Take(GuidBatchQuery.MaximumBatchSize).ToHashSet();
         var enabledAllowed = enabledTags.Where(tag => !tag.IsGlobalPublic && allowedSet.Contains(tag.Id)).Select(tag => tag.Id).ToArray();
         if (enabledAllowed.Length == 0 && global is null) return [];
+
+        var visibleTagIds = enabledAllowed.Concat(global is { } globalId ? [globalId] : []).ToArray();
+        var eligibleVersionIds = new HashSet<Guid>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(visibleTagIds))
+        {
+            var tagPredicate = GuidBatchQuery.BuildPredicate<KnowledgeChunkTagEntity>(batch, binding => binding.KnowledgeTagId);
+            var matchedVersions = await (from binding in database.KnowledgeChunkTags.AsNoTracking().Where(tagPredicate)
+                                         join tag in database.KnowledgeTags.AsNoTracking() on binding.KnowledgeTagId equals tag.Id
+                                         join chunk in database.KnowledgeChunks.AsNoTracking() on binding.KnowledgeChunkId equals chunk.Id
+                                         join version in database.KnowledgeDocumentVersions.AsNoTracking() on chunk.KnowledgeDocumentVersionId equals version.Id
+                                         join document in database.KnowledgeDocuments.AsNoTracking() on version.KnowledgeDocumentId equals document.Id
+                                         where tag.IsEnabled && chunk.Status == "approved" && version.Status == "active" && version.IsPublished &&
+                                               document.Status == "active" && !document.IsDeleteRequested && document.ActiveVersionId == version.Id &&
+                                               document.ActiveCollectionName != null && document.ActiveEmbeddingDimension == vector.Count && document.ActiveDistance != null
+                                         select version.Id).Distinct().ToArrayAsync(token);
+            eligibleVersionIds.UnionWith(matchedVersions);
+        }
+        if (eligibleVersionIds.Count == 0) return [];
+
         var activeDocuments = await database.KnowledgeDocuments.AsNoTracking().Where(document => !document.IsDeleteRequested && document.Status == "active" &&
             document.ActiveVersionId != null && document.ActiveCollectionName != null && document.ActiveEmbeddingDimension == vector.Count && document.ActiveDistance != null)
             .Select(document => new { document.ActiveVersionId, document.ActiveCollectionName, document.ActiveEmbeddingDimension, document.ActiveDistance }).ToArrayAsync(token);
-        var candidates = new List<VectorSearchHit>();
-        foreach (var contract in activeDocuments.GroupBy(document => new { document.ActiveCollectionName, document.ActiveEmbeddingDimension, document.ActiveDistance }))
-        {
-            var remaining = maximumCandidateCount - candidates.Count;
-            if (remaining <= 0) break;
-            var request = new VectorSearchRequest(new VectorCollection(contract.Key.ActiveCollectionName!, contract.Key.ActiveEmbeddingDimension!.Value,
-                ParseDistance(contract.Key.ActiveDistance!)), vector, enabledAllowed, contract.Select(item => item.ActiveVersionId!.Value).Distinct().ToArray(), global,
-                Math.Min(remaining, maximumCandidateCount));
-            candidates.AddRange((await vectors.SearchAsync(request, token)).Take(remaining));
-        }
-        if (candidates.Count == 0) return [];
 
-        var orderedCandidates = candidates.OrderByDescending(hit => hit.Score).DistinctBy(hit => hit.ChunkId).Take(maximumCandidateCount).ToArray();
+        var contracts = activeDocuments.Where(document => eligibleVersionIds.Contains(document.ActiveVersionId!.Value))
+            .GroupBy(document => new { document.ActiveCollectionName, document.ActiveEmbeddingDimension, document.ActiveDistance })
+            .Select(group => new SearchCollectionContract(group.Key.ActiveCollectionName!, group.Key.ActiveEmbeddingDimension!.Value,
+                group.Key.ActiveDistance!, group.Select(item => item.ActiveVersionId!.Value).Distinct().Order().ToArray()))
+            .OrderBy(contract => contract.CollectionName, StringComparer.Ordinal).ThenBy(contract => contract.Dimension)
+            .ThenBy(contract => contract.Distance, StringComparer.Ordinal).ToArray();
+        if (contracts.Length > options.MaximumCollectionsPerSearch)
+            throw new KnowledgeSearchCapacityException(contracts.Length, options.MaximumCollectionsPerSearch);
+        if (contracts.Length == 0) return [];
+
+        const int maximumConcurrentSearches = 4;
+        var candidatePages = Enumerable.Repeat<IReadOnlyList<VectorSearchHit>>([], contracts.Length).ToArray();
+        using (var concurrency = new SemaphoreSlim(maximumConcurrentSearches, maximumConcurrentSearches))
+        {
+            await Task.WhenAll(contracts.Select(async (contract, index) =>
+            {
+                await concurrency.WaitAsync(token);
+                try
+                {
+                    var requestLimit = Math.Max(1,
+                        maximumCandidateCount / contracts.Length + (index < maximumCandidateCount % contracts.Length ? 1 : 0));
+                    var request = new VectorSearchRequest(new VectorCollection(contract.CollectionName, contract.Dimension, ParseDistance(contract.Distance)),
+                        vector, enabledAllowed, contract.ActiveVersionIds, global, requestLimit);
+                    candidatePages[index] = (await vectors.SearchAsync(request, token)).Take(requestLimit).ToArray();
+                }
+                finally { concurrency.Release(); }
+            }));
+        }
+
+        var candidates = candidatePages.SelectMany(page => page).ToArray();
+        if (candidates.Length == 0) return [];
+
+        var orderedCandidates = candidates.OrderByDescending(hit => hit.Score).ThenBy(hit => hit.ChunkId)
+            .DistinctBy(hit => hit.ChunkId).Take(maximumCandidateCount).ToArray();
         var liveChunkIds = new HashSet<Guid>();
         foreach (var batch in GuidBatchQuery.CreateBatches(orderedCandidates.Select(hit => hit.ChunkId)))
         {
@@ -370,14 +411,14 @@ public sealed class QdrantKnowledgeService(
             liveChunkIds.UnionWith(matched);
         }
 
-        var visibleTagIds = enabledAllowed.Concat(global is { } globalId ? [globalId] : []).ToHashSet();
+        var visibleTagSet = visibleTagIds.ToHashSet();
         var visibleChunkIds = new HashSet<Guid>();
         foreach (var batch in GuidBatchQuery.CreateBatches(liveChunkIds))
         {
             var predicate = GuidBatchQuery.BuildPredicate<KnowledgeChunkTagEntity>(batch, binding => binding.KnowledgeChunkId);
             var bindings = await database.KnowledgeChunkTags.AsNoTracking().Where(predicate)
                 .Select(binding => new { binding.KnowledgeChunkId, binding.KnowledgeTagId }).ToArrayAsync(token);
-            visibleChunkIds.UnionWith(bindings.Where(binding => visibleTagIds.Contains(binding.KnowledgeTagId))
+            visibleChunkIds.UnionWith(bindings.Where(binding => visibleTagSet.Contains(binding.KnowledgeTagId))
                 .Select(binding => binding.KnowledgeChunkId));
         }
         return orderedCandidates.Where(hit => visibleChunkIds.Contains(hit.ChunkId)).Take(searchLimit).ToArray();
@@ -448,4 +489,5 @@ public sealed class QdrantKnowledgeService(
     private static string SerializeTagIds(IEnumerable<Guid> tagIds) => JsonSerializer.Serialize(tagIds.Order().Select(id => id.ToString("D")));
     private static Guid[] ParseTagIds(string json) => JsonSerializer.Deserialize<string[]>(json)?.Select(Guid.Parse).Order().ToArray() ?? [];
     private sealed record VectorContractRow(Guid VersionId, string CollectionName, int Dimension, string Distance, bool IsCollectionExclusive = false);
+    private sealed record SearchCollectionContract(string CollectionName, int Dimension, string Distance, Guid[] ActiveVersionIds);
 }

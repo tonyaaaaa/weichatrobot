@@ -12,6 +12,7 @@
 - 回环 HTTP 只接受原始 authority 为 `localhost` 或 `127.0.0.1`，拒绝 userinfo、IPv6、缩写 IPv4、路径穿越，并且只允许在 Development 环境启用。
 - 群标签、索引标签、激活、状态一致性和检索复核均使用每批最多 100 个 GUID 的参数化 OR 谓词，不再依赖 MySQL EF 的集合 JSON 参数，也没有逐 GUID 查询。
 - 向量搜索每次最多返回 50 条，跨集合候选总数最多 200 条；候选 live 状态和标签按 100 条一批复核。
+- 检索先在 MySQL 中按启用标签和全局公开标签筛出完整的活跃集合列表；`MaximumCollectionsPerSearch` 默认 64、允许范围 1 至 256。超限会在任何 Qdrant 调用前抛出容量错误，不会静默遗漏知识；范围内最多并发 4 个集合请求。
 
 ## 最终实测
 
@@ -26,15 +27,17 @@
 
 最终 Markdown 为 g4，TXT、PDF、DOCX 均为 g3；四个文档状态均为 `active`，一致性均为 `consistent`，批准分段数与活跃点数分别为 `2/2`、`1/1`、`2/2`、`2/2`。产品/售后、售后、全局公开、仅财务四个群可见性结果分别为 `2`、`1`、`2`、`0`。
 
+上述最终证据只有 4 个集合，低于默认 64 集合上限；新增的容量保护不改变这组检索结果，因此无需重新运行四文档检查点。
+
 早期诊断代次中，Qdrant 在本机恢复卷后创建新集合曾耗时约 36 至 55 秒，任务首次请求超时后由持久任务机制自动重试并完成。最终重新构建、重启后的 g4/g3 代次与这些诊断失败分开：四个 reindex 均为 `AttemptCount=0`，四条 embedding 批次分别为 `2/1/2/2`，所有最终 cleanup 任务也均为 `completed`。
 
 ## 自动验证
 
 - `dotnet build WechatRobot.slnx --no-restore`：0 warning，0 error。
-- Unit：65/65 通过。
+- Unit：71/71 通过，其中新增集合扇出聚焦测试 6/6 通过。
 - Contract：25/25 通过。
-- 群配置与检索关键 Integration：10/10 通过。
-- 运行手册中的 9 个 PowerShell fenced blocks 全部通过 PowerShell AST 语法解析，0 个语法错误。
+- 原检查点群配置与检索关键 Integration：10/10 通过；本次检索回归 5/5 通过。
+- 运行手册中的 8 个 PowerShell fenced blocks 全部通过 PowerShell AST 语法解析，0 个语法错误。
 
 ## 清理
 

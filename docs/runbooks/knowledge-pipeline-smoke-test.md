@@ -40,64 +40,85 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:36343/readyz -Headers @{ 'ap
 ```powershell
 $objectRoot = (Resolve-Path .superpowers/sdd).Path + '\checkpoint-2-objects'
 $providerLog = (Resolve-Path .superpowers/sdd).Path + '\checkpoint-2-provider.log'
-$fakeProvider = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList @(
+$repoRoot = (Resolve-Path .).Path
+$fakeProvider = Start-Process powershell -PassThru -WindowStyle Hidden -WorkingDirectory $repoRoot `
+  -RedirectStandardOutput (Join-Path $repoRoot '.superpowers/sdd/checkpoint-2-provider.out.log') `
+  -RedirectStandardError (Join-Path $repoRoot '.superpowers/sdd/checkpoint-2-provider.err.log') -ArgumentList @(
   '-NoProfile','-ExecutionPolicy','Bypass','-File',
   (Resolve-Path scripts/Start-FakeKnowledgeProviders.ps1).Path,
   '-ObjectRoot',$objectRoot,'-LogPath',$providerLog,'-Port','5591','-EmbeddingDimension','8'
 )
-Test-NetConnection 127.0.0.1 -Port 5591
+$deadline = (Get-Date).AddSeconds(30)
+do {
+  $fakeProvider.Refresh()
+  if ($fakeProvider.HasExited) { throw 'Fake provider exited before readiness.' }
+  $providerReady = (Test-NetConnection 127.0.0.1 -Port 5591 -WarningAction SilentlyContinue).TcpTestSucceeded
+  if (-not $providerReady) { Start-Sleep -Milliseconds 500 }
+} while (-not $providerReady -and (Get-Date) -lt $deadline)
+if (-not $providerReady) { throw 'Fake provider readiness timed out.' }
 ```
 
 `LoopbackObjectStorage` 和回环 HTTP 文档源只接受显式启用的 `http://localhost` 或 `http://127.0.0.1`，禁用自动重定向，且 API/Worker 仅允许在 `Development` 环境注册。生产默认仍是阿里云 OSS。
 
 ## 3. 启动 API 和 Worker
 
-在两个独立 PowerShell 窗口设置下列临时值。主密钥和 JWT 密钥必须现场生成，不能提交；以下用占位符表示。
-
-API：
+在当前 PowerShell 会话中设置仅供检查点使用的临时环境变量，然后启动已构建的 API 和 Worker 可执行文件。`Start-Process` 返回值必须保留到第 8 节，作为限定清理的唯一 PID 来源：
 
 ```powershell
+$repoRoot = (Resolve-Path .).Path
+$logRoot = (Resolve-Path .superpowers/sdd).Path
+$checkpointAdminPassword = 'Checkpoint2!LocalOnly'
 $env:ASPNETCORE_ENVIRONMENT = 'Development'
-$env:ConnectionStrings__WechatRobot = 'Server=127.0.0.1;Port=33326;Database=wechatrobot_checkpoint2;User=checkpoint2;Password=<local-only-user-password>'
+$env:DOTNET_ENVIRONMENT = 'Development'
+$env:ConnectionStrings__WechatRobot = "Server=127.0.0.1;Port=33326;Database=wechatrobot_checkpoint2;User=checkpoint2;Password=$env:CHECKPOINT2_MYSQL_PASSWORD"
 $env:Cors__AllowedOrigins__0 = 'http://127.0.0.1:5173'
 $env:Database__ApplyMigrationsOnStartup = 'true'
-$env:WECHATROBOT_MASTER_KEY_BASE64 = '<base64-encoded-32-byte-local-key>'
+$env:WECHATROBOT_MASTER_KEY_BASE64 = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $env:Jwt__Issuer = 'checkpoint-2'
 $env:Jwt__Audience = 'checkpoint-2-api'
-$env:Jwt__SigningKey = '<local-signing-key-at-least-32-characters>'
+$env:Jwt__SigningKey = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
 $env:BootstrapAdmin__Email = 'checkpoint2@example.test'
-$env:BootstrapAdmin__Password = '<local-password-matching-identity-policy>'
+$env:BootstrapAdmin__Password = $checkpointAdminPassword
 $env:BootstrapAdmin__DisplayName = 'Checkpoint 2 Admin'
 $env:ObjectStorage__Provider = 'loopback'
 $env:LoopbackObjectStorage__BaseUrl = 'http://127.0.0.1:5591/objects/'
 $env:DocumentSource__AllowLoopbackHttp = 'true'
 $env:Oss__PublicReadRiskAccepted = 'true'
 $env:Qdrant__BaseUrl = 'http://127.0.0.1:36343/'
-$env:Qdrant__ApiKey = '<local-only-qdrant-key>'
+$env:Qdrant__ApiKey = $env:CHECKPOINT2_QDRANT_API_KEY
 $env:KnowledgeIndex__Dimension = '8'
 $env:KnowledgeIndex__BatchSize = '2'
-dotnet run --project src/server/WechatRobot.Api --urls http://127.0.0.1:5502
-```
-
-Worker：
-
-```powershell
-$env:DOTNET_ENVIRONMENT = 'Development'
-$env:ConnectionStrings__WechatRobot = 'Server=127.0.0.1;Port=33326;Database=wechatrobot_checkpoint2;User=checkpoint2;Password=<local-only-user-password>'
-$env:WECHATROBOT_MASTER_KEY_BASE64 = '<same-local-master-key>'
-$env:ObjectStorage__Provider = 'loopback'
-$env:LoopbackObjectStorage__BaseUrl = 'http://127.0.0.1:5591/objects/'
-$env:DocumentSource__AllowLoopbackHttp = 'true'
-$env:Oss__PublicReadRiskAccepted = 'true'
-$env:Qdrant__BaseUrl = 'http://127.0.0.1:36343/'
-$env:Qdrant__ApiKey = '<local-only-qdrant-key>'
-$env:KnowledgeIndex__Dimension = '8'
-$env:KnowledgeIndex__BatchSize = '2'
+$env:KnowledgeIndex__MaximumCollectionsPerSearch = '64'
 $env:Ocr__BaseAddress = 'http://127.0.0.1:5591/'
 $env:Ocr__MinimumExtractedTextCharacters = '0'
 $env:WorkTool__BaseUrl = 'http://127.0.0.1:5591/'
 $env:FixedReply__Text = 'checkpoint-2-local-only'
-dotnet run --project src/server/WechatRobot.Worker
+
+dotnet build WechatRobot.slnx --no-restore
+$apiWorkingDirectory = (Resolve-Path src/server/WechatRobot.Api).Path
+$workerWorkingDirectory = (Resolve-Path src/server/WechatRobot.Worker).Path
+$apiExecutable = (Resolve-Path src/server/WechatRobot.Api/bin/Debug/net10.0/WechatRobot.Api.exe).Path
+$workerExecutable = (Resolve-Path src/server/WechatRobot.Worker/bin/Debug/net10.0/WechatRobot.Worker.exe).Path
+$apiProcess = Start-Process $apiExecutable -PassThru -WindowStyle Hidden -WorkingDirectory $apiWorkingDirectory `
+  -ArgumentList @('--urls','http://127.0.0.1:5502') `
+  -RedirectStandardOutput (Join-Path $logRoot 'checkpoint-2-api.out.log') `
+  -RedirectStandardError (Join-Path $logRoot 'checkpoint-2-api.err.log')
+$workerProcess = Start-Process $workerExecutable -PassThru -WindowStyle Hidden -WorkingDirectory $workerWorkingDirectory `
+  -RedirectStandardOutput (Join-Path $logRoot 'checkpoint-2-worker.out.log') `
+  -RedirectStandardError (Join-Path $logRoot 'checkpoint-2-worker.err.log')
+
+$deadline = (Get-Date).AddMinutes(2)
+do {
+  $apiProcess.Refresh(); $workerProcess.Refresh()
+  if ($apiProcess.HasExited) { throw 'API exited before readiness.' }
+  if ($workerProcess.HasExited) { throw 'Worker exited before readiness.' }
+  try { $apiReady = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5502/ -TimeoutSec 2).StatusCode -eq 200 }
+  catch { $apiReady = $false }
+  $workerReady = (Test-Path (Join-Path $logRoot 'checkpoint-2-worker.out.log')) -and
+    [bool](Select-String -Quiet -Path (Join-Path $logRoot 'checkpoint-2-worker.out.log') -Pattern 'Application started')
+  if (-not ($apiReady -and $workerReady)) { Start-Sleep -Seconds 1 }
+} while (-not ($apiReady -and $workerReady) -and (Get-Date) -lt $deadline)
+if (-not ($apiReady -and $workerReady)) { throw 'API or Worker readiness timed out.' }
 ```
 
 ## 4. 初始化身份、Embedding、群和标签
@@ -106,7 +127,7 @@ dotnet run --project src/server/WechatRobot.Worker
 
 ```powershell
 $login = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5502/api/auth/login -ContentType 'application/json' -Body (@{
-  email='checkpoint2@example.test'; password='<local-admin-password>'
+  email='checkpoint2@example.test'; password=$checkpointAdminPassword
 } | ConvertTo-Json)
 $headers = @{ Authorization = "Bearer $($login.accessToken)" }
 
@@ -252,10 +273,23 @@ for ($index=0; $index -lt $statuses.Count; $index++) {
 
 ## 8. 限定清理
 
-先停止本检查点启动的 API、Worker 和假提供商进程。只关闭本项目容器，不删除卷或镜像：
+只停止本检查点捕获的 API、Worker 和假提供商 PID，并等待它们退出；然后只关闭本项目容器，不删除卷或镜像：
 
 ```powershell
-Stop-Process -Id $fakeProvider.Id
+$checkpointProcesses = @($apiProcess,$workerProcess,$fakeProvider)
+foreach ($process in $checkpointProcesses) {
+  $process.Refresh()
+  if (-not $process.HasExited) { Stop-Process -Id $process.Id }
+}
+foreach ($process in $checkpointProcesses) {
+  try { Wait-Process -Id $process.Id -Timeout 15 -ErrorAction Stop }
+  catch {
+    if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+      Stop-Process -Id $process.Id -Force
+      Wait-Process -Id $process.Id -Timeout 15
+    }
+  }
+}
 docker compose --env-file .superpowers/sdd/checkpoint-2.env -p wechatrobot-checkpoint2 down
 ```
 
