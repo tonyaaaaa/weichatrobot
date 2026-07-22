@@ -47,6 +47,17 @@ internal sealed class GroupRuleConfiguration : IEntityTypeConfiguration<GroupRul
     }
 }
 
+internal sealed class GroupProfileTagConfiguration : IEntityTypeConfiguration<GroupProfileTagEntity>
+{
+    public void Configure(EntityTypeBuilder<GroupProfileTagEntity> builder)
+    {
+        builder.ToTable("group_profile_tag");
+        builder.HasKey(entity => new { entity.GroupProfileId, entity.KnowledgeTagId });
+        builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<KnowledgeTagEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeTagId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 internal sealed class KnowledgeTagConfiguration : IEntityTypeConfiguration<KnowledgeTagEntity>
 {
     public void Configure(EntityTypeBuilder<KnowledgeTagEntity> builder)

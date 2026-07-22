@@ -16,6 +16,7 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<RobotConfigEntity> RobotConfigs => Set<RobotConfigEntity>();
     public DbSet<GroupProfileEntity> GroupProfiles => Set<GroupProfileEntity>();
     public DbSet<GroupRuleEntity> GroupRules => Set<GroupRuleEntity>();
+    public DbSet<GroupProfileTagEntity> GroupProfileTags => Set<GroupProfileTagEntity>();
     public DbSet<KnowledgeTagEntity> KnowledgeTags => Set<KnowledgeTagEntity>();
     public DbSet<ConversationMessageEntity> ConversationMessages => Set<ConversationMessageEntity>();
     public DbSet<DurableJobEntity> DurableJobs => Set<DurableJobEntity>();

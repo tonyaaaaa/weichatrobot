@@ -63,7 +63,7 @@ export function createApiClient(
 }
 
 let onUnauthorized: () => void = () => undefined;
-const client = createApiClient(
+export const apiClient = createApiClient(
   () => localStorage.getItem(accessTokenStorageKey),
   () => onUnauthorized());
 
@@ -73,11 +73,11 @@ export function configureUnauthorizedHandler(handler: () => void): void {
 
 export const authApi: AuthApi = {
   async login(email, password) {
-    const response = await client.post<LoginResponse>('/api/auth/login', { email, password });
+    const response = await apiClient.post<LoginResponse>('/api/auth/login', { email, password });
     return response.data;
   },
   async me() {
-    const response = await client.get<CurrentUser>('/api/auth/me');
+    const response = await apiClient.get<CurrentUser>('/api/auth/me');
     return response.data;
   }
 };

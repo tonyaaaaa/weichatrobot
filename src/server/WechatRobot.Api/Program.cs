@@ -6,9 +6,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Api.Auth;
+using WechatRobot.Api.Groups;
 using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Groups;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
@@ -32,6 +34,7 @@ builder.Services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(
 var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<WorkToolCallbackOptions>()
@@ -116,6 +119,7 @@ app.UseAuthorization();
 app.UseRateLimiter();
 app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
+app.MapGroupEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapGet("/", () => Results.Ok());
 
