@@ -13,7 +13,7 @@ public sealed class DurableJobWorker(IServiceScopeFactory scopeFactory, TimeProv
         await using var scope = scopeFactory.CreateAsyncScope();
         var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        var job = await repository.LeaseNextJobAsync(_leaseOwner, now, LeaseDuration, cancellationToken);
+        var job = await repository.LeaseNextJobAsync("ProcessInboundMessage", _leaseOwner, now, LeaseDuration, cancellationToken);
         if (job is null)
         {
             return false;

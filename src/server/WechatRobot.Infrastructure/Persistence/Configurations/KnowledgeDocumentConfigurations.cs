@@ -1,0 +1,62 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using WechatRobot.Infrastructure.Persistence.Entities;
+
+namespace WechatRobot.Infrastructure.Persistence.Configurations;
+
+internal sealed class KnowledgeDocumentConfiguration : IEntityTypeConfiguration<KnowledgeDocumentEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeDocumentEntity> builder)
+    {
+        builder.ToTable("knowledge_document");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.Title).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.HasIndex(entity => entity.Status);
+    }
+}
+
+internal sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfiguration<KnowledgeDocumentVersionEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeDocumentVersionEntity> builder)
+    {
+        builder.ToTable("knowledge_document_version");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.OriginalFileName).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.SafeFileName).HasMaxLength(64).IsRequired();
+        builder.Property(entity => entity.ContentType).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.Sha256).HasMaxLength(64).IsRequired();
+        builder.Property(entity => entity.ObjectKey).HasMaxLength(1024).IsRequired();
+        builder.Property(entity => entity.PublicUrl).HasMaxLength(2048);
+        builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.FailureReason).HasMaxLength(512);
+        builder.Property(entity => entity.StagedContent).HasColumnType("longblob").IsRequired();
+        builder.HasIndex(entity => entity.Sha256).IsUnique();
+        builder.HasIndex(entity => new { entity.KnowledgeDocumentId, entity.Version }).IsUnique();
+        builder.HasOne<KnowledgeDocumentEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class KnowledgeChunkConfiguration : IEntityTypeConfiguration<KnowledgeChunkEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeChunkEntity> builder)
+    {
+        builder.ToTable("knowledge_chunk");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
+        builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.Sequence }).IsUnique();
+        builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class KnowledgeChunkTagConfiguration : IEntityTypeConfiguration<KnowledgeChunkTagEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeChunkTagEntity> builder)
+    {
+        builder.ToTable("knowledge_chunk_tag");
+        builder.HasKey(entity => new { entity.KnowledgeChunkId, entity.KnowledgeTagId });
+        builder.HasOne<KnowledgeChunkEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeChunkId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<KnowledgeTagEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeTagId).OnDelete(DeleteBehavior.Restrict);
+    }
+}

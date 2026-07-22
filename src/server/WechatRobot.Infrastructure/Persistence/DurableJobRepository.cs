@@ -56,12 +56,12 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         }
     }
 
-    public async Task<LeasedDurableJob?> LeaseNextJobAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
+    public async Task<LeasedDurableJob?> LeaseNextJobAsync(string jobType, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
     {
         var candidate = await database.DurableJobs.AsNoTracking()
             .Where(job =>
-                (job.Status == "pending" || job.Status == "retrying") && job.NextAttemptAtUtc <= nowUtc ||
-                job.Status == "leased" && job.LeaseExpiresAtUtc <= nowUtc)
+                job.JobType == jobType && ((job.Status == "pending" || job.Status == "retrying") && job.NextAttemptAtUtc <= nowUtc ||
+                job.Status == "leased" && job.LeaseExpiresAtUtc <= nowUtc))
             .OrderBy(job => job.NextAttemptAtUtc)
             .ThenBy(job => job.CreatedAtUtc)
             .Select(job => new { job.Id, job.Version })
@@ -73,7 +73,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
         var leaseExpiry = nowUtc.Add(leaseDuration);
         var updated = await database.DurableJobs
-            .Where(job => job.Id == candidate.Id && job.Version == candidate.Version && (
+            .Where(job => job.Id == candidate.Id && job.JobType == jobType && job.Version == candidate.Version && (
                 (job.Status == "pending" || job.Status == "retrying") && job.NextAttemptAtUtc <= nowUtc ||
                 job.Status == "leased" && job.LeaseExpiresAtUtc <= nowUtc))
             .ExecuteUpdateAsync(setters => setters

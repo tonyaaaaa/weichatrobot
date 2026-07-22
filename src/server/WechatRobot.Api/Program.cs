@@ -2,14 +2,18 @@ using System.Text;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Api.Auth;
 using WechatRobot.Api.Groups;
+using WechatRobot.Api.Knowledge;
 using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Knowledge;
+using WechatRobot.Application.Storage;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
@@ -19,6 +23,7 @@ using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Models;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Security;
+using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Infrastructure.WorkTool;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -39,6 +44,21 @@ builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
+builder.Services.AddOptions<DocumentUploadOptions>()
+    .BindConfiguration(DocumentUploadOptions.SectionName)
+    .Validate(options => options.MaximumBytes is > 0 and <= int.MaxValue && options.MaximumArchiveEntries > 0 && options.MaximumExpandedArchiveBytes > 0 && options.MaximumArchiveExpansionRatio > 0, "Document upload limits are invalid.")
+    .ValidateOnStart();
+builder.Services.Configure<FormOptions>(options =>
+    options.MultipartBodyLengthLimit = checked(builder.Configuration.GetValue<long?>($"{DocumentUploadOptions.SectionName}:MaximumBytes") ?? 20 * 1024 * 1024) + 64 * 1024);
+builder.Services.AddOptions<OssOptions>().BindConfiguration(OssOptions.SectionName);
+builder.Services.AddSingleton<IOssTransport, AliyunOssTransport>();
+builder.Services.AddSingleton<IObjectStorage, AliyunOssStorage>();
+builder.Services.AddScoped<IKnowledgeDocumentStore, KnowledgeDocumentStore>();
+builder.Services.AddScoped(services => new DocumentUploadService(
+    services.GetRequiredService<IOptions<DocumentUploadOptions>>().Value,
+    services.GetRequiredService<IOptions<OssOptions>>().Value.PublicReadRiskAccepted,
+    services.GetRequiredService<IObjectStorage>(),
+    services.GetRequiredService<IKnowledgeDocumentStore>()));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<WorkToolCallbackOptions>()
     .BindConfiguration(WorkToolCallbackOptions.SectionName)
@@ -124,6 +144,7 @@ app.UseRateLimiter();
 app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
 app.MapGroupEndpoints();
+app.MapDocumentEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
 app.MapGet("/", () => Results.Ok());
