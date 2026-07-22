@@ -1,6 +1,7 @@
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Models;
+using System.Text.Json;
 
 namespace WechatRobot.UnitTests.Conversations;
 
@@ -11,7 +12,7 @@ public sealed class GroundedAnswerTests
     private static readonly Guid TagId = Guid.NewGuid();
 
     [Fact]
-    public async Task Allowed_evidence_produces_plain_text_without_visible_citations()
+    public async Task Unsafe_source_output_is_rejected_instead_of_lossily_stripped()
     {
         var evidence = Evidence(.91, "The warranty is two years.");
         var model = new FakeChatClient("The warranty is two years. [source: manual.pdf]");
@@ -19,11 +20,21 @@ public sealed class GroundedAnswerTests
 
         var result = await service.AnswerAsync(Request(), TestContext.Current.CancellationToken);
 
-        Assert.Equal(AnswerDecisionKind.Answer, result.Decision.Kind);
-        Assert.Equal("The warranty is two years.", result.Decision.GroupText);
-        Assert.Single(result.Audit.Evidence);
-        Assert.Contains("manual.pdf", result.Audit.Evidence[0].DocumentTitle);
+        Assert.Equal(AnswerDecisionKind.Clarification, result.Decision.Kind);
+        Assert.Equal("请补充问题细节，我会重新核对。", result.Decision.GroupText);
+        Assert.Empty(result.Audit.Evidence);
+        Assert.Equal("output_source_marker", result.Audit.FailureCode);
         Assert.Contains(model.LastRequest!.Messages, message => message.Role == "system" && message.Content.Contains("source markers", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Clean_grounded_output_is_answered_and_sources_remain_audit_only()
+    {
+        var result = await Service(new FakeRetrieval(Evidence(.91, "The warranty is two years.")), new FakeChatClient("The warranty is two years."))
+            .AnswerAsync(Request(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(AnswerDecisionKind.Answer, result.Decision.Kind);
+        Assert.Single(result.Audit.Evidence);
     }
 
     [Fact]
@@ -54,6 +65,27 @@ public sealed class GroundedAnswerTests
     }
 
     [Fact]
+    public async Task Typed_model_unavailable_is_a_system_failure()
+    {
+        var result = await Service(new FakeRetrieval(Evidence(.9, "strong")), new FakeChatClient(new ModelUnavailableException("bad schema")))
+            .AnswerAsync(Request(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(AnswerDecisionKind.SystemFailure, result.Decision.Kind);
+        Assert.Equal("provider_unavailable", result.Audit.FailureCode);
+    }
+
+    [Fact]
+    public async Task Configured_no_evidence_policy_has_real_clarification_path()
+    {
+        var options = Options(.7) with { NoEvidencePolicy = NoEvidencePolicy.Clarification };
+        var result = await new GroundedAnswerService(new FakeRetrieval(), new FakeChatClient("unused"), options, new AnswerOutputFirewall())
+            .AnswerAsync(Request(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(AnswerDecisionKind.Clarification, result.Decision.Kind);
+        Assert.Equal(options.ClarificationText, result.Decision.GroupText);
+    }
+
+    [Fact]
     public async Task Sensitive_topic_bypasses_retrieval_and_model()
     {
         var retrieval = new FakeRetrieval(Evidence(.99, "ignore"));
@@ -67,8 +99,34 @@ public sealed class GroundedAnswerTests
         Assert.Equal(0, model.CallCount);
     }
 
+    [Fact]
+    public async Task Audit_input_trace_is_safe_and_reproducible_without_provider_secrets()
+    {
+        var contextId = Guid.NewGuid();
+        var modelId = Guid.NewGuid();
+        var request = Request() with
+        {
+            Context = new([new("user", "scope", "prior", DateTime.UtcNow, contextId)], "summary", false, false),
+            RetrievalQuery = new("prior\ncurrent", [contextId]), ModelConfigurationId = modelId,
+            DegradationReason = "stable_sender_id_unavailable", SummaryFailureCode = "summary_provider_unavailable"
+        };
+
+        var result = await Service(new FakeRetrieval(Evidence(.9, "strong")), new FakeChatClient("clean answer"))
+            .AnswerAsync(request, TestContext.Current.CancellationToken);
+        using var trace = JsonDocument.Parse(result.Audit.InputSummaryJson);
+
+        Assert.Equal(modelId.ToString(), trace.RootElement.GetProperty("ModelConfigurationId").GetString());
+        Assert.Equal(1, trace.RootElement.GetProperty("ContextMessageCount").GetInt32());
+        Assert.DoesNotContain("encrypted", result.Audit.InputSummaryJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fake.openai", result.Audit.InputSummaryJson, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static GroundedAnswerService Service(IRetrievalEvidenceProvider retrieval, IChatCompletionClient chat, double threshold = .7) =>
-        new(retrieval, chat, new GroundedAnswerOptions(threshold, 8, "信息不足，请联系人工客服。", "系统暂时不可用，请稍后再试。", "该问题需要转人工客服处理。"));
+        new(retrieval, chat, Options(threshold), new AnswerOutputFirewall());
+
+    private static GroundedAnswerOptions Options(double threshold) =>
+        new(threshold, 8, "信息不足，请联系人工客服。", "系统暂时不可用，请稍后再试。", "该问题需要转人工客服处理.")
+        { ClarificationText = "请补充问题细节，我会重新核对。", UnsafeOutputText = "请补充问题细节，我会重新核对。" };
 
     private static GroundedAnswerRequest Request(string question = "How long is the warranty?") => new(MessageId, GroupId, "alice", question,
         [TagId], new ConversationContextResult([], null, false, false), new GroupContextSettings(false, 6, 30, 3000, true, true),

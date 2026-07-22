@@ -15,6 +15,10 @@ public sealed class WorkToolCallbackDto
     [JsonPropertyName("receivedName")]
     public string? ReceivedName { get; init; }
 
+    // Connector extension only. The official public WorkTool callback does not supply a stable sender identifier.
+    [JsonPropertyName("connectorStableSenderId")]
+    public string? ConnectorStableSenderId { get; init; }
+
     [JsonPropertyName("groupName")]
     public string? GroupName { get; init; }
 
@@ -55,6 +59,7 @@ public sealed class WorkToolCallbackDto
 
         if (!IsWithinLength(MessageId, MaxIdentifierLength)
             || !IsWithinLength(ReceivedName, MaxIdentifierLength)
+            || !IsWithinLength(ConnectorStableSenderId, MaxIdentifierLength)
             || !IsWithinLength(GroupName, MaxIdentifierLength)
             || !IsWithinLength(GroupRemark, MaxIdentifierLength)
             || !IsWithinLength(Spoken, MaxTextLength)

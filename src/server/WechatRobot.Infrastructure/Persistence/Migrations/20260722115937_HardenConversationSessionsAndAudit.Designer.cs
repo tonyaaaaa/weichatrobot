@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WechatRobot.Infrastructure.Persistence;
 
@@ -10,9 +11,11 @@ using WechatRobot.Infrastructure.Persistence;
 namespace WechatRobot.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(WechatRobotDbContext))]
-    partial class WechatRobotDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722115937_HardenConversationSessionsAndAudit")]
+    partial class HardenConversationSessionsAndAudit
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

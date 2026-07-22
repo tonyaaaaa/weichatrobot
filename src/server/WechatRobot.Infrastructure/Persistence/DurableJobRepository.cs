@@ -18,7 +18,9 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             WorkToolMessageId = string.IsNullOrWhiteSpace(request.WorkToolMessageId) ? null : request.WorkToolMessageId,
             FallbackHash = request.FallbackHash,
             FallbackWindowStartUtc = request.FallbackWindowStartUtc,
-            SenderExternalUserId = request.SenderName,
+            GroupName = request.GroupName,
+            SenderDisplayName = request.SenderDisplayName,
+            StableSenderId = request.StableSenderId,
             Text = request.Text,
             ReceivedAtUtc = request.ReceivedAtUtc
         };
@@ -32,7 +34,8 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 request.RobotConfigId,
                 workToolRobotId = robot.WorkToolRobotId,
                 request.GroupName,
-                request.SenderName,
+                request.SenderDisplayName,
+                request.StableSenderId,
                 request.Text,
                 request.ReceivedAtUtc
             })

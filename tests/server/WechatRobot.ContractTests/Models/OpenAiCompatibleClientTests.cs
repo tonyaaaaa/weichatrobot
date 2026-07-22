@@ -62,10 +62,23 @@ public sealed class OpenAiCompatibleClientTests
             "{\"data\":[{\"index\":0,\"embedding\":[1,1]}]}");
         var client = new OpenAiCompatibleEmbeddingClient(new HttpClient(), new PassthroughSecretProtector());
 
-        await Assert.ThrowsAsync<InvalidDataException>(() => client.CreateEmbeddingsAsync(
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => client.CreateEmbeddingsAsync(
             new ModelProviderConfiguration(server.BaseUrl, "embedding-model", "key", TimeSpan.FromSeconds(5), 0),
             new EmbeddingBatchRequest(["first", "second"]),
             TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Chat_and_embedding_schema_failures_are_typed_model_unavailable()
+    {
+        await using var chatServer = await FakeOpenAiServer.StartAsync("{\"choices\":[]}");
+        await using var embeddingServer = await FakeOpenAiServer.StartAsync("{\"data\":\"invalid\"}");
+        var protector = new PassthroughSecretProtector();
+
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => new OpenAiCompatibleChatClient(new HttpClient(), protector).CompleteAsync(
+            new(chatServer.BaseUrl, "chat", "key", TimeSpan.FromSeconds(5), 0), new([new("user", "hello")]), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<ModelUnavailableException>(() => new OpenAiCompatibleEmbeddingClient(new HttpClient(), protector).CreateEmbeddingsAsync(
+            new(embeddingServer.BaseUrl, "embedding", "key", TimeSpan.FromSeconds(5), 0), new(["hello"]), TestContext.Current.CancellationToken));
     }
 
     private sealed class PassthroughSecretProtector : ISecretProtector

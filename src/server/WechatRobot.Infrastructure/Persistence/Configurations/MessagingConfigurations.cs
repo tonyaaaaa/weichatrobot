@@ -80,11 +80,14 @@ internal sealed class ConversationMessageConfiguration : IEntityTypeConfiguratio
         builder.Property(entity => entity.Direction).HasMaxLength(16).HasDefaultValue("inbound").IsRequired();
         builder.Property(entity => entity.Role).HasMaxLength(16).HasDefaultValue("user").IsRequired();
         builder.Property(entity => entity.FallbackHash).HasMaxLength(128).IsRequired();
-        builder.Property(entity => entity.SenderExternalUserId).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.GroupName).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.SenderDisplayName).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.StableSenderId).HasMaxLength(128);
         builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
         builder.HasIndex(entity => entity.WorkToolMessageId).IsUnique();
         builder.HasIndex(entity => new { entity.FallbackHash, entity.FallbackWindowStartUtc }).IsUnique();
         builder.HasIndex(entity => entity.InReplyToMessageId).IsUnique();
+        builder.HasIndex(entity => new { entity.ConversationSessionId, entity.SessionSequence }).IsUnique();
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne<ConversationSessionEntity>().WithMany().HasForeignKey(entity => entity.ConversationSessionId).OnDelete(DeleteBehavior.SetNull);
@@ -99,6 +102,8 @@ internal sealed class ConversationSessionConfiguration : IEntityTypeConfiguratio
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.SenderScopeKey).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Summary).HasColumnType("longtext");
+        builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => new { entity.GroupProfileId, entity.SenderScopeKey }).IsUnique();
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Cascade);
     }
@@ -114,6 +119,7 @@ internal sealed class RetrievalAuditConfiguration : IEntityTypeConfiguration<Ret
         builder.Property(entity => entity.ContextPolicy).HasMaxLength(1024).IsRequired();
         builder.Property(entity => entity.FailureCode).HasMaxLength(64);
         builder.Property(entity => entity.EvidenceJson).HasColumnType("json").IsRequired();
+        builder.Property(entity => entity.InputSummaryJson).HasColumnType("json").HasDefaultValueSql("(JSON_OBJECT())").IsRequired();
         builder.HasIndex(entity => entity.ConversationMessageId).IsUnique();
         builder.HasIndex(entity => new { entity.GroupProfileId, entity.CreatedAtUtc });
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.ConversationMessageId).OnDelete(DeleteBehavior.Restrict);

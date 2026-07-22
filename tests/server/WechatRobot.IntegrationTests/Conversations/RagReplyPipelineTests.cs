@@ -58,6 +58,9 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         Assert.Equal(messages[0].Id, messages[1].InReplyToMessageId);
         Assert.DoesNotContain("manual.pdf", messages[1].Text, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, await database.RetrievalAudits.CountAsync(item => item.GroupProfileId == groupId && item.EvidenceJson.Contains("manual.pdf"), TestContext.Current.CancellationToken));
+        var audit = await database.RetrievalAudits.SingleAsync(item => item.GroupProfileId == groupId, TestContext.Current.CancellationToken);
+        Assert.Contains("stable_sender_id_unavailable", audit.InputSummaryJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("fake.test", audit.InputSummaryJson, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, await database.SendCommands.CountAsync(item => item.GroupProfileId == groupId && item.Status == "pending", TestContext.Current.CancellationToken));
         Assert.Equal(1, await database.DurableJobs.CountAsync(item => item.Status == "completed", TestContext.Current.CancellationToken));
         var repository = verify.ServiceProvider.GetRequiredService<IGroundedConversationRepository>();
@@ -82,6 +85,10 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         .AddSingleton<ISecretProtector, PassThroughProtector>()
         .AddScoped<ModelConfigurationService>()
         .AddSingleton<ConversationContextService>()
+        .AddSingleton<AnswerOutputFirewall>()
+        .AddSingleton(new RetrievalQueryOptions())
+        .AddSingleton<RetrievalQueryBuilder>()
+        .AddSingleton<IConversationSummarizer, NoOpSummarizer>()
         .AddSingleton<IRetrievalEvidenceProvider, FakeEvidence>()
         .AddSingleton<IChatCompletionClient, FakeChat>()
         .AddSingleton(new GroundedAnswerOptions(.7, 8, "insufficient", "failure", "handoff"))
@@ -105,6 +112,12 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
     private sealed class FakeChat : IChatCompletionClient
     {
         public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ChatCompletionResponse("Warranty is two years. [source: manual.pdf]"));
+            Task.FromResult(new ChatCompletionResponse("Warranty is two years."));
+    }
+
+    private sealed class NoOpSummarizer : IConversationSummarizer
+    {
+        public Task<string> SummarizeAsync(ModelProviderConfiguration configuration, string? existingSummary, IReadOnlyList<ConversationHistoryMessage> evictedMessages, CancellationToken token) =>
+            Task.FromResult(existingSummary ?? "summary");
     }
 }

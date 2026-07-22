@@ -98,8 +98,8 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
         {
             var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             database.ConversationMessages.AddRange(
-                new ConversationMessageEntity { RobotConfigId = RobotId, GroupProfileId = groupId, FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = DateTime.UtcNow, SenderExternalUserId = "member-a", Text = "clear me", ReceivedAtUtc = DateTime.UtcNow },
-                new ConversationMessageEntity { RobotConfigId = RobotId, GroupProfileId = Guid.NewGuid(), FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = DateTime.UtcNow, SenderExternalUserId = "member-b", Text = "keep me", ReceivedAtUtc = DateTime.UtcNow });
+                new ConversationMessageEntity { RobotConfigId = RobotId, GroupProfileId = groupId, GroupName = "group-a", FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = DateTime.UtcNow, SenderDisplayName = "member-a", Text = "clear me", ReceivedAtUtc = DateTime.UtcNow },
+                new ConversationMessageEntity { RobotConfigId = RobotId, GroupProfileId = Guid.NewGuid(), GroupName = "group-b", FallbackHash = Guid.NewGuid().ToString("N"), FallbackWindowStartUtc = DateTime.UtcNow, SenderDisplayName = "member-b", Text = "keep me", ReceivedAtUtc = DateTime.UtcNow });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 

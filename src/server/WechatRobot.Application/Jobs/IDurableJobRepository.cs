@@ -19,9 +19,10 @@ public sealed record InboundMessageIngestRequest(
     string FallbackHash,
     DateTime FallbackWindowStartUtc,
     string GroupName,
-    string SenderName,
+    string SenderDisplayName,
     string Text,
-    DateTime ReceivedAtUtc);
+    DateTime ReceivedAtUtc,
+    string? StableSenderId = null);
 
 public enum InboundMessageIngestResult
 {

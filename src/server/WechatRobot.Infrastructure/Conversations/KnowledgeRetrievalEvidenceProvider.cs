@@ -40,12 +40,15 @@ public sealed class KnowledgeRetrievalEvidenceProvider(
             return rows.Where(row => hitByChunk.TryGetValue(row.Chunk.Id, out var hit) && hit.DocumentId == row.Document.Id && hit.VersionId == row.Version.Id &&
                     tagsByChunk.TryGetValue(row.Chunk.Id, out var chunkTags) && chunkTags.Any(visibleTags.Contains))
                 .Select(row => new RetrievalEvidence(row.Document.Id, row.Version.Id, row.Chunk.Id, row.Chunk.PageNumber,
-                    hitByChunk[row.Chunk.Id].Score, tagsByChunk[row.Chunk.Id].Where(visibleTags.Contains).ToArray(), row.Document.Title, row.Chunk.Text))
+                    hitByChunk[row.Chunk.Id].Score, tagsByChunk[row.Chunk.Id].Where(visibleTags.Contains).ToArray(), row.Document.Title,
+                    row.Chunk.Text, row.Version.PublicUrl, row.Version.OriginalFileName))
                 .OrderByDescending(item => item.Similarity).Take(limit).ToArray();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (ModelUnavailableException) { throw; }
         catch (RetrievalUnavailableException) { throw; }
-        catch (Exception exception) when (exception is VectorStoreUnavailableException or HttpRequestException or TimeoutException or OperationCanceledException)
+        catch (Exception exception) when (exception is VectorStoreUnavailableException or VectorCollectionConfigurationException or KnowledgeSearchCapacityException or
+            HttpRequestException or System.Text.Json.JsonException or InvalidDataException or TimeoutException or OperationCanceledException)
         {
             throw new RetrievalUnavailableException("Knowledge retrieval is unavailable.", exception);
         }

@@ -11,5 +11,6 @@ public sealed class RetrievalAuditEntity
     public string ContextPolicy { get; set; } = string.Empty;
     public string? FailureCode { get; set; }
     public string EvidenceJson { get; set; } = "[]";
+    public string InputSummaryJson { get; set; } = "{}";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

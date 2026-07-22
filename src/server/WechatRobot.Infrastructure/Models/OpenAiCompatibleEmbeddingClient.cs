@@ -10,25 +10,36 @@ public sealed class OpenAiCompatibleEmbeddingClient(HttpClient httpClient, ISecr
 {
     public async Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(ModelProviderConfiguration configuration, EmbeddingBatchRequest request, CancellationToken cancellationToken = default)
     {
-        using var response = await SendAsync(configuration, new { model = configuration.Model, input = request.Inputs }, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        var data = document.RootElement.GetProperty("data").EnumerateArray().ToArray();
-        if (data.Length != request.Inputs.Count)
-            throw new InvalidDataException($"Embedding response count mismatch. Expected {request.Inputs.Count}, received {data.Length}.");
-
-        var vectors = new IReadOnlyList<float>?[request.Inputs.Count];
-        foreach (var item in data)
+        try
         {
-            var index = item.GetProperty("index").GetInt32();
-            if (index < 0 || index >= vectors.Length || vectors[index] is not null)
-                throw new InvalidDataException("Embedding response contains an invalid or duplicate index.");
-            vectors[index] = item.GetProperty("embedding").EnumerateArray().Select(element => element.GetSingle()).ToArray();
-        }
+            using var response = await SendAsync(configuration, new { model = configuration.Model, input = request.Inputs }, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+            var data = document.RootElement.GetProperty("data").EnumerateArray().ToArray();
+            if (data.Length != request.Inputs.Count)
+                throw new InvalidDataException($"Embedding response count mismatch. Expected {request.Inputs.Count}, received {data.Length}.");
 
-        if (vectors.Any(vector => vector is null))
-            throw new InvalidDataException("Embedding response does not contain every requested input index.");
-        return new EmbeddingBatchResponse(vectors.Select(vector => vector!).ToArray());
+            var vectors = new IReadOnlyList<float>?[request.Inputs.Count];
+            foreach (var item in data)
+            {
+                var index = item.GetProperty("index").GetInt32();
+                if (index < 0 || index >= vectors.Length || vectors[index] is not null)
+                    throw new InvalidDataException("Embedding response contains an invalid or duplicate index.");
+                vectors[index] = item.GetProperty("embedding").EnumerateArray().Select(element => element.GetSingle()).ToArray();
+            }
+
+            if (vectors.Any(vector => vector is null))
+                throw new InvalidDataException("Embedding response does not contain every requested input index.");
+            return new EmbeddingBatchResponse(vectors.Select(vector => vector!).ToArray());
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ModelUnavailableException("Embedding provider timed out.", exception);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or KeyNotFoundException or InvalidDataException or InvalidOperationException)
+        {
+            throw new ModelUnavailableException("Embedding provider response is unavailable or invalid.", exception);
+        }
     }
 
     private async Task<HttpResponseMessage> SendAsync(ModelProviderConfiguration configuration, object body, CancellationToken cancellationToken)

@@ -10,15 +10,27 @@ public sealed class OpenAiCompatibleChatClient(HttpClient httpClient, ISecretPro
 {
     public async Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default)
     {
-        using var response = await SendAsync(configuration, "v1/chat/completions", new
+        try
         {
-            model = configuration.Model,
-            messages = request.Messages.Select(message => new { role = message.Role, content = message.Content })
-        }, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        var content = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-        return new ChatCompletionResponse(content ?? string.Empty);
+            using var response = await SendAsync(configuration, "v1/chat/completions", new
+            {
+                model = configuration.Model,
+                messages = request.Messages.Select(message => new { role = message.Role, content = message.Content })
+            }, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+            var content = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            if (string.IsNullOrWhiteSpace(content)) throw new InvalidDataException("Chat response content is empty.");
+            return new ChatCompletionResponse(content);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ModelUnavailableException("Chat provider timed out.", exception);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or KeyNotFoundException or IndexOutOfRangeException or InvalidDataException or InvalidOperationException)
+        {
+            throw new ModelUnavailableException("Chat provider response is unavailable or invalid.", exception);
+        }
     }
 
     private async Task<HttpResponseMessage> SendAsync(ModelProviderConfiguration configuration, string relativePath, object body, CancellationToken cancellationToken)

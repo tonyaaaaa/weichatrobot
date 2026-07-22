@@ -63,6 +63,27 @@ public sealed class ConversationContextTests
     }
 
     [Fact]
+    public void Bot_history_disabled_keeps_six_user_turns_not_three_pairs()
+    {
+        var messages = Enumerable.Range(1, 8).SelectMany(Turn).ToArray();
+
+        var result = new ConversationContextService().Build(messages, Policy(includeBotHistory: false), "stable:alice", Now);
+
+        Assert.Equal(["u3", "u4", "u5", "u6", "u7", "u8"], result.Messages.Select(message => message.Content));
+    }
+
+    [Fact]
+    public void One_oversized_message_is_dropped_to_enforce_token_cap()
+    {
+        var result = new ConversationContextService().Build(
+            [Message("user", "stable:alice", new string('x', 400), Now.AddMinutes(-1))], Policy(tokenCap: 12), "stable:alice", Now);
+
+        Assert.Empty(result.Messages);
+        Assert.True(result.WasTokenLimited);
+        Assert.Single(result.EvictedMessages);
+    }
+
+    [Fact]
     public void Summary_is_included_only_when_enabled()
     {
         var messages = new[] { Message("user", "alice", "recent", Now.AddMinutes(-1)) };

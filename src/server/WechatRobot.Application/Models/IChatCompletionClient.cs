@@ -18,3 +18,4 @@ public sealed record ModelProviderConfiguration(
 public sealed record ChatMessage(string Role, string Content);
 public sealed record ChatCompletionRequest(IReadOnlyList<ChatMessage> Messages);
 public sealed record ChatCompletionResponse(string Content);
+public sealed class ModelUnavailableException(string message, Exception? innerException = null) : Exception(message, innerException);

@@ -115,6 +115,10 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         .AddScoped<SendCommandService>()
         .AddScoped<IGroundedConversationRepository, FakeConversationRepository>()
         .AddSingleton<ConversationContextService>()
+        .AddSingleton<AnswerOutputFirewall>()
+        .AddSingleton(new RetrievalQueryOptions())
+        .AddSingleton<RetrievalQueryBuilder>()
+        .AddSingleton<IConversationSummarizer, NoOpSummarizer>()
         .AddSingleton<IRetrievalEvidenceProvider, FakeEvidenceProvider>()
         .AddSingleton<IChatCompletionClient, FakeChatClient>()
         .AddSingleton(new GroundedAnswerOptions(.5, 8, "insufficient", "failure", "handoff"))
@@ -133,10 +137,16 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         {
             var message = await database.ConversationMessages.SingleAsync(item => item.Id == messageId, token);
             var robot = await database.RobotConfigs.SingleAsync(item => item.Id == message.RobotConfigId, token);
-            return new(message.Id, robot.Id, robot.WorkToolRobotId, Guid.NewGuid(), "Support", message.SenderExternalUserId, message.Text,
+            var scope = ConversationScopeResolver.Resolve(false, message.StableSenderId, message.Id);
+            return new(message.Id, robot.Id, robot.WorkToolRobotId, Guid.NewGuid(), "Support", message.SenderDisplayName, message.StableSenderId, scope, message.Text,
                 message.ReceivedAtUtc, [], [], null, new GroupContextSettings(false, 6, 30, 3000, true, true),
                 new ModelProviderConfiguration("https://fake.test", "fake", "fake", TimeSpan.FromSeconds(1), 0));
         }
+
+        public async Task<ConversationProcessingRequest> LeaseForProcessingAsync(Guid messageId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) =>
+            (await LoadForProcessingAsync(messageId, token)) with { ConversationSessionId = Guid.NewGuid(), SessionLeaseOwner = leaseOwner, SessionVersion = 1 };
+        public Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) => Task.FromResult(true);
+        public Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token) => Task.CompletedTask;
 
         public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
             _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.GroupName, result.Decision.GroupText,
@@ -156,6 +166,12 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
     {
         public Task<ChatCompletionResponse> CompleteAsync(ModelProviderConfiguration configuration, ChatCompletionRequest request, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ChatCompletionResponse("fixed reply"));
+    }
+
+    private sealed class NoOpSummarizer : IConversationSummarizer
+    {
+        public Task<string> SummarizeAsync(ModelProviderConfiguration configuration, string? existingSummary, IReadOnlyList<ConversationHistoryMessage> evictedMessages, CancellationToken token) =>
+            Task.FromResult(existingSummary ?? "summary");
     }
 
     private sealed class FakeWorkToolHandler : HttpMessageHandler
