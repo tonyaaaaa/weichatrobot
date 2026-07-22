@@ -89,7 +89,8 @@ public sealed class KnowledgeIndexService(
     private async Task EnsureLeaseOwnedAsync(KnowledgeIndexWork work, VectorCollection collection)
     {
         if (work.LeaseOwner is not null && await knowledge.IsIndexLeaseOwnedAsync(work.JobId, work.LeaseOwner, CancellationToken.None)) return;
-        await vectorStore.DeleteVersionAsync(collection, work.VersionId, CancellationToken.None);
+        if (work.IsCollectionExclusive) await vectorStore.DeleteCollectionAsync(collection, CancellationToken.None);
+        else await vectorStore.DeleteVersionAsync(collection, work.VersionId, CancellationToken.None);
         throw new KnowledgeActivationConflictException();
     }
 

@@ -13,6 +13,7 @@ public sealed class KnowledgeIndexJobEntity
     public int Generation { get; set; } = 1;
     public string Operation { get; set; } = "index";
     public string CollectionName { get; set; } = string.Empty;
+    public bool IsCollectionExclusive { get; set; }
     public int Dimension { get; set; }
     public string Distance { get; set; } = "cosine";
     public string PendingTagIdsJson { get; set; } = "[]";

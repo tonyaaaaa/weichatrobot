@@ -6,7 +6,7 @@ public sealed record KnowledgeIndexChunk(Guid Id, Guid DocumentId, Guid VersionI
 public sealed record KnowledgeIndexWork(Guid JobId, Guid DocumentId, Guid VersionId, Guid? PreviousActiveVersionId,
     string CollectionName, int Dimension, VectorDistance Distance, IReadOnlyList<KnowledgeIndexChunk> Chunks,
     string? LeaseOwner = null, int Generation = 1, string? PreviousActiveCollectionName = null,
-    int? PreviousActiveEmbeddingDimension = null, VectorDistance? PreviousActiveDistance = null);
+    int? PreviousActiveEmbeddingDimension = null, VectorDistance? PreviousActiveDistance = null, bool IsCollectionExclusive = false);
 
 public interface IKnowledgeService
 {

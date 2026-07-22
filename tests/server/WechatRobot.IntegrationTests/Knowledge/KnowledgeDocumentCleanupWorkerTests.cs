@@ -80,6 +80,8 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
     {
         public List<(VectorCollection Collection, Guid VersionId)> Deleted { get; } = [];
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) { Deleted.Add((collection, versionId)); return Task.CompletedTask; }
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => Task.FromResult<VectorCollection?>(null);
         public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;

@@ -55,6 +55,24 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
         if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "set version payload", cancellationToken);
     }
 
+    public async Task DeleteCollectionAsync(VectorCollection collection, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.DeleteAsync($"/collections/{Uri.EscapeDataString(collection.Name)}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return;
+        if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "delete collection", cancellationToken);
+    }
+
+    public async Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync($"/collections/{Uri.EscapeDataString(collectionName)}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "read collection", cancellationToken);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        var vectors = json.RootElement.GetProperty("result").GetProperty("config").GetProperty("params").GetProperty("vectors");
+        return new VectorCollection(collectionName, vectors.GetProperty("size").GetInt32(),
+            Enum.Parse<VectorDistance>(vectors.GetProperty("distance").GetString()!, true));
+    }
+
     public async Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken)
     {
         using var response = await httpClient.PostAsJsonAsync($"/collections/{Uri.EscapeDataString(collection.Name)}/points/delete?wait=true", new

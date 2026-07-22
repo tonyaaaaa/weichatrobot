@@ -81,6 +81,23 @@ public sealed class QdrantKnowledgeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Deleting_unique_generation_collection_removes_accepted_write_and_rejects_late_upsert_without_recreation()
+    {
+        var collection = new VectorCollection($"kb_cosine_3_g1_{Guid.NewGuid():N}", 3, VectorDistance.Cosine);
+        var version = Guid.NewGuid();
+        await _store.EnsureCollectionAsync(collection, TestContext.Current.CancellationToken);
+        await _store.UpsertAsync(collection, [Point(Guid.NewGuid(), version, Guid.NewGuid())], TestContext.Current.CancellationToken);
+        Assert.Equal(collection, await _store.InspectCollectionAsync(collection.Name, TestContext.Current.CancellationToken));
+
+        await _store.DeleteCollectionAsync(collection, TestContext.Current.CancellationToken);
+
+        Assert.Null(await _store.InspectCollectionAsync(collection.Name, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<VectorCollectionConfigurationException>(() => _store.UpsertAsync(collection,
+            [Point(Guid.NewGuid(), version, Guid.NewGuid())], TestContext.Current.CancellationToken));
+        Assert.Null(await _store.InspectCollectionAsync(collection.Name, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Same_version_reindex_stages_in_another_generation_and_failure_leaves_live_points_retrievable()
     {
         var version = Guid.NewGuid();

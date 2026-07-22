@@ -36,11 +36,16 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
             foreach (var key in objectKeys) await storage.DeleteAsync(key, token);
             var vectors = scope.ServiceProvider.GetRequiredService<IVectorStore>();
             var contracts = await knowledge.GetDocumentVectorContractsAsync(documentId, token);
-            foreach (var contract in contracts) await vectors.DeleteVersionAsync(contract.Collection, contract.VersionId, token);
-            contracts = (await knowledge.GetDocumentVectorContractsAsync(documentId, token)).Distinct().ToArray();
-            foreach (var contract in contracts) await vectors.DeleteVersionAsync(contract.Collection, contract.VersionId, token);
             foreach (var contract in contracts)
-                if ((await vectors.InspectVersionAsync(contract.Collection, contract.VersionId, token)).Count != 0)
+                if (contract.IsCollectionExclusive) await vectors.DeleteCollectionAsync(contract.Collection, token);
+                else await vectors.DeleteVersionAsync(contract.Collection, contract.VersionId, token);
+            contracts = (await knowledge.GetDocumentVectorContractsAsync(documentId, token)).Distinct().ToArray();
+            foreach (var contract in contracts)
+                if (contract.IsCollectionExclusive) await vectors.DeleteCollectionAsync(contract.Collection, token);
+                else await vectors.DeleteVersionAsync(contract.Collection, contract.VersionId, token);
+            foreach (var contract in contracts)
+                if (contract.IsCollectionExclusive ? await vectors.InspectCollectionAsync(contract.Collection.Name, token) is not null :
+                    (await vectors.InspectVersionAsync(contract.Collection, contract.VersionId, token)).Count != 0)
                     throw new InvalidOperationException($"Vector cleanup verification failed for {contract.Collection.Name}/{contract.VersionId:D}.");
             await jobs.CompleteJobAsync(job.Id, job.LeaseOwner, timeProvider.GetUtcNow().UtcDateTime, token);
         }

@@ -108,6 +108,8 @@ public sealed class KnowledgeIndexServiceTests
             BatchSizes.Add(points.Count); Events.Add((EventClock.Next(), "upsert")); return Task.CompletedTask;
         }
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) { Events.Add((EventClock.Next(), "activate-vector")); return Task.CompletedTask; }
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => Task.FromResult<VectorCollection?>(null);
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
             Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);

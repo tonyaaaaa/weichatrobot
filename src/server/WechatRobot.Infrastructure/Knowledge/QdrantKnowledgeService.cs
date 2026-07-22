@@ -13,7 +13,8 @@ using WechatRobot.Infrastructure.Persistence.Entities;
 namespace WechatRobot.Infrastructure.Knowledge;
 
 public sealed record LeasedKnowledgeIndexJob(Guid Id, string Operation, string CollectionName, int Dimension, VectorDistance Distance,
-    Guid DocumentId, Guid VersionId, string LeaseOwner, int Generation);
+    Guid DocumentId, Guid VersionId, string LeaseOwner, int Generation, bool IsCollectionExclusive);
+public sealed record KnowledgeVectorContract(VectorCollection Collection, Guid VersionId, bool IsCollectionExclusive);
 public sealed record KnowledgeIndexStatus(Guid DocumentId, Guid? ActiveVersionId, string DocumentStatus, string? CollectionName,
     int ApprovedChunkCount, int? ActivePointCount, string Consistency, IReadOnlyList<string> DriftDetails, IReadOnlyList<KnowledgeIndexJobStatus> Jobs);
 public sealed record KnowledgeIndexJobStatus(Guid Id, Guid VersionId, string Operation, string Status, int AttemptCount, string? FailureReason);
@@ -67,6 +68,7 @@ public sealed class QdrantKnowledgeService(
         existing.Generation = generation;
         existing.Operation = explicitReindex ? "reindex" : "index";
         existing.CollectionName = stagingCollection;
+        existing.IsCollectionExclusive = true;
         existing.Dimension = options.Dimension;
         existing.Distance = DistanceValue(options.Distance);
         existing.PendingTagIdsJson = SerializeTagIds(distinctTags);
@@ -110,7 +112,7 @@ public sealed class QdrantKnowledgeService(
         if (changed != 1) return null;
         var job = await database.KnowledgeIndexJobs.AsNoTracking().SingleAsync(item => item.Id == candidate.Id, token);
         return new LeasedKnowledgeIndexJob(job.Id, job.Operation, job.CollectionName, job.Dimension, ParseDistance(job.Distance), job.KnowledgeDocumentId,
-            job.KnowledgeDocumentVersionId, owner, job.Generation);
+            job.KnowledgeDocumentVersionId, owner, job.Generation, job.IsCollectionExclusive);
     }
 
     public async Task<bool> RenewLeaseAsync(Guid jobId, string owner, DateTime nowUtc, TimeSpan duration, CancellationToken token)
@@ -132,7 +134,7 @@ public sealed class QdrantKnowledgeService(
             job.CollectionName, job.Dimension, ParseDistance(job.Distance), chunks.Select(chunk => new KnowledgeIndexChunk(chunk.Id, job.KnowledgeDocumentId,
                 job.KnowledgeDocumentVersionId, chunk.Text, tags)).ToArray(), job.LeaseOwner, job.Generation,
             job.PreviousActiveCollectionName, job.PreviousActiveEmbeddingDimension,
-            job.PreviousActiveDistance is null ? null : ParseDistance(job.PreviousActiveDistance));
+            job.PreviousActiveDistance is null ? null : ParseDistance(job.PreviousActiveDistance), job.IsCollectionExclusive);
     }
 
     public async Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(CancellationToken token)
@@ -338,14 +340,16 @@ public sealed class QdrantKnowledgeService(
         return candidates.Where(hit => allowed.Contains(hit.ChunkId)).OrderByDescending(hit => hit.Score).DistinctBy(hit => hit.ChunkId).Take(limit).ToArray();
     }
 
-    public async Task<IReadOnlyList<(VectorCollection Collection, Guid VersionId)>> GetDocumentVectorContractsAsync(Guid documentId, CancellationToken token)
+    public async Task<IReadOnlyList<KnowledgeVectorContract>> GetDocumentVectorContractsAsync(Guid documentId, CancellationToken token)
     {
         var versions = await database.KnowledgeDocumentVersions.AsNoTracking().Where(version => version.KnowledgeDocumentId == documentId &&
             version.IndexCollectionName != null && version.EmbeddingDimension != null && version.VectorDistance != null)
             .Select(version => new VectorContractRow(version.Id, version.IndexCollectionName!, version.EmbeddingDimension!.Value, version.VectorDistance!)).ToArrayAsync(token);
         var pending = await database.KnowledgeIndexJobs.AsNoTracking().Where(job => job.KnowledgeDocumentId == documentId && job.CollectionName != "")
-            .Select(job => new VectorContractRow(job.KnowledgeDocumentVersionId, job.CollectionName, job.Dimension, job.Distance)).ToArrayAsync(token);
-        return versions.Concat(pending).Select(item => (new VectorCollection(item.CollectionName, item.Dimension, ParseDistance(item.Distance)), item.VersionId)).Distinct().ToArray();
+            .Select(job => new VectorContractRow(job.KnowledgeDocumentVersionId, job.CollectionName, job.Dimension, job.Distance, job.IsCollectionExclusive)).ToArrayAsync(token);
+        return versions.Concat(pending).GroupBy(item => new { item.VersionId, item.CollectionName, item.Dimension, item.Distance })
+            .Select(group => new KnowledgeVectorContract(new VectorCollection(group.Key.CollectionName, group.Key.Dimension, ParseDistance(group.Key.Distance)),
+                group.Key.VersionId, group.Any(item => item.IsCollectionExclusive))).ToArray();
     }
 
     public Task<DateTime?> GetDocumentIndexDrainDeadlineAsync(Guid documentId, DateTime nowUtc, CancellationToken token) => database.KnowledgeIndexJobs
@@ -357,9 +361,12 @@ public sealed class QdrantKnowledgeService(
         int generation, DateTime now, Guid? sourceIndexJobId, DateTime? drainUntilUtc, CancellationToken token)
     {
         var id = CleanupJobId(versionId, collection);
+        var exclusive = await database.KnowledgeIndexJobs.AnyAsync(job => job.Operation != "cleanup" && job.KnowledgeDocumentVersionId == versionId &&
+            job.CollectionName == collection && job.IsCollectionExclusive, token);
         var existing = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(job => job.Id == id, token);
         if (existing is not null)
         {
+            if (exclusive) existing.IsCollectionExclusive = true;
             if (drainUntilUtc is { } drain && (existing.DrainUntilUtc is null || drain > existing.DrainUntilUtc)) existing.DrainUntilUtc = drain;
             if (existing.Status == "completed" && drainUntilUtc is { } futureDrain && futureDrain > now)
             {
@@ -378,7 +385,7 @@ public sealed class QdrantKnowledgeService(
         {
             Id = id, KnowledgeDocumentId = documentId, KnowledgeDocumentVersionId = versionId, Operation = "cleanup", CollectionName = collection,
             Dimension = dimension, Distance = DistanceValue(distance), Generation = generation, SourceIndexJobId = sourceIndexJobId,
-            DrainUntilUtc = drainUntilUtc, NextAttemptAtUtc = now
+            IsCollectionExclusive = exclusive, DrainUntilUtc = drainUntilUtc, NextAttemptAtUtc = now
         });
     }
 
@@ -392,5 +399,5 @@ public sealed class QdrantKnowledgeService(
     private static VectorDistance ParseDistance(string value) => Enum.Parse<VectorDistance>(value, true);
     private static string SerializeTagIds(IEnumerable<Guid> tagIds) => JsonSerializer.Serialize(tagIds.Order().Select(id => id.ToString("D")));
     private static Guid[] ParseTagIds(string json) => JsonSerializer.Deserialize<string[]>(json)?.Select(Guid.Parse).Order().ToArray() ?? [];
-    private sealed record VectorContractRow(Guid VersionId, string CollectionName, int Dimension, string Distance);
+    private sealed record VectorContractRow(Guid VersionId, string CollectionName, int Dimension, string Distance, bool IsCollectionExclusive = false);
 }

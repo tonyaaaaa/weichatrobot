@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -570,7 +571,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
     }
 
     [Fact]
-    public async Task Disable_cleanup_waits_for_leased_late_upsert_and_completes_only_after_exact_absence()
+    public async Task Disable_cleanup_tombstones_generation_collection_before_crashed_late_upsert_is_released()
     {
         await using var qdrant = new ContainerBuilder("qdrant/qdrant:v1.18.2").WithPortBinding(6333, true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request => request.ForPort(6333).ForPath("/readyz"))).Build();
@@ -626,17 +627,17 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         var cleanupWorker = new KnowledgeIndexWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
             provider.GetRequiredService<KnowledgeIndexWorkerOptions>());
         var cleaning = cleanupWorker.ProcessOnceAsync(TestContext.Current.CancellationToken);
-        await Task.Delay(250, TestContext.Current.CancellationToken);
-        bool completedBeforeLateWrite;
-        await using (var cleanupStatusScope = provider.CreateAsyncScope())
-            completedBeforeLateWrite = (await cleanupStatusScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().KnowledgeIndexJobs.AsNoTracking()
-                .SingleAsync(job => job.Operation == "cleanup" && job.KnowledgeDocumentId == documentId && job.CollectionName == collection,
-                    TestContext.Current.CancellationToken)).Status == "completed";
-        lateVectors.Release.TrySetResult();
+        try
+        {
+            Assert.True(await cleaning.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            using var deleted = await http.GetAsync($"/collections/{collection}", TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.NotFound, deleted.StatusCode);
+        }
+        finally { lateVectors.Release.TrySetResult(); }
         Assert.True(await indexing.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        Assert.True(await cleaning.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
 
-        Assert.False(completedBeforeLateWrite);
+        using var stillDeleted = await http.GetAsync($"/collections/{collection}", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.NotFound, stillDeleted.StatusCode);
         Assert.Empty(await realVectors.InspectVersionAsync(new VectorCollection(collection, 3, VectorDistance.Cosine), versionId,
             TestContext.Current.CancellationToken));
         await using var verifyScope = provider.CreateAsyncScope();
@@ -701,6 +702,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
         }
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => inner.SetVersionActiveAsync(collection, versionId, active, token);
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => inner.DeleteCollectionAsync(collection, token);
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => inner.InspectCollectionAsync(collectionName, token);
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => inner.DeleteVersionAsync(collection, versionId, token);
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => inner.InspectVersionAsync(collection, versionId, token);
         public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => inner.SearchAsync(request, token);
@@ -751,6 +754,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             await inner.UpsertAsync(collection, points, CancellationToken.None);
         }
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => inner.SetVersionActiveAsync(collection, versionId, active, token);
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => inner.DeleteCollectionAsync(collection, token);
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => inner.InspectCollectionAsync(collectionName, token);
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => inner.DeleteVersionAsync(collection, versionId, token);
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => inner.InspectVersionAsync(collection, versionId, token);
         public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => inner.SearchAsync(request, token);
@@ -760,6 +765,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => Task.FromResult<VectorCollection?>(null);
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
         public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => Task.FromResult<IReadOnlyList<VectorSearchHit>>([]);

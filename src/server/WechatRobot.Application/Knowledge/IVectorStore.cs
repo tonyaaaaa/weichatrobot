@@ -14,6 +14,8 @@ public interface IVectorStore
     Task EnsureCollectionAsync(VectorCollection collection, CancellationToken cancellationToken);
     Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken cancellationToken);
     Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken cancellationToken);
+    Task DeleteCollectionAsync(VectorCollection collection, CancellationToken cancellationToken);
+    Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken cancellationToken);
     Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken cancellationToken);

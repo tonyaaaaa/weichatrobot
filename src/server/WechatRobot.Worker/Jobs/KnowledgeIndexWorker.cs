@@ -31,11 +31,22 @@ public sealed class KnowledgeIndexWorker(IServiceScopeFactory scopeFactory, Time
                     if (delay > TimeSpan.Zero) await Task.Delay(delay, operation.Token);
                 }
                 var collection = new VectorCollection(job.CollectionName, job.Dimension, job.Distance);
-                await vectors.DeleteVersionAsync(collection, job.VersionId, operation.Token);
-                if ((await vectors.InspectVersionAsync(collection, job.VersionId, operation.Token)).Count != 0)
+                if (job.IsCollectionExclusive)
+                {
+                    await vectors.DeleteCollectionAsync(collection, operation.Token);
+                    if (await vectors.InspectCollectionAsync(collection.Name, operation.Token) is not null)
+                        await vectors.DeleteCollectionAsync(collection, operation.Token);
+                    if (await vectors.InspectCollectionAsync(collection.Name, operation.Token) is not null)
+                        throw new InvalidOperationException($"Vector collection cleanup verification failed for {collection.Name}.");
+                }
+                else
+                {
                     await vectors.DeleteVersionAsync(collection, job.VersionId, operation.Token);
-                if ((await vectors.InspectVersionAsync(collection, job.VersionId, operation.Token)).Count != 0)
-                    throw new InvalidOperationException($"Vector cleanup verification failed for {collection.Name}/{job.VersionId:D}.");
+                    if ((await vectors.InspectVersionAsync(collection, job.VersionId, operation.Token)).Count != 0)
+                        await vectors.DeleteVersionAsync(collection, job.VersionId, operation.Token);
+                    if ((await vectors.InspectVersionAsync(collection, job.VersionId, operation.Token)).Count != 0)
+                        throw new InvalidOperationException($"Vector cleanup verification failed for {collection.Name}/{job.VersionId:D}.");
+                }
                 await knowledge.CompleteCleanupAsync(job.Id, job.LeaseOwner, operation.Token);
             }
             else

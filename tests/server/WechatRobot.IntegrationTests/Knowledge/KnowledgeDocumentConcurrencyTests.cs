@@ -57,7 +57,9 @@ public sealed class KnowledgeDocumentConcurrencyTests : IClassFixture<MySqlFixtu
         try { _ = await staleSuccess; } catch (DbUpdateConcurrencyException) { }
 
         await using var verify = CreateContext();
-        Assert.Equal("disabled", (await verify.KnowledgeDocuments.SingleAsync(item => item.Id == seeded.DocumentId, TestContext.Current.CancellationToken)).Status);
+        var deletedDocument = await verify.KnowledgeDocuments.SingleAsync(item => item.Id == seeded.DocumentId, TestContext.Current.CancellationToken);
+        Assert.Equal("disabled", deletedDocument.Status);
+        Assert.Equal(1, deletedDocument.StateVersion);
         Assert.Equal("disabled", (await verify.KnowledgeDocumentVersions.SingleAsync(item => item.Id == seeded.VersionId, TestContext.Current.CancellationToken)).Status);
         Assert.Equal("cancelled", (await verify.DurableJobs.SingleAsync(item => item.Id == seeded.ParseJobId, TestContext.Current.CancellationToken)).Status);
         Assert.Single(await verify.DurableJobs.Where(item => item.JobType == "CleanupKnowledgeDocument" && item.PayloadJson.Contains(seeded.DocumentId.ToString())).ToArrayAsync(TestContext.Current.CancellationToken));
