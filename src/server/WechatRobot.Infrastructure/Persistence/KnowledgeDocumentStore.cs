@@ -70,89 +70,123 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
 
     public async Task<bool> MarkUploadedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken)
     {
+        if (IsInMemory) return await MarkUploadedTrackedAsync(upload, stored, cancellationToken);
         database.ChangeTracker.Clear();
         await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
-        var document = await database.KnowledgeDocuments.SingleAsync(item => item.Id == upload.DocumentId, cancellationToken);
-        var version = await database.KnowledgeDocumentVersions.SingleAsync(item => item.Id == upload.VersionId, cancellationToken);
-        var job = await UploadJobAsync(upload.VersionId, cancellationToken);
-        if (document.IsDeleteRequested || document.Status == "disabled" || version.Status == "disabled" || job.Status == "cancelled")
+        var now = DateTime.UtcNow;
+        var uploadJobId = await UploadJobIdAsync(upload.VersionId, cancellationToken);
+        var jobUpdated = await database.DurableJobs.Where(job => job.Id == uploadJobId &&
+                (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased" || job.Status == "deadLetter"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "completed")
+                .SetProperty(job => job.CompletedAtUtc, now)
+                .SetProperty(job => job.LeaseOwner, (string?)null)
+                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(job => job.UpdatedAtUtc, now)
+                .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
+        if (jobUpdated == 0)
+        {
+            var alreadyUploaded = await database.KnowledgeDocumentVersions.AsNoTracking().AnyAsync(version => version.Id == upload.VersionId && version.Status == "uploaded", cancellationToken);
+            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
+            return alreadyUploaded;
+        }
+
+        var documentUpdated = await database.KnowledgeDocuments.Where(document => document.Id == upload.DocumentId && !document.IsDeleteRequested && document.Status != "disabled")
+            .ExecuteUpdateAsync(setters => setters.SetProperty(document => document.Status, "uploaded").SetProperty(document => document.UpdatedAtUtc, now), cancellationToken);
+        var versionUpdated = await database.KnowledgeDocumentVersions.Where(version => version.Id == upload.VersionId &&
+                (version.Status == "uploading" || version.Status == "failed"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(version => version.PublicUrl, stored.PublicUrl.AbsoluteUri)
+                .SetProperty(version => version.Status, "uploaded")
+                .SetProperty(version => version.FailureReason, (string?)null)
+                .SetProperty(version => version.StagedContent, Array.Empty<byte>())
+                .SetProperty(version => version.UpdatedAtUtc, now), cancellationToken);
+        if (documentUpdated != 1 || versionUpdated != 1)
         {
             if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
             return false;
         }
-        if (version.Status == "uploaded")
-        {
-            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
-            return true;
-        }
-        version.PublicUrl = stored.PublicUrl.AbsoluteUri;
-        version.Status = "uploaded";
-        version.FailureReason = null;
-        version.StagedContent = [];
-        version.UpdatedAtUtc = DateTime.UtcNow;
-        job.Status = "completed";
-        job.CompletedAtUtc = DateTime.UtcNow;
-        job.UpdatedAtUtc = DateTime.UtcNow;
-        document.Status = "uploaded";
-        document.UpdatedAtUtc = DateTime.UtcNow;
-        var parseJob = await database.DurableJobs.SingleAsync(item => item.JobType == "ParseKnowledgeDocument" && item.PayloadJson.Contains(upload.VersionId.ToString()), cancellationToken);
-        if (parseJob.Status == "blocked")
-        {
-            parseJob.Status = "pending";
-            parseJob.NextAttemptAtUtc = DateTime.UtcNow;
-            parseJob.UpdatedAtUtc = DateTime.UtcNow;
-        }
-        await database.SaveChangesAsync(cancellationToken);
+
+        await database.DurableJobs.Where(job => job.JobType == "ParseKnowledgeDocument" && job.PayloadJson.Contains(upload.VersionId.ToString()) && job.Status == "blocked")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "pending")
+                .SetProperty(job => job.NextAttemptAtUtc, now)
+                .SetProperty(job => job.UpdatedAtUtc, now)
+                .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
         if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return true;
     }
 
     public async Task MarkFailedAsync(PendingDocumentUpload upload, CancellationToken cancellationToken)
     {
+        if (IsInMemory) { await MarkFailedTrackedAsync(upload, cancellationToken); return; }
         database.ChangeTracker.Clear();
-        var document = await database.KnowledgeDocuments.SingleAsync(item => item.Id == upload.DocumentId, cancellationToken);
-        var version = await database.KnowledgeDocumentVersions.SingleAsync(item => item.Id == upload.VersionId, cancellationToken);
-        var job = await UploadJobAsync(upload.VersionId, cancellationToken);
-        if (document.IsDeleteRequested || document.Status == "disabled" || version.Status is "disabled" or "uploaded" || job.Status is "cancelled" or "completed") return;
-        version.Status = "failed";
-        version.FailureReason = "Object storage upload failed; retry is available.";
-        version.UpdatedAtUtc = DateTime.UtcNow;
-        job.Status = "retrying";
-        job.AttemptCount++;
-        job.NextAttemptAtUtc = DateTime.UtcNow.AddSeconds(15);
-        job.UpdatedAtUtc = DateTime.UtcNow;
-        document.Status = "failed";
-        document.UpdatedAtUtc = DateTime.UtcNow;
-        await database.SaveChangesAsync(cancellationToken);
+        await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
+        var now = DateTime.UtcNow;
+        var uploadJobId = await UploadJobIdAsync(upload.VersionId, cancellationToken);
+        var jobUpdated = await database.DurableJobs.Where(job => job.Id == uploadJobId &&
+                (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "retrying")
+                .SetProperty(job => job.AttemptCount, job => job.AttemptCount + 1)
+                .SetProperty(job => job.NextAttemptAtUtc, now.AddSeconds(15))
+                .SetProperty(job => job.LeaseOwner, (string?)null)
+                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(job => job.UpdatedAtUtc, now)
+                .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
+        if (jobUpdated == 0)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+
+        var documentUpdated = await database.KnowledgeDocuments.Where(document => document.Id == upload.DocumentId && !document.IsDeleteRequested && document.Status != "disabled")
+            .ExecuteUpdateAsync(setters => setters.SetProperty(document => document.Status, "failed").SetProperty(document => document.UpdatedAtUtc, now), cancellationToken);
+        var versionUpdated = await database.KnowledgeDocumentVersions.Where(version => version.Id == upload.VersionId &&
+                (version.Status == "uploading" || version.Status == "failed"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(version => version.Status, "failed")
+                .SetProperty(version => version.FailureReason, "Object storage upload failed; retry is available.")
+                .SetProperty(version => version.UpdatedAtUtc, now), cancellationToken);
+        if (documentUpdated != 1 || versionUpdated != 1)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<bool> RequestPhysicalDeleteAsync(Guid documentId, CancellationToken cancellationToken)
     {
+        if (IsInMemory) return await RequestPhysicalDeleteTrackedAsync(documentId, cancellationToken);
+        database.ChangeTracker.Clear();
         await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
-        var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken);
-        if (document is null) return false;
-        document.IsDeleteRequested = true;
-        document.Status = "disabled";
-        document.ActiveVersionId = null;
-        document.UpdatedAtUtc = DateTime.UtcNow;
-        var versions = await database.KnowledgeDocumentVersions.Where(item => item.KnowledgeDocumentId == documentId).ToArrayAsync(cancellationToken);
-        foreach (var version in versions)
+        var now = DateTime.UtcNow;
+        var documentUpdated = await database.KnowledgeDocuments.Where(document => document.Id == documentId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(document => document.IsDeleteRequested, true)
+                .SetProperty(document => document.Status, "disabled")
+                .SetProperty(document => document.ActiveVersionId, (Guid?)null)
+                .SetProperty(document => document.UpdatedAtUtc, now), cancellationToken);
+        if (documentUpdated != 1)
         {
-            version.Status = "disabled";
-            version.IsPublished = false;
-            version.UpdatedAtUtc = DateTime.UtcNow;
+            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
+            return false;
         }
-        var relatedJobs = await database.DurableJobs.Where(job =>
+        await database.KnowledgeDocumentVersions.Where(version => version.KnowledgeDocumentId == documentId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(version => version.Status, "disabled")
+                .SetProperty(version => version.IsPublished, false)
+                .SetProperty(version => version.UpdatedAtUtc, now), cancellationToken);
+        await database.DurableJobs.Where(job =>
             (job.JobType == "UploadKnowledgeDocument" || job.JobType == "ParseKnowledgeDocument") &&
-            job.PayloadJson.Contains(documentId.ToString()) && job.Status != "completed" && job.Status != "cancelled").ToArrayAsync(cancellationToken);
-        foreach (var job in relatedJobs)
-        {
-            job.Status = "cancelled";
-            job.LeaseOwner = null;
-            job.LeaseExpiresAtUtc = null;
-            job.UpdatedAtUtc = DateTime.UtcNow;
-            job.Version++;
-        }
+            job.PayloadJson.Contains(documentId.ToString()) && job.Status != "completed" && job.Status != "cancelled")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "cancelled")
+                .SetProperty(job => job.LeaseOwner, (string?)null)
+                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(job => job.UpdatedAtUtc, now)
+                .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
         var cleanupId = CleanupJobId(documentId);
         if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken))
             database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
@@ -170,9 +204,9 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         }
     }
 
-    private Task<DurableJobEntity> UploadJobAsync(Guid versionId, CancellationToken cancellationToken) => database.DurableJobs
+    private Task<Guid> UploadJobIdAsync(Guid versionId, CancellationToken cancellationToken) => database.DurableJobs
         .Where(job => job.JobType == "UploadKnowledgeDocument" && job.PayloadJson.Contains(versionId.ToString()))
-        .OrderByDescending(job => job.CreatedAtUtc).FirstAsync(cancellationToken);
+        .OrderByDescending(job => job.CreatedAtUtc).Select(job => job.Id).FirstAsync(cancellationToken);
 
     private static PendingDocumentUpload ToPending(KnowledgeDocumentVersionEntity version) => new(version.KnowledgeDocumentId,
         version.Id, version.Version, version.ObjectKey, version.SafeFileName, version.ContentType, version.Sha256, version.StagedContent,
@@ -187,6 +221,60 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
     {
         var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"CleanupKnowledgeDocument:{documentId:N}"));
         return new Guid(hash.AsSpan(0, 16));
+    }
+
+    private bool IsInMemory => database.Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true;
+
+    private async Task<bool> MarkUploadedTrackedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken)
+    {
+        database.ChangeTracker.Clear();
+        var document = await database.KnowledgeDocuments.SingleAsync(item => item.Id == upload.DocumentId, cancellationToken);
+        var version = await database.KnowledgeDocumentVersions.SingleAsync(item => item.Id == upload.VersionId, cancellationToken);
+        var uploadJobId = await UploadJobIdAsync(upload.VersionId, cancellationToken);
+        var uploadJob = await database.DurableJobs.SingleAsync(job => job.Id == uploadJobId, cancellationToken);
+        if (document.IsDeleteRequested || document.Status == "disabled" || version.Status == "disabled" || uploadJob.Status == "cancelled") return false;
+        if (version.Status == "uploaded") return true;
+        var now = DateTime.UtcNow;
+        uploadJob.Status = "completed"; uploadJob.CompletedAtUtc = now; uploadJob.LeaseOwner = null; uploadJob.LeaseExpiresAtUtc = null; uploadJob.UpdatedAtUtc = now; uploadJob.Version++;
+        document.Status = "uploaded"; document.UpdatedAtUtc = now;
+        version.PublicUrl = stored.PublicUrl.AbsoluteUri; version.Status = "uploaded"; version.FailureReason = null; version.StagedContent = []; version.UpdatedAtUtc = now;
+        var parseJob = await database.DurableJobs.SingleAsync(job => job.JobType == "ParseKnowledgeDocument" && job.PayloadJson.Contains(upload.VersionId.ToString()), cancellationToken);
+        if (parseJob.Status == "blocked") { parseJob.Status = "pending"; parseJob.NextAttemptAtUtc = now; parseJob.UpdatedAtUtc = now; parseJob.Version++; }
+        await database.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    private async Task MarkFailedTrackedAsync(PendingDocumentUpload upload, CancellationToken cancellationToken)
+    {
+        database.ChangeTracker.Clear();
+        var document = await database.KnowledgeDocuments.SingleAsync(item => item.Id == upload.DocumentId, cancellationToken);
+        var version = await database.KnowledgeDocumentVersions.SingleAsync(item => item.Id == upload.VersionId, cancellationToken);
+        var uploadJobId = await UploadJobIdAsync(upload.VersionId, cancellationToken);
+        var uploadJob = await database.DurableJobs.SingleAsync(job => job.Id == uploadJobId, cancellationToken);
+        if (document.IsDeleteRequested || document.Status == "disabled" || version.Status is "disabled" or "uploaded" || uploadJob.Status is "cancelled" or "completed") return;
+        var now = DateTime.UtcNow;
+        uploadJob.Status = "retrying"; uploadJob.AttemptCount++; uploadJob.NextAttemptAtUtc = now.AddSeconds(15); uploadJob.LeaseOwner = null; uploadJob.LeaseExpiresAtUtc = null; uploadJob.UpdatedAtUtc = now; uploadJob.Version++;
+        document.Status = "failed"; document.UpdatedAtUtc = now;
+        version.Status = "failed"; version.FailureReason = "Object storage upload failed; retry is available."; version.UpdatedAtUtc = now;
+        await database.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<bool> RequestPhysicalDeleteTrackedAsync(Guid documentId, CancellationToken cancellationToken)
+    {
+        database.ChangeTracker.Clear();
+        var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken);
+        if (document is null) return false;
+        var now = DateTime.UtcNow;
+        document.IsDeleteRequested = true; document.Status = "disabled"; document.ActiveVersionId = null; document.UpdatedAtUtc = now;
+        foreach (var version in await database.KnowledgeDocumentVersions.Where(item => item.KnowledgeDocumentId == documentId).ToArrayAsync(cancellationToken))
+        { version.Status = "disabled"; version.IsPublished = false; version.UpdatedAtUtc = now; }
+        foreach (var job in await database.DurableJobs.Where(job => (job.JobType == "UploadKnowledgeDocument" || job.JobType == "ParseKnowledgeDocument") &&
+                     job.PayloadJson.Contains(documentId.ToString()) && job.Status != "completed" && job.Status != "cancelled").ToArrayAsync(cancellationToken))
+        { job.Status = "cancelled"; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null; job.UpdatedAtUtc = now; job.Version++; }
+        var cleanupId = CleanupJobId(documentId);
+        if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken)) database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
+        await database.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction?> BeginTransactionIfRelationalAsync(CancellationToken cancellationToken) =>
