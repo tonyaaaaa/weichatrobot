@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
@@ -36,6 +37,8 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
             .ToArray();
 
         Assert.Contains("/api/auth/probe/knowledge", routes);
+        Assert.Contains("/api/handoffs/manual", routes);
+        Assert.Contains("/api/knowledge/candidates/{id:guid}/reviews", routes);
     }
 
     [Fact]
@@ -68,6 +71,18 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
         var response = await client.GetAsync("/api/auth/probe/knowledge", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Handoff_and_review_boundaries_enforce_distinct_authenticated_roles()
+    {
+        using var human = _factory.CreateClient();
+        human.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.HumanAgent));
+        using var knowledge = _factory.CreateClient();
+        knowledge.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.KnowledgeOperator));
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await human.PostAsJsonAsync($"/api/knowledge/candidates/{Guid.NewGuid():D}/reviews", new { }, TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.PostAsJsonAsync("/api/handoffs/manual", new { }, TestContext.Current.CancellationToken)).StatusCode);
     }
 
     private static string CreateToken(string role)

@@ -19,6 +19,7 @@ using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Infrastructure.Conversations;
+using WechatRobot.Application.Handoffs;
 using WechatRobot.Worker.Jobs;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -121,6 +122,14 @@ builder.Services.AddSingleton<AnswerOutputFirewall>();
 builder.Services.AddSingleton<RetrievalQueryBuilder>();
 builder.Services.AddScoped<IConversationSummarizer, ChatConversationSummarizer>();
 builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
+builder.Services.AddScoped<IHandoffStore, EfHandoffStore>();
+builder.Services.AddScoped<HandoffService>();
+var handoffOptions = builder.Configuration.GetSection(HandoffTriggerOptions.SectionName).Get<HandoffTriggerOptions>()
+    ?? new HandoffTriggerOptions(["转人工", "人工客服"]);
+if (handoffOptions.RepeatedSystemFailureThreshold < 1) throw new InvalidOperationException("Handoff failure threshold must be positive.");
+builder.Services.AddSingleton(handoffOptions);
+builder.Services.AddSingleton<HandoffTriggerEvaluator>();
+builder.Services.AddScoped<IHandoffOrchestrator, HandoffOrchestrator>();
 builder.Services.AddScoped<IRetrievalEvidenceProvider, KnowledgeRetrievalEvidenceProvider>();
 builder.Services.AddScoped<GroundedAnswerService>();
 builder.Services.AddScoped<InboundMessageProcessor>();

@@ -34,6 +34,10 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<KnowledgeChunkTagEntity> KnowledgeChunkTags => Set<KnowledgeChunkTagEntity>();
     public DbSet<KnowledgeOcrPageEntity> KnowledgeOcrPages => Set<KnowledgeOcrPageEntity>();
     public DbSet<KnowledgeIndexJobEntity> KnowledgeIndexJobs => Set<KnowledgeIndexJobEntity>();
+    public DbSet<HandoffCaseEntity> HandoffCases => Set<HandoffCaseEntity>();
+    public DbSet<HandoffMessageEntity> HandoffMessages => Set<HandoffMessageEntity>();
+    public DbSet<KnowledgeCandidateEntity> KnowledgeCandidates => Set<KnowledgeCandidateEntity>();
+    public DbSet<KnowledgeReviewEntity> KnowledgeReviews => Set<KnowledgeReviewEntity>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

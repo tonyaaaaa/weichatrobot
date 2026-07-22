@@ -177,6 +177,10 @@ public sealed class QdrantKnowledgeService(
                 .SetProperty(version => version.IndexCollectionExclusive, work.IsCollectionExclusive)
                 .SetProperty(version => version.UpdatedAtUtc, now), token);
         if (versionChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
+        await database.KnowledgeCandidates.Where(candidate => candidate.KnowledgeDocumentVersionId == work.VersionId && candidate.Status == "indexing")
+            .ExecuteUpdateAsync(setters => setters.SetProperty(candidate => candidate.Status, "published")
+                .SetProperty(candidate => candidate.PublishedAtUtc, now).SetProperty(candidate => candidate.Version, candidate => candidate.Version + 1)
+                .SetProperty(candidate => candidate.UpdatedAtUtc, now), token);
         var chunkIds = work.Chunks.Select(chunk => chunk.Id).ToArray();
         foreach (var batch in GuidBatchQuery.CreateBatches(chunkIds))
         {

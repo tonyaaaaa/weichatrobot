@@ -2,6 +2,7 @@ using System.Text.Json;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Models;
+using WechatRobot.Application.Handoffs;
 
 namespace WechatRobot.Application.Messaging;
 
@@ -11,7 +12,8 @@ public sealed class InboundMessageProcessor(
     RetrievalQueryBuilder retrievalQueries,
     IConversationSummarizer summarizer,
     GroundedAnswerService answers,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    IHandoffOrchestrator? handoffs = null)
 {
     private static readonly TimeSpan SessionLeaseDuration = TimeSpan.FromMinutes(1);
     public async Task ProcessAsync(LeasedDurableJob job, CancellationToken cancellationToken)
@@ -37,6 +39,12 @@ public sealed class InboundMessageProcessor(
         var committed = false;
         try
         {
+        if (handoffs is not null && await handoffs.IsPausedAsync(request, cancellationToken))
+        {
+            await conversations.ReleaseLeaseAsync(request.ConversationSessionId, sessionLeaseOwner, cancellationToken);
+            committed = true;
+            return;
+        }
         var effectiveContext = context.Build(request.History, request.ContextPolicy, request.Scope.ScopeKey, request.ReceivedAtUtc, request.Summary);
         string? updatedSummary = null;
         string? summaryFailureCode = null;
@@ -68,6 +76,7 @@ public sealed class InboundMessageProcessor(
             request.Scope.DegradationReason, summaryFailureCode), cancellationToken);
         if (effectiveContext.WasIdleReset) result = result with { ResetContextBeforeCurrent = true, UpdatedSummary = null };
         if (updatedSummary is not null) result = result with { UpdatedSummary = updatedSummary };
+        if (handoffs is not null) await handoffs.HandleDecisionAsync(request, result, cancellationToken);
         await EnsureLeaseAsync(request, cancellationToken);
         await conversations.PersistAnswerAndEnqueueAsync(request, result, cancellationToken);
         committed = true;

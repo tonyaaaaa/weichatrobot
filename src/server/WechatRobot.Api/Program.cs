@@ -11,6 +11,8 @@ using WechatRobot.Api.Groups;
 using WechatRobot.Api.Knowledge;
 using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
+using WechatRobot.Api.Handoffs;
+using WechatRobot.Application.Handoffs;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Knowledge;
@@ -51,6 +53,10 @@ builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
 builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
+builder.Services.AddScoped<IHandoffStore, EfHandoffStore>();
+builder.Services.AddScoped<HandoffService>();
+builder.Services.AddScoped<IKnowledgeCandidateStore, EfKnowledgeCandidateStore>();
+builder.Services.AddScoped<KnowledgeCandidateService>();
 builder.Services.AddOptions<DocumentUploadOptions>()
     .BindConfiguration(DocumentUploadOptions.SectionName)
     .Validate(options => options.MaximumBytes is > 0 and <= int.MaxValue && options.MaximumArchiveEntries > 0 && options.MaximumExpandedArchiveBytes > 0 && options.MaximumArchiveExpansionRatio > 0, "Document upload limits are invalid.")
@@ -199,6 +205,8 @@ app.MapChunkPreviewEndpoints();
 app.MapKnowledgeIndexEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
+app.MapHandoffEndpoints();
+app.MapKnowledgeReviewEndpoints();
 app.MapGet("/", () => Results.Ok());
 
 app.Run();
