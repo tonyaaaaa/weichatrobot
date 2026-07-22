@@ -167,6 +167,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
                 .SetProperty(document => document.IsDeleteRequested, true)
                 .SetProperty(document => document.Status, "disabled")
                 .SetProperty(document => document.ActiveVersionId, (Guid?)null)
+                .SetProperty(document => document.StateVersion, document => document.StateVersion + 1)
                 .SetProperty(document => document.UpdatedAtUtc, now), cancellationToken);
         if (documentUpdated != 1)
         {
@@ -272,7 +273,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, cancellationToken);
         if (document is null) return false;
         var now = DateTime.UtcNow;
-        document.IsDeleteRequested = true; document.Status = "disabled"; document.ActiveVersionId = null; document.UpdatedAtUtc = now;
+        document.IsDeleteRequested = true; document.Status = "disabled"; document.ActiveVersionId = null; document.StateVersion++; document.UpdatedAtUtc = now;
         foreach (var version in await database.KnowledgeDocumentVersions.Where(item => item.KnowledgeDocumentId == documentId).ToArrayAsync(cancellationToken))
         { version.Status = "disabled"; version.IsPublished = false; version.UpdatedAtUtc = now; }
         foreach (var job in await database.DurableJobs.Where(job => (job.JobType == "UploadKnowledgeDocument" || job.JobType == "ParseKnowledgeDocument") &&

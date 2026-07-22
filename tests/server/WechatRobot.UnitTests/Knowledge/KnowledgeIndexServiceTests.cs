@@ -76,7 +76,7 @@ public sealed class KnowledgeIndexServiceTests
     private static KnowledgeIndexWork Work(int count) => new(Guid.NewGuid(), DocumentId, VersionId, null, "kb_cosine_3", 3,
         VectorDistance.Cosine, Enumerable.Range(0, count).Select(index => new KnowledgeIndexChunk(
             Guid.Parse($"30000000-0000-0000-0000-{index + 1:000000000000}"), DocumentId, VersionId, $"text-{index}",
-            [Guid.Parse("40000000-0000-0000-0000-000000000001")])).ToArray());
+            [Guid.Parse("40000000-0000-0000-0000-000000000001")])).ToArray(), "test");
 
     private sealed class FakeEmbeddingClient(int dimension) : IEmbeddingClient
     {
@@ -122,6 +122,7 @@ public sealed class KnowledgeIndexServiceTests
         public List<(long Sequence, string Name)> Events { get; } = [];
         public Task<KnowledgeIndexWork> LoadIndexWorkAsync(Guid jobId, CancellationToken token) => Task.FromResult(work);
         public Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(CancellationToken token) => Task.FromResult(new ModelProviderConfiguration("https://fake/", "fake", "cipher", TimeSpan.FromSeconds(1), 0));
+        public Task<bool> IsIndexLeaseOwnedAsync(Guid jobId, string owner, CancellationToken token) => Task.FromResult(true);
         public Task<bool> ActivateVersionAsync(KnowledgeIndexWork value, CancellationToken token) { Activated = true; Events.Add((EventClock.Next(), "activate-mysql")); return Task.FromResult(true); }
         public Task EnqueueCleanupAsync(KnowledgeIndexWork value, CancellationToken token) { Events.Add((EventClock.Next(), "cleanup")); return Task.CompletedTask; }
         public Task MarkIndexFailedAsync(Guid jobId, string? leaseOwner, string reason, bool retryable, CancellationToken token) { Failed = true; RetryableFailure = retryable; return Task.CompletedTask; }

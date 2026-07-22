@@ -25,7 +25,17 @@ public sealed class KnowledgeIndexWorker(IServiceScopeFactory scopeFactory, Time
             if (job.Operation == "cleanup")
             {
                 var vectors = scope.ServiceProvider.GetRequiredService<IVectorStore>();
-                await vectors.DeleteVersionAsync(new VectorCollection(job.CollectionName, job.Dimension, job.Distance), job.VersionId, operation.Token);
+                while (await knowledge.GetCleanupDrainDeadlineAsync(job.Id, timeProvider.GetUtcNow().UtcDateTime, operation.Token) is { } drainDeadline)
+                {
+                    var delay = drainDeadline - timeProvider.GetUtcNow().UtcDateTime + TimeSpan.FromMilliseconds(25);
+                    if (delay > TimeSpan.Zero) await Task.Delay(delay, operation.Token);
+                }
+                var collection = new VectorCollection(job.CollectionName, job.Dimension, job.Distance);
+                await vectors.DeleteVersionAsync(collection, job.VersionId, operation.Token);
+                if ((await vectors.InspectVersionAsync(collection, job.VersionId, operation.Token)).Count != 0)
+                    await vectors.DeleteVersionAsync(collection, job.VersionId, operation.Token);
+                if ((await vectors.InspectVersionAsync(collection, job.VersionId, operation.Token)).Count != 0)
+                    throw new InvalidOperationException($"Vector cleanup verification failed for {collection.Name}/{job.VersionId:D}.");
                 await knowledge.CompleteCleanupAsync(job.Id, job.LeaseOwner, operation.Token);
             }
             else

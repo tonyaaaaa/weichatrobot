@@ -21,6 +21,7 @@ public sealed class KnowledgeIndexJobEntity
     public DateTime NextAttemptAtUtc { get; set; } = DateTime.UtcNow;
     public string? LeaseOwner { get; set; }
     public DateTime? LeaseExpiresAtUtc { get; set; }
+    public DateTime? DrainUntilUtc { get; set; }
     public string? FailureReason { get; set; }
     public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

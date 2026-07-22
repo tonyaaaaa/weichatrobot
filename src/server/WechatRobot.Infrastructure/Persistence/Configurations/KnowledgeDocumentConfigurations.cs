@@ -15,6 +15,7 @@ internal sealed class KnowledgeDocumentConfiguration : IEntityTypeConfiguration<
         builder.Property(entity => entity.ActiveCollectionName).HasMaxLength(128);
         builder.Property(entity => entity.ActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.ActiveVersionId).IsConcurrencyToken();
+        builder.Property(entity => entity.StateVersion).IsConcurrencyToken();
         builder.HasIndex(entity => entity.Status);
     }
 }

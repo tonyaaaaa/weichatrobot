@@ -13,6 +13,7 @@ public interface IKnowledgeService
     Task<KnowledgeIndexWork> LoadIndexWorkAsync(Guid jobId, CancellationToken cancellationToken);
     Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(CancellationToken cancellationToken);
     Task<bool> ActivateVersionAsync(KnowledgeIndexWork work, CancellationToken cancellationToken);
+    Task<bool> IsIndexLeaseOwnedAsync(Guid jobId, string owner, CancellationToken cancellationToken);
     Task EnqueueCleanupAsync(KnowledgeIndexWork work, CancellationToken cancellationToken);
     Task MarkIndexFailedAsync(Guid jobId, string? leaseOwner, string reason, bool retryable, CancellationToken cancellationToken);
 }

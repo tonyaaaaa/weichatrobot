@@ -28,6 +28,7 @@ public sealed class KnowledgeIndexService(
             var collection = new VectorCollection(work.CollectionName, work.Dimension, work.Distance);
             await vectorStore.EnsureCollectionAsync(collection, cancellationToken);
             var provider = await knowledge.LoadEmbeddingConfigurationAsync(cancellationToken);
+            await EnsureLeaseOwnedAsync(work, collection);
 
             foreach (var batch in work.Chunks.Chunk(options.BatchSize))
             {
@@ -45,9 +46,11 @@ public sealed class KnowledgeIndexService(
                     points.Add(new VectorPoint(chunk.Id, chunk.DocumentId, chunk.VersionId, chunk.TagIds, vector, false, work.Generation));
                 }
                 await RetryVectorAsync(() => vectorStore.UpsertAsync(collection, points, cancellationToken));
+                await EnsureLeaseOwnedAsync(work, collection);
             }
 
             await RetryVectorAsync(() => vectorStore.SetVersionActiveAsync(collection, work.VersionId, true, cancellationToken));
+            await EnsureLeaseOwnedAsync(work, collection);
             if (!await knowledge.ActivateVersionAsync(work, cancellationToken))
             {
                 await vectorStore.SetVersionActiveAsync(collection, work.VersionId, false, cancellationToken);
@@ -81,6 +84,13 @@ public sealed class KnowledgeIndexService(
             await knowledge.MarkIndexFailedAsync(jobId, work?.LeaseOwner, exception.Message, true, CancellationToken.None);
             throw;
         }
+    }
+
+    private async Task EnsureLeaseOwnedAsync(KnowledgeIndexWork work, VectorCollection collection)
+    {
+        if (work.LeaseOwner is not null && await knowledge.IsIndexLeaseOwnedAsync(work.JobId, work.LeaseOwner, CancellationToken.None)) return;
+        await vectorStore.DeleteVersionAsync(collection, work.VersionId, CancellationToken.None);
+        throw new KnowledgeActivationConflictException();
     }
 
     private void Validate(KnowledgeIndexWork work)
