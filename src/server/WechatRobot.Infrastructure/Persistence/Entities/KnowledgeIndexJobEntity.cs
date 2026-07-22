@@ -5,6 +5,7 @@ public sealed class KnowledgeIndexJobEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid KnowledgeDocumentId { get; set; }
     public Guid KnowledgeDocumentVersionId { get; set; }
+    public Guid? SourceIndexJobId { get; set; }
     public Guid? PreviousActiveVersionId { get; set; }
     public string? PreviousActiveCollectionName { get; set; }
     public int? PreviousActiveEmbeddingDimension { get; set; }

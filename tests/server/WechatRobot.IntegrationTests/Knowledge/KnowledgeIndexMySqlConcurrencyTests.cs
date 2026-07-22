@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -310,6 +312,191 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         Assert.Single(await service.SearchVisibleAsync([0, 1, 0], [tagB.Id], vectors, 5, TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Requeue_preserves_failed_generation_cleanup_and_physical_delete_removes_every_overwritten_generation()
+    {
+        await using var qdrant = new ContainerBuilder("qdrant/qdrant:v1.18.2").WithPortBinding(6333, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request => request.ForPort(6333).ForPath("/readyz"))).Build();
+        await qdrant.StartAsync(TestContext.Current.CancellationToken);
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{qdrant.GetMappedPublicPort(6333)}") };
+        var vectors = new QdrantVectorStore(http);
+        var storage = new RecordingStorage();
+        var services = new ServiceCollection();
+        services.AddDbContext<WechatRobotDbContext>(builder => builder.UseMySQL(_fixture.ConnectionString));
+        services.AddSingleton(new KnowledgeIndexOptions(3, VectorDistance.Cosine, 1, 2));
+        services.AddSingleton(KnowledgeIndexWorkerOptions.Default);
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<ISecretProtector, PassThroughProtector>();
+        services.AddSingleton<IVectorStore>(vectors);
+        services.AddSingleton<IObjectStorage>(storage);
+        services.AddScoped<IDurableJobRepository, DurableJobRepository>();
+        services.AddScoped<IKnowledgeDocumentStore, KnowledgeDocumentStore>();
+        services.AddScoped<ModelConfigurationService>();
+        services.AddScoped<QdrantKnowledgeService>();
+        await using var provider = services.BuildServiceProvider();
+        Guid documentId;
+        Guid versionId;
+        Guid chunkId;
+        Guid primaryJobId;
+        string generationOne;
+        string generationTwo;
+        string generationThree;
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
+            await database.DurableJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
+            var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
+            var document = new KnowledgeDocumentEntity { Status = "uploaded" };
+            var version = Version(document.Id, 1, "approved", false);
+            var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "failed generation", Status = "approved" };
+            documentId = document.Id;
+            versionId = version.Id;
+            chunkId = chunk.Id;
+            database.AddRange(tag, document, version, chunk);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+            var service = scope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>();
+            primaryJobId = await service.QueueIndexAsync(document.Id, version.Id, [tag.Id], true, TestContext.Current.CancellationToken);
+            database.ChangeTracker.Clear();
+            var firstLease = Assert.IsType<LeasedKnowledgeIndexJob>(await service.LeaseNextAsync("failed-g1", DateTime.UtcNow,
+                TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+            generationOne = firstLease.CollectionName;
+            var firstCollection = new VectorCollection(generationOne, 3, VectorDistance.Cosine);
+            await vectors.EnsureCollectionAsync(firstCollection, TestContext.Current.CancellationToken);
+            await vectors.UpsertAsync(firstCollection,
+                [new VectorPoint(chunk.Id, document.Id, version.Id, [tag.Id], [1, 0, 0], false, firstLease.Generation)], TestContext.Current.CancellationToken);
+            await service.MarkIndexFailedAsync(primaryJobId, firstLease.LeaseOwner, "failed g1", false, TestContext.Current.CancellationToken);
+            await service.QueueIndexAsync(document.Id, version.Id, [tag.Id], true, TestContext.Current.CancellationToken);
+            database.ChangeTracker.Clear();
+            var primary = await database.KnowledgeIndexJobs.SingleAsync(job => job.Id == primaryJobId, TestContext.Current.CancellationToken);
+            generationTwo = primary.CollectionName;
+            var cleanup = await database.KnowledgeIndexJobs.AsNoTracking().SingleAsync(job => job.Operation == "cleanup" &&
+                job.KnowledgeDocumentId == document.Id && job.CollectionName == generationOne, TestContext.Current.CancellationToken);
+            Assert.Equal(firstLease.Generation, cleanup.Generation);
+            Assert.Equal(primaryJobId, cleanup.SourceIndexJobId);
+            Assert.Equal(1, await database.KnowledgeIndexJobs.CountAsync(job => job.Operation == "cleanup" && job.CollectionName == generationOne,
+                TestContext.Current.CancellationToken));
+            database.ChangeTracker.Clear();
+            await service.QueueIndexAsync(document.Id, version.Id, [tag.Id], true, TestContext.Current.CancellationToken);
+            database.ChangeTracker.Clear();
+            primary = await database.KnowledgeIndexJobs.SingleAsync(job => job.Id == primaryJobId, TestContext.Current.CancellationToken);
+            generationThree = primary.CollectionName;
+            Assert.Equal(1, await database.KnowledgeIndexJobs.CountAsync(job => job.Operation == "cleanup" && job.CollectionName == generationOne,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(1, await database.KnowledgeIndexJobs.CountAsync(job => job.Operation == "cleanup" && job.CollectionName == generationTwo,
+                TestContext.Current.CancellationToken));
+            primary.Status = "failed";
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var cleanupWorker = new KnowledgeIndexWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
+            provider.GetRequiredService<KnowledgeIndexWorkerOptions>());
+        Assert.True(await cleanupWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        Assert.True(await cleanupWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await vectors.InspectVersionAsync(new VectorCollection(generationOne, 3, VectorDistance.Cosine), versionId,
+            TestContext.Current.CancellationToken));
+        var thirdCollection = new VectorCollection(generationThree, 3, VectorDistance.Cosine);
+        await vectors.EnsureCollectionAsync(thirdCollection, TestContext.Current.CancellationToken);
+        await vectors.UpsertAsync(thirdCollection,
+            [new VectorPoint(chunkId, documentId, versionId, [], [0, 1, 0], false, 3)], TestContext.Current.CancellationToken);
+        await using (var deleteScope = provider.CreateAsyncScope())
+            Assert.True(await deleteScope.ServiceProvider.GetRequiredService<IKnowledgeDocumentStore>()
+                .RequestPhysicalDeleteAsync(documentId, TestContext.Current.CancellationToken));
+        var physicalCleanup = new KnowledgeDocumentCleanupWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        Assert.True(await physicalCleanup.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await vectors.InspectVersionAsync(new VectorCollection(generationOne, 3, VectorDistance.Cosine), versionId,
+            TestContext.Current.CancellationToken));
+        Assert.Empty(await vectors.InspectVersionAsync(new VectorCollection(generationTwo, 3, VectorDistance.Cosine), versionId,
+            TestContext.Current.CancellationToken));
+        Assert.Empty(await vectors.InspectVersionAsync(thirdCollection, versionId, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Disable_cleanup_insert_failure_rolls_back_document_version_and_index_job()
+    {
+        var plainOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString).Options;
+        Guid documentId;
+        Guid versionId;
+        Guid jobId;
+        Guid tagId;
+        await using (var setup = new WechatRobotDbContext(plainOptions))
+        {
+            await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await setup.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
+            var document = new KnowledgeDocumentEntity
+            {
+                Status = "active", IsDeleteRequested = false, ActiveCollectionName = $"kb_cosine_3_disable_{Guid.NewGuid():N}",
+                ActiveEmbeddingDimension = 3, ActiveDistance = "cosine", ActiveIndexGeneration = 1
+            };
+            var version = Version(document.Id, 1, "active", true);
+            var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
+            var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "disable", Status = "approved" };
+            document.ActiveVersionId = version.Id;
+            version.IndexCollectionName = document.ActiveCollectionName;
+            version.EmbeddingDimension = 3;
+            version.VectorDistance = "cosine";
+            version.IndexGeneration = 1;
+            var job = new KnowledgeIndexJobEntity
+            {
+                KnowledgeDocumentId = document.Id, KnowledgeDocumentVersionId = version.Id, Operation = "reindex", Status = "pending",
+                CollectionName = $"kb_cosine_3_pending_{Guid.NewGuid():N}", Dimension = 3, Distance = "cosine"
+            };
+            documentId = document.Id;
+            versionId = version.Id;
+            jobId = job.Id;
+            tagId = tag.Id;
+            setup.AddRange(document, version, tag, chunk, job,
+                new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tag.Id });
+            await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+        var failingOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString)
+            .AddInterceptors(new FailCleanupInsertInterceptor()).Options;
+        await using (var failing = new WechatRobotDbContext(failingOptions))
+            await Assert.ThrowsAnyAsync<Exception>(() => Service(failing).DisableAsync(documentId, TestContext.Current.CancellationToken));
+
+        await using var verify = new WechatRobotDbContext(plainOptions);
+        var storedDocument = await verify.KnowledgeDocuments.AsNoTracking().SingleAsync(document => document.Id == documentId, TestContext.Current.CancellationToken);
+        var storedVersion = await verify.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(version => version.Id == versionId, TestContext.Current.CancellationToken);
+        var storedJob = await verify.KnowledgeIndexJobs.AsNoTracking().SingleAsync(job => job.Id == jobId, TestContext.Current.CancellationToken);
+        Assert.Equal("active", storedDocument.Status);
+        Assert.False(storedDocument.IsDeleteRequested);
+        Assert.Equal(versionId, storedDocument.ActiveVersionId);
+        Assert.Equal("active", storedVersion.Status);
+        Assert.True(storedVersion.IsPublished);
+        Assert.Equal("pending", storedJob.Status);
+        Assert.DoesNotContain(await verify.KnowledgeIndexJobs.AsNoTracking().Where(job => job.KnowledgeDocumentId == documentId).ToArrayAsync(TestContext.Current.CancellationToken),
+            job => job.Operation == "cleanup");
+        await verify.DisposeAsync();
+
+        await using (var success = new WechatRobotDbContext(plainOptions))
+            await Service(success).DisableAsync(documentId, TestContext.Current.CancellationToken);
+        await using (var disabled = new WechatRobotDbContext(plainOptions))
+        {
+            var disabledDocument = await disabled.KnowledgeDocuments.AsNoTracking().SingleAsync(document => document.Id == documentId, TestContext.Current.CancellationToken);
+            Assert.Equal("disabled", disabledDocument.Status);
+            Assert.False(disabledDocument.IsDeleteRequested);
+            Assert.Null(disabledDocument.ActiveVersionId);
+            Assert.Equal("disabled", (await disabled.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(version => version.Id == versionId,
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal("cancelled", (await disabled.KnowledgeIndexJobs.AsNoTracking().SingleAsync(job => job.Id == jobId,
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Contains(await disabled.KnowledgeIndexJobs.AsNoTracking().Where(job => job.KnowledgeDocumentId == documentId).ToArrayAsync(TestContext.Current.CancellationToken),
+                job => job.Operation == "cleanup" && job.CollectionName == disabledDocument.ActiveCollectionName);
+            Assert.Contains(await disabled.KnowledgeIndexJobs.AsNoTracking().Where(job => job.KnowledgeDocumentId == documentId).ToArrayAsync(TestContext.Current.CancellationToken),
+                job => job.Operation == "cleanup" && job.CollectionName.Contains("pending", StringComparison.Ordinal));
+            var service = Service(disabled);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service.QueueIndexAsync(documentId, versionId, [tagId], false,
+                TestContext.Current.CancellationToken));
+            await service.QueueIndexAsync(documentId, versionId, [tagId], true, TestContext.Current.CancellationToken);
+        }
+        await using var reenabled = new WechatRobotDbContext(plainOptions);
+        Assert.Equal("indexing", (await reenabled.KnowledgeDocuments.AsNoTracking().SingleAsync(document => document.Id == documentId,
+            TestContext.Current.CancellationToken)).Status);
+        Assert.False((await reenabled.KnowledgeDocuments.AsNoTracking().SingleAsync(document => document.Id == documentId,
+            TestContext.Current.CancellationToken)).IsDeleteRequested);
+    }
+
     private static QdrantKnowledgeService Service(WechatRobotDbContext database) => new(database,
         new ModelConfigurationService(new PassThroughProtector()), new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
 
@@ -374,6 +561,18 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         public List<string> Deleted { get; } = [];
         public Task DeleteAsync(string objectKey, CancellationToken token) { Deleted.Add(objectKey); return Task.CompletedTask; }
         public Task<StoredObject> PutAsync(string objectKey, Stream content, string contentType, CancellationToken token) => throw new NotSupportedException();
+    }
+    private sealed class FailCleanupInsertInterceptor : DbCommandInterceptor
+    {
+        private static bool ShouldFail(DbCommand command) => command.CommandText.Contains("INSERT INTO `knowledge_index_job`", StringComparison.OrdinalIgnoreCase);
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<int> result, CancellationToken token = default) => ShouldFail(command)
+            ? ValueTask.FromException<InterceptionResult<int>>(new InvalidOperationException("injected cleanup insert failure"))
+            : ValueTask.FromResult(result);
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<DbDataReader> result, CancellationToken token = default) => ShouldFail(command)
+            ? ValueTask.FromException<InterceptionResult<DbDataReader>>(new InvalidOperationException("injected cleanup insert failure"))
+            : ValueTask.FromResult(result);
     }
     private sealed class MemoryVectorStore : IVectorStore
     {
