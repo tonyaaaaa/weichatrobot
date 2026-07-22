@@ -23,6 +23,7 @@ public static class WorkToolGroupOperationEndpoints
         group.MapGet("/groups", ListGroupsAsync);
         group.MapPost("/groups/register", RegisterExistingGroupAsync);
         group.MapGet("/group-operations", ListOperationsAsync);
+        group.MapGet("/group-operations/audit-scope", () => Results.Ok(new AuditScopeResponse("Mutating WorkTool group commands only (206 create and 207 group changes). Connection tests are non-mutating health checks and are not group-command audit records.")));
         group.MapPost("/group-operations/preview", PreviewAsync);
         group.MapPost("/group-operations/execute", ExecuteAsync);
         return endpoints;
@@ -135,4 +136,5 @@ public static class WorkToolGroupOperationEndpoints
     public sealed record PreviewResponse(string SanitizedRequest, string ConfirmationToken, DateTime ExpiresAtUtc);
     public sealed record CommandStatusResponse(bool Succeeded, string Message);
     public sealed record AuditResponse(Guid Id, string Operation, int WorkToolCommandNumber, string Status, string? Result, DateTime CreatedAtUtc, string SanitizedRequest);
+    public sealed record AuditScopeResponse(string Scope);
 }
