@@ -82,3 +82,18 @@ internal sealed class KnowledgeChunkTagConfiguration : IEntityTypeConfiguration<
         builder.HasOne<KnowledgeTagEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeTagId).OnDelete(DeleteBehavior.Restrict);
     }
 }
+
+internal sealed class KnowledgeOcrPageConfiguration : IEntityTypeConfiguration<KnowledgeOcrPageEntity>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeOcrPageEntity> builder)
+    {
+        builder.ToTable("knowledge_ocr_page");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired().IsConcurrencyToken();
+        builder.Property(entity => entity.BlocksJson).HasColumnType("json").IsRequired();
+        builder.Property(entity => entity.Error).HasMaxLength(512);
+        builder.Property(entity => entity.LeaseOwner).HasMaxLength(128).IsConcurrencyToken();
+        builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.PageNumber }).IsUnique();
+        builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
+    }
+}

@@ -9,6 +9,8 @@ using WechatRobot.Application.Storage;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Knowledge.Parsing;
+using WechatRobot.Application.Knowledge.Ocr;
+using WechatRobot.Infrastructure.Knowledge.Ocr;
 using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Worker.Jobs;
@@ -39,9 +41,27 @@ builder.Services.AddSingleton<DocumentParserSelector>(services => new DocumentPa
     services.GetRequiredService<MarkdownTextParser>(), services.GetRequiredService<DocxParser>(), services.GetRequiredService<PdfTextParser>()]));
 builder.Services.AddSingleton<ChunkingService>();
 builder.Services.AddScoped<ChunkPreviewRepository>();
+var ocrClientOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrClientOptions>() ?? new OcrClientOptions();
+if (ocrClientOptions.Timeout <= TimeSpan.Zero || ocrClientOptions.MaximumResponseBytes <= 0 || !IsPrivateOcrAddress(ocrClientOptions.BaseAddress))
+    throw new InvalidOperationException("OCR client configuration must use a private Compose name or localhost and positive limits.");
+var ocrProcessingOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrProcessingOptions>() ?? new OcrProcessingOptions();
+if (ocrProcessingOptions.MinimumExtractedTextCharacters < 0 || ocrProcessingOptions.MaximumPages <= 0 || ocrProcessingOptions.MaximumImagePixels <= 0 ||
+    ocrProcessingOptions.MaximumRenderedBytes <= 0 || ocrProcessingOptions.RenderTimeoutSeconds <= 0 || ocrProcessingOptions.PageLeaseSeconds <= 0)
+    throw new InvalidOperationException("OCR processing limits are invalid.");
+builder.Services.AddSingleton(ocrClientOptions);
+builder.Services.AddSingleton(ocrProcessingOptions);
+builder.Services.AddHttpClient<IOcrClient, HttpOcrClient>(client => client.BaseAddress = ocrClientOptions.BaseAddress);
+builder.Services.AddSingleton<IPdfPageRenderer>(_ =>
+{
+    if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
+        throw new PlatformNotSupportedException("The pinned PDFium renderer supports Windows, Linux and macOS.");
+    return new PdfiumPageRenderer(ocrProcessingOptions);
+});
+builder.Services.AddScoped<ScannedPdfOcrService>();
 builder.Services.AddScoped(services => new KnowledgePreviewService(services.GetRequiredService<WechatRobotDbContext>(), services.GetRequiredService<IDocumentSourceReader>(),
     services.GetRequiredService<DocumentParserSelector>(), services.GetRequiredService<ChunkingService>(), services.GetRequiredService<ChunkPreviewRepository>(),
-    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DocumentParsingOptions>>().Value, services.GetRequiredService<TimeProvider>()));
+    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DocumentParsingOptions>>().Value, services.GetRequiredService<TimeProvider>(),
+    services.GetRequiredService<ScannedPdfOcrService>()));
 builder.Services.AddScoped(services => new DocumentUploadService(
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DocumentUploadOptions>>().Value,
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<OssOptions>>().Value.PublicReadRiskAccepted,
@@ -65,3 +85,10 @@ builder.Services.AddHostedService<KnowledgeParseWorker>();
 
 var host = builder.Build();
 host.Run();
+
+static bool IsPrivateOcrAddress(Uri address)
+{
+    if (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps) return false;
+    if (address.IsLoopback) return true;
+    return !address.Host.Contains('.') && !address.Host.Contains(':') && address.Host.Length > 0;
+}

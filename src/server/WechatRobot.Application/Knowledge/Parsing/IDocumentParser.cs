@@ -13,9 +13,9 @@ public sealed record DocumentParsingLimits(long MaximumSourceBytes, int MaximumP
     public long MaximumResultCharacters { get; init; } = 10_000_000;
 }
 
-public enum DocumentParsingError { UnsupportedMediaType, SourceTooLarge, PageLimitExceeded, MemoryLimitExceeded, ResultLimitExceeded, Timeout, InvalidEncoding, EmptyTextPdf, MalformedDocument }
+public enum DocumentParsingError { UnsupportedMediaType, SourceTooLarge, PageLimitExceeded, MemoryLimitExceeded, ResultLimitExceeded, Timeout, InvalidEncoding, EmptyTextPdf, MalformedDocument, OcrLimitExceeded, OcrIncomplete }
 
-public sealed class DocumentParsingException(DocumentParsingError error, string message, Exception? inner = null) : Exception(message, inner)
+public class DocumentParsingException(DocumentParsingError error, string message, Exception? inner = null) : Exception(message, inner)
 {
     public DocumentParsingError Error { get; } = error;
 }

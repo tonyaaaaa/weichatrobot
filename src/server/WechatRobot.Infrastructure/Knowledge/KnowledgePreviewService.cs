@@ -4,6 +4,7 @@ using WechatRobot.Application.Knowledge.Chunking;
 using WechatRobot.Application.Knowledge.Parsing;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Knowledge.Parsing;
+using WechatRobot.Infrastructure.Knowledge.Ocr;
 
 namespace WechatRobot.Infrastructure.Knowledge;
 
@@ -26,7 +27,8 @@ public sealed class KnowledgePreviewService(
     ChunkingService chunking,
     ChunkPreviewRepository repository,
     DocumentParsingOptions options,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    ScannedPdfOcrService? ocr = null)
 {
     public async Task<ChunkPreviewSet> GenerateAsync(Guid versionId, ChunkPolicy policy, int expectedRevision, CancellationToken cancellationToken)
     {
@@ -43,7 +45,18 @@ public sealed class KnowledgePreviewService(
         using var context = new DocumentProcessingContext(limits, cancellationToken, timeProvider);
         await using var source = await sourceReader.OpenReadAsync(url, context);
         context.Checkpoint("parse-start");
-        var parsed = await selector.Select(version.ContentType).ParseAsync(source, version.ContentType, context);
+        ParsedDocument parsed;
+        try
+        {
+            parsed = await selector.Select(version.ContentType).ParseAsync(source, version.ContentType, context);
+        }
+        catch (DocumentParsingException exception) when (version.ContentType == "application/pdf" &&
+            exception.Error == DocumentParsingError.EmptyTextPdf && ocr is not null)
+        {
+            parsed = await ocr.RecognizeAsync(version.Id, source, context);
+        }
+        if (version.ContentType == "application/pdf" && ocr is not null && ocr.ShouldFallback(parsed))
+            parsed = await ocr.RecognizeAsync(version.Id, source, context);
         context.Checkpoint("chunk-start");
         var previews = chunking.Generate(parsed.Blocks, policy, context);
         context.Checkpoint("preview-persist");
