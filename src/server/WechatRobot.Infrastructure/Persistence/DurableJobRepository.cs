@@ -165,7 +165,13 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                                join robot in database.RobotConfigs.AsNoTracking() on command.RobotConfigId equals robot.Id
                                where (((command.Status == "pending" || command.Status == "retrying") && command.NextAttemptAtUtc <= nowUtc) ||
                                       (command.Status == "leased" && command.LeaseExpiresAtUtc <= nowUtc)) &&
-                                     (robot.SendLeaseOwner == null || robot.SendLeaseExpiresAtUtc <= nowUtc)
+                                     (robot.SendLeaseOwner == null || robot.SendLeaseExpiresAtUtc <= nowUtc) &&
+                                     !database.SendCommands.Any(earlier =>
+                                         earlier.RobotConfigId == command.RobotConfigId &&
+                                         earlier.Status != "completed" &&
+                                         earlier.Status != "deadLetter" &&
+                                         (earlier.CreatedAtUtc < command.CreatedAtUtc ||
+                                          (earlier.CreatedAtUtc == command.CreatedAtUtc && earlier.Id.CompareTo(command.Id) < 0)))
                                orderby command.NextAttemptAtUtc, command.CreatedAtUtc, command.Id
                                select new { command.Id, command.RobotConfigId, command.Version })
             .FirstOrDefaultAsync(cancellationToken);

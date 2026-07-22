@@ -98,6 +98,43 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
+    public async Task Retry_waiting_earlier_command_blocks_later_command_until_it_completes()
+    {
+        using var firstProvider = CreateProvider();
+        using var secondProvider = CreateProvider();
+        var now = TruncateToMicroseconds(DateTime.UtcNow.AddMinutes(1));
+        var robot = await SeedRobotAndCommandsAsync(firstProvider, 50, now, 0);
+        var firstId = new Guid("00000000-0000-0000-0000-000000000011");
+        var secondId = new Guid("00000000-0000-0000-0000-000000000012");
+        await using (var seedScope = firstProvider.CreateAsyncScope())
+        {
+            var database = seedScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.SendCommands.AddRange(CreateCommand(firstId, robot.Id, now), CreateCommand(secondId, robot.Id, now.AddMicroseconds(1)));
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var firstScope = firstProvider.CreateAsyncScope();
+        await using var secondScope = secondProvider.CreateAsyncScope();
+        var firstRepository = firstScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var secondRepository = secondScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var first = await firstRepository.LeaseNextSendCommandAsync("worker-one", now, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Assert.NotNull(first);
+        Assert.Equal(firstId, first!.Id);
+        await firstRepository.FailSendCommandAsync(first, "retry", now, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Null(await secondRepository.LeaseNextSendCommandAsync("worker-two", now.AddSeconds(1), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+
+        var retried = await firstRepository.LeaseNextSendCommandAsync("worker-one", now.AddSeconds(5), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Assert.NotNull(retried);
+        Assert.Equal(firstId, retried!.Id);
+        await firstRepository.CompleteSendCommandAsync(retried, now.AddSeconds(5), TestContext.Current.CancellationToken);
+
+        var second = await secondRepository.LeaseNextSendCommandAsync("worker-two", now.AddSeconds(5), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Assert.NotNull(second);
+        Assert.Equal(secondId, second!.Id);
+    }
+
+    [Fact]
     public async Task Slow_worktool_call_renews_command_and_robot_leases_before_provider_acceptance()
     {
         var slowClient = new BlockingWorkToolClient();
@@ -126,6 +163,9 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         await using var scope = provider.CreateAsyncScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await database.DeadLetters.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await database.SendCommands.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await database.RobotConfigs.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
         var robot = new RobotConfigEntity
         {
             Name = $"coordination-{Guid.NewGuid():N}",
