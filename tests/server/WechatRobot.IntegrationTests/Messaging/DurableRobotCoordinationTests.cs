@@ -222,6 +222,9 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
             return _result.Task.WaitAsync(cancellationToken);
         }
 
+        public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+        public Task<WorkToolSendResult> TestConnectionAsync(string workToolRobotId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+
         public void Complete() => _result.TrySetResult(WorkToolSendResult.Success());
     }
 

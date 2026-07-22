@@ -23,6 +23,8 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<SendCommandEntity> SendCommands => Set<SendCommandEntity>();
     public DbSet<DeadLetterEntity> DeadLetters => Set<DeadLetterEntity>();
     public DbSet<ModelConfigEntity> ModelConfigs => Set<ModelConfigEntity>();
+    public DbSet<WorkToolOperationAuditEntity> WorkToolOperationAudits => Set<WorkToolOperationAuditEntity>();
+    public DbSet<WorkToolOperationConfirmationEntity> WorkToolOperationConfirmations => Set<WorkToolOperationConfirmationEntity>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

@@ -14,10 +14,12 @@ using WechatRobot.Application.Groups;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
+using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Models;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Security;
+using WechatRobot.Infrastructure.WorkTool;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -35,6 +37,7 @@ var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
+builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<WorkToolCallbackOptions>()
@@ -48,6 +51,7 @@ builder.Services.AddScoped<InboundMessageService>(services => new InboundMessage
 WorkToolCallbackRateLimitPolicy.Add(builder.Services);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"));
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
     {
@@ -121,6 +125,7 @@ app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
 app.MapGroupEndpoints();
 app.MapWorkToolCallbackEndpoints();
+app.MapWorkToolGroupOperationEndpoints();
 app.MapGet("/", () => Results.Ok());
 
 app.Run();

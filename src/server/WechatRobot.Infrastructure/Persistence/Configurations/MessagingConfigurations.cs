@@ -13,6 +13,7 @@ internal sealed class RobotConfigConfiguration : IEntityTypeConfiguration<RobotC
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.WorkToolRobotId).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.CallbackSecretHash).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.EncryptedCredential).HasColumnType("longtext");
         builder.Property(entity => entity.SendRateLimitPerMinute).HasDefaultValue(50).IsRequired();
         builder.Property(entity => entity.SendRateTokens).HasPrecision(10, 4).HasDefaultValue(50m).IsRequired();
         builder.Property(entity => entity.SendLeaseOwner).HasMaxLength(128);
@@ -148,5 +149,34 @@ internal sealed class ModelConfigConfiguration : IEntityTypeConfiguration<ModelC
         builder.Property(entity => entity.TimeoutSeconds).IsRequired();
         builder.Property(entity => entity.MaxRetries).IsRequired();
         builder.HasIndex(entity => entity.Name).IsUnique();
+    }
+}
+
+internal sealed class WorkToolOperationAuditConfiguration : IEntityTypeConfiguration<WorkToolOperationAuditEntity>
+{
+    public void Configure(EntityTypeBuilder<WorkToolOperationAuditEntity> builder)
+    {
+        builder.ToTable("worktool_operation_audit");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.OperatorName).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.Operation).HasMaxLength(64).IsRequired();
+        builder.Property(entity => entity.SanitizedRequestJson).HasColumnType("longtext").IsRequired();
+        builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.Result).HasMaxLength(1024);
+        builder.HasIndex(entity => entity.CreatedAtUtc);
+    }
+}
+
+internal sealed class WorkToolOperationConfirmationConfiguration : IEntityTypeConfiguration<WorkToolOperationConfirmationEntity>
+{
+    public void Configure(EntityTypeBuilder<WorkToolOperationConfirmationEntity> builder)
+    {
+        builder.ToTable("worktool_operation_confirmation");
+        builder.HasKey(entity => entity.Id);
+        builder.Property(entity => entity.TokenHash).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.OperatorName).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.PayloadHash).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
+        builder.HasIndex(entity => entity.TokenHash).IsUnique();
     }
 }

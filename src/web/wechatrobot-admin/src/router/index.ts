@@ -5,6 +5,7 @@ import DashboardView from '../views/DashboardView.vue';
 import LoginView from '../views/LoginView.vue';
 import TaskPlaceholderView from '../views/TaskPlaceholderView.vue';
 import GroupRulesView from '../views/groups/GroupRulesView.vue';
+import GroupOperationsView from '../views/groups/GroupOperationsView.vue';
 
 export type Role = 'Admin' | 'KnowledgeOperator' | 'HumanAgent';
 export interface NavigationItem { name: string; label: string; roles: Role[]; }
@@ -38,6 +39,7 @@ const routes: RouteRecordRaw[] = [
       placeholder('knowledge-documents', 'knowledge/documents', '知识库', ['Admin', 'KnowledgeOperator'], 'Task 16'),
       placeholder('knowledge-tags', 'knowledge/tags', '知识库标签', ['Admin', 'KnowledgeOperator'], 'Task 16'),
       { path: 'groups', name: 'group-rules', component: GroupRulesView, meta: { roles: ['Admin'] } },
+      { path: 'groups/operations', name: 'group-operations', component: GroupOperationsView, meta: { roles: ['Admin'] } },
       placeholder('handoffs', 'handoffs', '人工转接', ['Admin', 'HumanAgent'], 'Task 16'),
       placeholder('audit', 'audit', '会话审计', ['Admin', 'KnowledgeOperator'], 'Task 16'),
       placeholder('model-settings', 'models', '模型配置', ['Admin'], 'Task 16'),

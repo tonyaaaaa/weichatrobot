@@ -46,7 +46,7 @@ onMounted(load);
 
 <template>
   <section class="group-rules-view">
-    <h1>群管理</h1><p>仅管理员可维护。标签检索遵循“任一已绑定标签匹配即可检索”，全局公开标签始终可用。</p>
+    <h1>群管理</h1><p>仅管理员可维护。标签检索遵循“任一已绑定标签匹配即可检索”，全局公开标签始终可用。</p><RouterLink :to="{ name: 'group-operations' }">新建群、成员和群信息操作</RouterLink>
     <label>群配置 ID <input v-model.trim="activeGroupId" aria-label="群配置 ID"><button type="button" @click="load">读取配置</button></label>
     <RuleEditor :include-rules="includeRules" :exclude-rules="excludeRules" @add="addRule" @remove="removeRule" />
     <section><h2>知识库标签</h2><p>多选标签按 OR 关系检索；“全局公开”标签无需绑定。</p><label v-for="tag in availableTags" :key="tag.id" :class="{ 'stale-tag': !tag.isEnabled }"><input v-model="boundTagIds" type="checkbox" :data-testid="`tag-${tag.id}`" :value="tag.id" :disabled="!tag.isEnabled && !tag.isBound">{{ tag.name }}{{ !tag.isEnabled ? '（已禁用，移除后不可重新添加）' : tag.isGlobalPublic ? '（全局公开）' : '' }}</label></section>
