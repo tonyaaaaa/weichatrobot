@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import { useAuthStore } from './auth';
+import { createUnauthorizedHandler, useAuthStore } from './auth';
 import LoginView from '../views/LoginView.vue';
 import { flushPromises, mount } from '@vue/test-utils';
 
@@ -51,6 +51,19 @@ describe('authentication state', () => {
     expect(auth.user).toBeNull();
     expect(auth.isAuthenticated).toBe(false);
     expect(localStorage.getItem('wechatrobot.accessToken')).toBeNull();
+  });
+
+  it('clears the session and replaces the protected route after an unauthorized response', () => {
+    localStorage.setItem('wechatrobot.accessToken', 'existing-token');
+    const auth = useAuthStore();
+    auth.restoreToken();
+    const replaceWithLogin = vi.fn();
+
+    createUnauthorizedHandler(auth, replaceWithLogin)();
+
+    expect(auth.isAuthenticated).toBe(false);
+    expect(localStorage.getItem('wechatrobot.accessToken')).toBeNull();
+    expect(replaceWithLogin).toHaveBeenCalledOnce();
   });
 });
 

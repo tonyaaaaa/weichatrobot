@@ -2,6 +2,16 @@ import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { accessTokenStorageKey, authApi, type AuthApi, type CurrentUser } from '../api/http';
 
+export function createUnauthorizedHandler(
+  auth: { handleUnauthorized(): void },
+  replaceWithLogin: () => void | Promise<unknown>
+): () => void {
+  return () => {
+    auth.handleUnauthorized();
+    void replaceWithLogin();
+  };
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref<string | null>(null);
   const user = ref<CurrentUser | null>(null);

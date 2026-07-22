@@ -17,6 +17,20 @@ describe('API HTTP client', () => {
     expect(request?.headers?.Authorization).toBe('Bearer access-token');
   });
 
+  it('does not leak the bearer token to an arbitrary absolute URL', async () => {
+    const client = createApiClient(() => 'access-token', vi.fn());
+    let request: AxiosRequestConfig | undefined;
+
+    await client.get('https://untrusted.example.test/collect', {
+      adapter: async config => {
+        request = config;
+        return { config, data: {}, headers: {}, status: 200, statusText: 'OK' };
+      }
+    });
+
+    expect(request?.headers?.Authorization).toBeUndefined();
+  });
+
   it('notifies the session owner after a 401 response', async () => {
     const onUnauthorized = vi.fn();
     const client = createApiClient(() => 'access-token', onUnauthorized);

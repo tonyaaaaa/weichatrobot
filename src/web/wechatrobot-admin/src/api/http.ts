@@ -21,11 +21,23 @@ export interface AuthApi {
   me(): Promise<CurrentUser>;
 }
 
-export function createApiClient(getAccessToken: () => string | null, onUnauthorized: () => void): AxiosInstance {
-  const client = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL ?? '' });
+function isTrustedApiRequest(url: string | undefined, apiBaseUrl: string): boolean {
+  const currentOrigin = window.location.origin;
+  const trustedBase = new URL(apiBaseUrl || currentOrigin, currentOrigin);
+  const requestUrl = new URL(url ?? '', trustedBase);
+  return requestUrl.origin === trustedBase.origin
+    && (requestUrl.pathname === '/api' || requestUrl.pathname.startsWith('/api/'));
+}
+
+export function createApiClient(
+  getAccessToken: () => string | null,
+  onUnauthorized: () => void,
+  apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
+): AxiosInstance {
+  const client = axios.create({ baseURL: apiBaseUrl });
   client.interceptors.request.use(config => {
     const accessToken = getAccessToken();
-    if (accessToken) {
+    if (accessToken && isTrustedApiRequest(config.url, apiBaseUrl)) {
       config.headers.Authorization = `Bearer ${accessToken}`;
     }
     return config;
