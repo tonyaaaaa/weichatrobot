@@ -13,7 +13,7 @@
 使用独立 Compose 项目和独立端口，避免干扰常规本地服务：
 
 ```powershell
-docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 up -d
+docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 up -d --wait --wait-timeout 120
 docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 ps
 Invoke-WebRequest http://127.0.0.1:36333/readyz
 ```
@@ -50,7 +50,47 @@ $env:FixedReply__SendRateLimitPerMinute = '50'
 dotnet run --project src/server/WechatRobot.Worker
 ```
 
-迁移完成后，向 `robot_config` 插入一个启用的测试机器人，其 `CallbackSecretHash` 必须是临时回调密钥的 SHA-256 十六进制摘要。数据库写入仅限这次隔离 Compose 数据库。
+## 初始化临时机器人
+
+API 完成迁移后，在仓库根目录执行以下 PowerShell。示例使用固定的测试 ID 与机器人编号，便于后续 SQL 核验；回调密钥仍应在本机临时生成，不能替换成真实密钥或提交到仓库。`CallbackSecretHash` 是 API 回调认证实际比较的 SHA-256 十六进制摘要。
+
+```powershell
+$robotId = '11111111-1111-1111-1111-111111111111'
+$robotCode = 'checkpoint-1-robot'
+$callbackSecret = 'checkpoint-' + [Guid]::NewGuid().ToString('N')
+$callbackSecretHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($callbackSecret)))
+
+# Re-running the test starts from a clean record set for this fixed test robot.
+$cleanupSql = @"
+DELETE letter FROM dead_letter AS letter INNER JOIN send_command AS command ON command.Id = letter.SendCommandId WHERE command.RobotConfigId = '$robotId';
+DELETE letter FROM dead_letter AS letter INNER JOIN durable_job AS job ON job.Id = letter.DurableJobId WHERE job.PayloadJson LIKE '%$robotId%';
+DELETE FROM send_command WHERE RobotConfigId = '$robotId';
+DELETE FROM durable_job WHERE PayloadJson LIKE '%$robotId%';
+DELETE FROM conversation_message WHERE RobotConfigId = '$robotId';
+DELETE FROM group_profile WHERE RobotConfigId = '$robotId';
+DELETE FROM robot_config WHERE Id = '$robotId';
+"@
+$cleanupSql | docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 exec -T mysql sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"'
+
+# All required robot_config columns are explicit for the current migrations.
+$bootstrapSql = @"
+INSERT INTO robot_config (
+  Id, Name, WorkToolRobotId, CallbackSecretHash, IsEnabled,
+  SendRateLimitPerMinute, SendRateTokens, SendRateUpdatedAtUtc,
+  SendLeaseOwner, SendLeaseExpiresAtUtc, SendCoordinationVersion,
+  CreatedAtUtc, UpdatedAtUtc
+) VALUES (
+  '$robotId', 'checkpoint-1 robot', '$robotCode', '$callbackSecretHash', 1,
+  50, 50, UTC_TIMESTAMP(6),
+  NULL, NULL, 0,
+  UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)
+);
+SELECT Id, WorkToolRobotId, SendRateLimitPerMinute, SendRateTokens FROM robot_config WHERE Id = '$robotId';
+"@
+$bootstrapSql | docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 exec -T mysql sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"'
+```
+
+该记录满足当前迁移的必需字段和 `SendRateLimitPerMinute BETWEEN 1 AND 60` 约束；初始 `SendRateTokens=50` 与 `SendRateUpdatedAtUtc=UTC_TIMESTAMP(6)` 允许 Worker 正常取得发送租约。保存当前 PowerShell 会话中的 `$robotId`、`$robotCode` 和 `$callbackSecret`，供下一步回调与核验使用。
 
 ## 执行回调并核验
 
@@ -58,23 +98,26 @@ dotnet run --project src/server/WechatRobot.Worker
 
 ```powershell
 $payload = @{ spoken='检查点：无需 @ 的群消息'; rawSpoken='检查点：无需 @ 的群消息'; receivedName='Checkpoint Sender'; groupName='Checkpoint Group'; groupRemark='Checkpoint Group'; roomType=1; atMe=$false; textType=1; messageId='checkpoint-no-at-001' } | ConvertTo-Json -Compress
-$uri = 'http://127.0.0.1:5501/api/worktool/callback/<local-robot-code>?token=<local-callback-secret>'
+$uri = "http://127.0.0.1:5501/api/worktool/callback/$robotCode?token=$callbackSecret"
 Invoke-WebRequest -UseBasicParsing -Method Post -Uri $uri -ContentType 'application/json' -Body $payload
 Invoke-WebRequest -UseBasicParsing -Method Post -Uri $uri -ContentType 'application/json' -Body $payload
 ```
 
-两次响应均必须是 HTTP 200 且正文为 `{"code":0,"message":"accepted"}`。随后在同一隔离 MySQL 中执行下面的统计（把 `<robot-id>` 替换为测试机器人 ID）：
+两次响应均必须是 HTTP 200 且正文为 `{"code":0,"message":"accepted"}`。随后在同一隔离 MySQL 中执行下面的统计；继续使用上一步的 `$robotId`：
 
-```sql
+```powershell
+$verificationSql = @"
 SELECT
-  (SELECT COUNT(*) FROM conversation_message WHERE RobotConfigId = '<robot-id>') AS inbound_rows,
-  (SELECT COUNT(*) FROM durable_job WHERE JobType = 'ProcessInboundMessage' AND PayloadJson LIKE '%<robot-id>%') AS process_jobs,
-  (SELECT COUNT(*) FROM durable_job WHERE JobType = 'ProcessInboundMessage' AND PayloadJson LIKE '%<robot-id>%' AND Status = 'completed') AS completed_process_jobs,
-  (SELECT COUNT(*) FROM send_command WHERE RobotConfigId = '<robot-id>') AS send_commands,
-  (SELECT COUNT(*) FROM send_command WHERE RobotConfigId = '<robot-id>' AND Status = 'completed') AS completed_sends;
+  (SELECT COUNT(*) FROM conversation_message WHERE RobotConfigId = '$robotId') AS inbound_rows,
+  (SELECT COUNT(*) FROM durable_job WHERE JobType = 'ProcessInboundMessage' AND PayloadJson LIKE '%$robotId%') AS process_jobs,
+  (SELECT COUNT(*) FROM durable_job WHERE JobType = 'ProcessInboundMessage' AND PayloadJson LIKE '%$robotId%' AND Status = 'completed') AS completed_process_jobs,
+  (SELECT COUNT(*) FROM send_command WHERE RobotConfigId = '$robotId') AS send_commands,
+  (SELECT COUNT(*) FROM send_command WHERE RobotConfigId = '$robotId' AND Status = 'completed') AS completed_sends;
+"@
+$verificationSql | docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 exec -T mysql sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"'
 ```
 
-期望统计为 `1, 1, 1, 1, 1`，并且 `fake-worktool.log` 中只出现一行 `POST /wework/sendRawMessage?robotId=<local-robot-code>`。
+期望统计为 `1, 1, 1, 1, 1`，并且 `fake-worktool.log` 中只出现一行 `POST /wework/sendRawMessage?robotId=checkpoint-1-robot`。
 
 ## 2026-07-22 实测证据
 
@@ -93,4 +136,4 @@ Stop-Process -Id $fake.Id
 docker compose --env-file .superpowers/sdd/checkpoint-1.env -p wechatrobot-checkpoint1 down
 ```
 
-分别关闭启动 API 与 Worker 的 PowerShell 窗口，或仅终止这些窗口创建的 `dotnet` 子进程。最后删除 `.superpowers/sdd/checkpoint-1.env` 和本次本地日志；它们本来就不受 Git 跟踪。
+分别关闭启动 API 与 Worker 的 PowerShell 窗口，或仅终止这些窗口创建的 `dotnet` 子进程。若需在不删除 Compose 卷的前提下删除测试记录，重新执行“初始化临时机器人”中的 `$cleanupSql` 管道；最后删除 `.superpowers/sdd/checkpoint-1.env` 和本次本地日志；它们本来就不受 Git 跟踪。
