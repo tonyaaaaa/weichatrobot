@@ -37,14 +37,31 @@ public sealed class GroundedConversationRepository(
             }
         }
 
+        await using (var canonicalTransaction = await database.Database.BeginTransactionAsync(token))
+        {
+            var assigned = await database.ConversationMessages.Where(item => item.Id == messageId &&
+                    (item.GroupProfileId == null || item.GroupProfileId == initial.GroupProfileId))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.GroupProfileId, initial.GroupProfileId)
+                    .SetProperty(item => item.ConversationSessionId, session.Id), token);
+            if (assigned != 1) throw new InvalidOperationException("Inbound message canonical group identity conflicts with the resolved group profile.");
+            var aliases = await database.GroupProfiles.AsNoTracking().Where(item => item.Id == initial.GroupProfileId)
+                .Select(item => new { item.Name, item.ExternalGroupId }).SingleAsync(token);
+            await database.ConversationMessages.Where(item => item.GroupProfileId == null && item.RobotConfigId == initial.RobotConfigId &&
+                    (item.GroupName == aliases.Name || item.GroupName == aliases.ExternalGroupId))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.GroupProfileId, initial.GroupProfileId), token);
+            await canonicalTransaction.CommitAsync(token);
+        }
+
         if (!initial.Scope.IsStatelessDegradation)
         {
             var current = await database.ConversationMessages.AsNoTracking().SingleAsync(item => item.Id == messageId, token);
-            var earlier = database.ConversationMessages.AsNoTracking().Where(item => item.Direction == "inbound" && item.RobotConfigId == current.RobotConfigId &&
-                item.GroupName == current.GroupName && (item.CreatedAtUtc < current.CreatedAtUtc || item.CreatedAtUtc == current.CreatedAtUtc && item.Id.CompareTo(current.Id) < 0) &&
-                (item.ProcessingState == "pending" || item.ProcessingState == "retrying" || item.ProcessingState == "leased"));
-            if (initial.ContextPolicy.SenderIsolated) earlier = earlier.Where(item => item.StableSenderId == current.StableSenderId);
-            if (await earlier.AnyAsync(token)) throw new ConversationSessionBusyException("An earlier message in this session is still pending.");
+            var earlier = await database.ConversationMessages.AsNoTracking().Where(item => item.Direction == "inbound" &&
+                    item.GroupProfileId == initial.GroupProfileId && item.Id != current.Id &&
+                    (item.ReceivedAtUtc < current.ReceivedAtUtc || item.ReceivedAtUtc == current.ReceivedAtUtc && item.Id.CompareTo(current.Id) < 0) &&
+                    (item.ProcessingState == "pending" || item.ProcessingState == "retrying" || item.ProcessingState == "leased"))
+                .Select(item => new { item.Id, item.StableSenderId }).ToArrayAsync(token);
+            if (earlier.Any(item => ConversationScopeResolver.Resolve(initial.ContextPolicy.SenderIsolated, item.StableSenderId, item.Id).ScopeKey == initial.Scope.ScopeKey))
+                throw new ConversationSessionBusyException("An earlier message in this canonical conversation session is still active.");
         }
 
         var changed = await database.ConversationSessions.Where(item => item.Id == session.Id &&
@@ -53,8 +70,6 @@ public sealed class GroundedConversationRepository(
                 .SetProperty(item => item.LeaseExpiresAtUtc, nowUtc.Add(leaseDuration)).SetProperty(item => item.Version, item => item.Version + 1)
                 .SetProperty(item => item.UpdatedAtUtc, nowUtc), token);
         if (changed != 1) throw new ConversationSessionBusyException("The conversation session is leased by another worker.");
-        await database.ConversationMessages.Where(item => item.Id == messageId).ExecuteUpdateAsync(setters => setters
-            .SetProperty(item => item.GroupProfileId, initial.GroupProfileId).SetProperty(item => item.ConversationSessionId, session.Id), token);
         var leased = await LoadForProcessingAsync(messageId, token);
         var state = await database.ConversationSessions.AsNoTracking().SingleAsync(item => item.Id == session.Id, token);
         return leased with { ConversationSessionId = session.Id, SessionLeaseOwner = leaseOwner, SessionVersion = state.Version };

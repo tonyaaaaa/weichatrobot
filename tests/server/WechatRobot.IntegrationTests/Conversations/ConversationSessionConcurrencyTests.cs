@@ -143,6 +143,76 @@ public sealed class ConversationSessionConcurrencyTests : IClassFixture<MySqlFix
         }
     }
 
+    [Fact]
+    public async Task Canonical_group_and_scope_block_prior_active_message_across_raw_alias_changes()
+    {
+        var seeded = await SeedAsync(senderIsolated: false);
+        string externalGroupId;
+        var oldRawName = currentGroup;
+        await using (var db = Database())
+        {
+            var group = await db.GroupProfiles.SingleAsync(item => item.Id == seeded.GroupId, TestContext.Current.CancellationToken);
+            group.ExternalGroupId = $"External-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            externalGroupId = group.ExternalGroupId;
+        }
+        var first = await IngestAsync(seeded.RobotId, "Alice", null, "alias first");
+        await using (var db = Database())
+        {
+            var repository = Repository(db);
+            var initial = await repository.LeaseForProcessingAsync(first, "alias-initial", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            await repository.ReleaseLeaseAsync(initial.ConversationSessionId, "alias-initial", TestContext.Current.CancellationToken);
+            var group = await db.GroupProfiles.SingleAsync(item => item.Id == seeded.GroupId, TestContext.Current.CancellationToken);
+            group.Name = $"Renamed-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        currentGroup = externalGroupId;
+        var second = await IngestAsync(seeded.RobotId, "Alice", null, "alias second");
+        await using (var db = Database())
+        {
+            await db.ConversationMessages.Where(item => item.Id == first)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "retrying"), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<ConversationSessionBusyException>(() => Repository(db).LeaseForProcessingAsync(second, "alias-retrying",
+                DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+            await db.ConversationMessages.Where(item => item.Id == first)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "leased"), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<ConversationSessionBusyException>(() => Repository(db).LeaseForProcessingAsync(second, "alias-leased",
+                DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        }
+
+        await using (var db = Database())
+        {
+            var other = new GroupProfileEntity { RobotConfigId = seeded.RobotId, ExternalGroupId = $"other-{Guid.NewGuid():N}", Name = $"Other-{Guid.NewGuid():N}" };
+            db.GroupProfiles.Add(other);
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            currentGroup = other.Name;
+        }
+        var otherMessage = await IngestAsync(seeded.RobotId, "Alice", null, "other profile");
+        await using (var db = Database())
+        {
+            var repository = Repository(db);
+            var leasedOther = await repository.LeaseForProcessingAsync(otherMessage, "other-profile", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            await repository.ReleaseLeaseAsync(leasedOther.ConversationSessionId, "other-profile", TestContext.Current.CancellationToken);
+        }
+
+        await using (var db = Database())
+        {
+            var repository = Repository(db);
+            var firstLease = await repository.LeaseForProcessingAsync(first, "alias-complete-first", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            await repository.PersistAnswerAndEnqueueAsync(firstLease, Result("alias first answer"), TestContext.Current.CancellationToken);
+        }
+        await using (var db = Database())
+        {
+            var repository = Repository(db);
+            var secondLease = await repository.LeaseForProcessingAsync(second, "alias-after-complete", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            Assert.Equal([1L, 2L], secondLease.History.Select(item => item.SessionSequence));
+            Assert.Equal(["alias first", "alias first answer"], secondLease.History.Select(item => item.Content));
+            await repository.ReleaseLeaseAsync(secondLease.ConversationSessionId, "alias-after-complete", TestContext.Current.CancellationToken);
+        }
+        Assert.NotEqual(oldRawName, externalGroupId);
+    }
+
     private async Task<(Guid RobotId, Guid GroupId)> SeedAsync(bool senderIsolated)
     {
         await using var db = Database();
