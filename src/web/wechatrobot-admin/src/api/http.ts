@@ -21,10 +21,15 @@ export interface AuthApi {
   me(): Promise<CurrentUser>;
 }
 
-function isTrustedApiRequest(url: string | undefined, apiBaseUrl: string): boolean {
+function isTrustedApiRequest(
+  url: string | undefined,
+  effectiveBaseUrl: string | undefined,
+  configuredApiBaseUrl: string
+): boolean {
   const currentOrigin = window.location.origin;
-  const trustedBase = new URL(apiBaseUrl || currentOrigin, currentOrigin);
-  const requestUrl = new URL(url ?? '', trustedBase);
+  const trustedBase = new URL(configuredApiBaseUrl || currentOrigin, currentOrigin);
+  const requestBase = new URL(effectiveBaseUrl ?? trustedBase.href, currentOrigin);
+  const requestUrl = new URL(url ?? '', requestBase);
   return requestUrl.origin === trustedBase.origin
     && (requestUrl.pathname === '/api' || requestUrl.pathname.startsWith('/api/'));
 }
@@ -37,7 +42,7 @@ export function createApiClient(
   const client = axios.create({ baseURL: apiBaseUrl });
   client.interceptors.request.use(config => {
     const accessToken = getAccessToken();
-    if (accessToken && isTrustedApiRequest(config.url, apiBaseUrl)) {
+    if (accessToken && isTrustedApiRequest(config.url, config.baseURL ?? apiBaseUrl, apiBaseUrl)) {
       config.headers.Authorization = `Bearer ${accessToken}`;
     }
     return config;

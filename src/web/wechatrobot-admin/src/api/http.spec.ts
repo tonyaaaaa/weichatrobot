@@ -17,11 +17,42 @@ describe('API HTTP client', () => {
     expect(request?.headers?.Authorization).toBe('Bearer access-token');
   });
 
+  it.each(['/api/auth/me', 'https://api.example.test/api/auth/me'])(
+    'adds the bearer token to a configured API destination: %s',
+    async url => {
+      const client = createApiClient(() => 'access-token', vi.fn(), 'https://api.example.test');
+      let request: AxiosRequestConfig | undefined;
+
+      await client.get(url, {
+        adapter: async config => {
+          request = config;
+          return { config, data: {}, headers: {}, status: 200, statusText: 'OK' };
+        }
+      });
+
+      expect(request?.headers?.Authorization).toBe('Bearer access-token');
+    });
+
   it('does not leak the bearer token to an arbitrary absolute URL', async () => {
     const client = createApiClient(() => 'access-token', vi.fn());
     let request: AxiosRequestConfig | undefined;
 
     await client.get('https://untrusted.example.test/collect', {
+      adapter: async config => {
+        request = config;
+        return { config, data: {}, headers: {}, status: 200, statusText: 'OK' };
+      }
+    });
+
+    expect(request?.headers?.Authorization).toBeUndefined();
+  });
+
+  it('does not leak the bearer token when a relative API URL overrides its base URL', async () => {
+    const client = createApiClient(() => 'access-token', vi.fn());
+    let request: AxiosRequestConfig | undefined;
+
+    await client.get('/api/auth/me', {
+      baseURL: 'https://untrusted.example.test',
       adapter: async config => {
         request = config;
         return { config, data: {}, headers: {}, status: 200, statusText: 'OK' };
