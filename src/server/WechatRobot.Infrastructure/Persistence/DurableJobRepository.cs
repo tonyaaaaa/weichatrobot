@@ -21,6 +21,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             GroupName = request.GroupName,
             SenderDisplayName = request.SenderDisplayName,
             StableSenderId = request.StableSenderId,
+            ProcessingState = "pending",
             Text = request.Text,
             ReceivedAtUtc = request.ReceivedAtUtc
         };
@@ -28,6 +29,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         database.DurableJobs.Add(new DurableJobEntity
         {
             JobType = "ProcessInboundMessage",
+            RelatedConversationMessageId = message.Id,
             PayloadJson = JsonSerializer.Serialize(new
             {
                 messageId = message.Id,
@@ -74,6 +76,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             return null;
         }
 
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         var leaseExpiry = nowUtc.Add(leaseDuration);
         var updated = await database.DurableJobs
             .Where(job => job.Id == candidate.Id && job.JobType == jobType && job.Version == candidate.Version && (
@@ -87,15 +90,21 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 .SetProperty(job => job.UpdatedAtUtc, nowUtc), cancellationToken);
         if (updated != 1)
         {
+            await transaction.RollbackAsync(cancellationToken);
             return null;
         }
+
+        await UpdateRelatedMessageStateAsync(candidate.Id, "leased", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         var leased = await database.DurableJobs.AsNoTracking().SingleAsync(job => job.Id == candidate.Id, cancellationToken);
         return new LeasedDurableJob(leased.Id, leased.JobType, leased.PayloadJson, leased.AttemptCount, leaseOwner);
     }
 
-    public Task CompleteJobAsync(Guid jobId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken) => database.DurableJobs
-        .Where(job => job.Id == jobId && job.Status == "leased" && job.LeaseOwner == leaseOwner)
+    public async Task CompleteJobAsync(Guid jobId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var updated = await database.DurableJobs.Where(job => job.Id == jobId && job.Status == "leased" && job.LeaseOwner == leaseOwner)
         .ExecuteUpdateAsync(setters => setters
             .SetProperty(job => job.Status, "completed")
             .SetProperty(job => job.CompletedAtUtc, completedAtUtc)
@@ -103,6 +112,9 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
             .SetProperty(job => job.Version, job => job.Version + 1)
             .SetProperty(job => job.UpdatedAtUtc, completedAtUtc), cancellationToken);
+        if (updated == 1) await UpdateRelatedMessageStateAsync(jobId, "completed", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
 
     public async Task FailJobAsync(LeasedDurableJob job, string reason, DateTime failedAtUtc, CancellationToken cancellationToken)
     {
@@ -121,6 +133,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                     .SetProperty(value => value.UpdatedAtUtc, failedAtUtc), cancellationToken);
             if (updated == 1)
             {
+                await UpdateRelatedMessageStateAsync(job.Id, "deadLetter", cancellationToken);
                 database.DeadLetters.Add(new DeadLetterEntity { DurableJobId = job.Id, Reason = reason, PayloadJson = job.PayloadJson, CreatedAtUtc = failedAtUtc });
                 await database.SaveChangesAsync(cancellationToken);
             }
@@ -129,7 +142,8 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         }
 
         var delay = SendRetryDelay(attempts);
-        await database.DurableJobs
+        await using var retryTransaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var retried = await database.DurableJobs
             .Where(value => value.Id == job.Id && value.Status == "leased" && value.LeaseOwner == job.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.Status, "retrying")
@@ -139,6 +153,12 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
                 .SetProperty(value => value.Version, value => value.Version + 1)
                 .SetProperty(value => value.UpdatedAtUtc, failedAtUtc), cancellationToken);
+        if (retried == 1)
+        {
+            await UpdateRelatedMessageStateAsync(job.Id, "retrying", cancellationToken);
+            await retryTransaction.CommitAsync(cancellationToken);
+        }
+        else await retryTransaction.RollbackAsync(cancellationToken);
     }
 
     public async Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken)
@@ -320,6 +340,15 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             .SetProperty(value => value.SendLeaseOwner, (string?)null)
             .SetProperty(value => value.SendLeaseExpiresAtUtc, (DateTime?)null)
             .SetProperty(value => value.SendCoordinationVersion, value => value.SendCoordinationVersion + 1), cancellationToken);
+
+    private async Task UpdateRelatedMessageStateAsync(Guid jobId, string state, CancellationToken token)
+    {
+        var messageId = await database.DurableJobs.AsNoTracking().Where(job => job.Id == jobId)
+            .Select(job => job.RelatedConversationMessageId).SingleOrDefaultAsync(token);
+        if (messageId is { } id)
+            await database.ConversationMessages.Where(message => message.Id == id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(message => message.ProcessingState, state), token);
+    }
 
     private static TimeSpan SendRetryDelay(int attempts) => attempts switch
     {

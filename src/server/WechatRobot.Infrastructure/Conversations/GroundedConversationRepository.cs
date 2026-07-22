@@ -42,7 +42,7 @@ public sealed class GroundedConversationRepository(
             var current = await database.ConversationMessages.AsNoTracking().SingleAsync(item => item.Id == messageId, token);
             var earlier = database.ConversationMessages.AsNoTracking().Where(item => item.Direction == "inbound" && item.RobotConfigId == current.RobotConfigId &&
                 item.GroupName == current.GroupName && (item.CreatedAtUtc < current.CreatedAtUtc || item.CreatedAtUtc == current.CreatedAtUtc && item.Id.CompareTo(current.Id) < 0) &&
-                !database.RetrievalAudits.Any(audit => audit.ConversationMessageId == item.Id));
+                (item.ProcessingState == "pending" || item.ProcessingState == "retrying" || item.ProcessingState == "leased"));
             if (initial.ContextPolicy.SenderIsolated) earlier = earlier.Where(item => item.StableSenderId == current.StableSenderId);
             if (await earlier.AnyAsync(token)) throw new ConversationSessionBusyException("An earlier message in this session is still pending.");
         }
@@ -104,9 +104,10 @@ public sealed class GroundedConversationRepository(
                 (item.SessionSequence != null
                     ? item.SessionSequence > session.ClearedThroughSequence
                     : session.ClearedAtUtc == null || item.CreatedAtUtc > session.ClearedAtUtc))
+            .Where(item => item.Direction != "inbound" || item.ProcessingState == "completed")
             .Where(item => policy.IncludeBotHistory || item.Role == "user")
-            .OrderByDescending(item => item.SessionSequence ?? 0).ThenByDescending(item => item.CreatedAtUtc).ThenByDescending(item => item.Id).Take(maximumRows)
-            .Select(item => new ConversationHistoryMessage(item.Role, scope.ScopeKey, item.Text, item.CreatedAtUtc, item.Id)).ToArrayAsync(token))
+            .OrderByDescending(item => item.SessionSequence ?? 0).ThenByDescending(item => item.Id).Take(maximumRows)
+            .Select(item => new ConversationHistoryMessage(item.Role, scope.ScopeKey, item.Text, item.CreatedAtUtc, item.Id, item.SessionSequence)).ToArrayAsync(token))
             .Reverse().ToArray();
         var summary = session?.Summary;
         var allowedTags = await database.GroupProfileTags.AsNoTracking().Where(item => item.GroupProfileId == group.Id)
@@ -125,6 +126,8 @@ public sealed class GroundedConversationRepository(
         await using var transaction = await database.Database.BeginTransactionAsync(token);
         if (await database.RetrievalAudits.AnyAsync(item => item.ConversationMessageId == request.MessageId, token))
         {
+            await database.ConversationMessages.Where(item => item.Id == request.MessageId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "completed"), token);
             if (request.ConversationSessionId != Guid.Empty && request.SessionLeaseOwner is not null)
                 await database.ConversationSessions.Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner)
                     .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.LeaseOwner, (string?)null)
@@ -136,6 +139,7 @@ public sealed class GroundedConversationRepository(
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var inbound = await database.ConversationMessages.SingleAsync(item => item.Id == request.MessageId, token);
         inbound.GroupProfileId = request.GroupProfileId;
+        inbound.ProcessingState = "completed";
         if (request.ConversationSessionId == Guid.Empty || string.IsNullOrWhiteSpace(request.SessionLeaseOwner))
             throw new ConversationSessionOwnershipLostException("No owned conversation session lease is attached to the request.");
         var sequenceState = await database.ConversationSessions.AsNoTracking()

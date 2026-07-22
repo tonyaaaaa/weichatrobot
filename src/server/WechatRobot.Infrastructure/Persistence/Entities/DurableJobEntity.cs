@@ -5,6 +5,7 @@ public sealed class DurableJobEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     public string JobType { get; set; } = string.Empty;
     public string PayloadJson { get; set; } = string.Empty;
+    public Guid? RelatedConversationMessageId { get; set; }
     public string Status { get; set; } = "pending";
     public int AttemptCount { get; set; }
     public DateTime AvailableAtUtc { get; set; } = DateTime.UtcNow;

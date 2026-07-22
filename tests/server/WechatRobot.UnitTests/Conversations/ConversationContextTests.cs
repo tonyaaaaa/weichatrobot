@@ -121,6 +121,18 @@ public sealed class ConversationContextTests
         Assert.True(result.WasTokenLimited);
     }
 
+    [Fact]
+    public void Session_sequence_not_timestamp_controls_turn_order()
+    {
+        var user1 = Message("user", "group", "u1", Now.AddMinutes(-3)) with { SessionSequence = 1 };
+        var assistant1 = Message("assistant", "group", "a1", Now.AddMinutes(-1)) with { SessionSequence = 2 };
+        var user2 = Message("user", "group", "u2", Now.AddMinutes(-2)) with { SessionSequence = 3 };
+
+        var result = new ConversationContextService().Build([user2, assistant1, user1], Policy(historyTurns: 6), "group", Now);
+
+        Assert.Equal(["u1", "a1", "u2"], result.Messages.Select(message => message.Content));
+    }
+
     private static IEnumerable<ConversationHistoryMessage> Turn(int number)
     {
         yield return Message("user", "alice", $"u{number}", Now.AddMinutes(number - 20));

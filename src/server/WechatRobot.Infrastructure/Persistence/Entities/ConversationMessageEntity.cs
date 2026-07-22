@@ -7,6 +7,7 @@ public sealed class ConversationMessageEntity
     public Guid? GroupProfileId { get; set; }
     public Guid? ConversationSessionId { get; set; }
     public long? SessionSequence { get; set; }
+    public string ProcessingState { get; set; } = "completed";
     public string Direction { get; set; } = "inbound";
     public string Role { get; set; } = "user";
     public Guid? InReplyToMessageId { get; set; }

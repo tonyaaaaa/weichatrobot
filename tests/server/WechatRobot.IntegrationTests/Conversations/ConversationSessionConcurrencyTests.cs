@@ -80,6 +80,69 @@ public sealed class ConversationSessionConcurrencyTests : IClassFixture<MySqlFix
         await Repository(secondDb).ReleaseLeaseAsync(recovered.ConversationSessionId, "new-owner", TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task Dead_letter_prior_message_does_not_brick_session_but_active_retry_and_lease_still_block()
+    {
+        var seeded = await SeedAsync(senderIsolated: false);
+        var failed = await IngestAsync(seeded.RobotId, "Alice", null, "will dead letter");
+        await using (var db = Database())
+        {
+            var conversation = Repository(db);
+            var leased = await conversation.LeaseForProcessingAsync(failed, "failed-session", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            await conversation.ReleaseLeaseAsync(leased.ConversationSessionId, "failed-session", TestContext.Current.CancellationToken);
+            var durable = new DurableJobRepository(db);
+            var job = await db.DurableJobs.SingleAsync(item => item.RelatedConversationMessageId == failed, TestContext.Current.CancellationToken);
+            for (var attempt = 0; attempt < 4; attempt++)
+            {
+                var owner = $"dead-owner-{attempt}";
+                await db.DurableJobs.Where(item => item.Id == job.Id).ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, "leased").SetProperty(item => item.AttemptCount, attempt)
+                    .SetProperty(item => item.LeaseOwner, owner).SetProperty(item => item.LeaseExpiresAtUtc, DateTime.UtcNow.AddMinutes(1)), TestContext.Current.CancellationToken);
+                await durable.FailJobAsync(new(job.Id, job.JobType, job.PayloadJson, attempt, owner), "terminal test", DateTime.UtcNow, TestContext.Current.CancellationToken);
+            }
+            Assert.Equal("deadLetter", await db.ConversationMessages.Where(item => item.Id == failed).Select(item => item.ProcessingState)
+                .SingleAsync(TestContext.Current.CancellationToken));
+        }
+
+        var recoveredId = await IngestAsync(seeded.RobotId, "Alice", null, "after dead letter");
+        await using (var db = Database())
+        {
+            var repository = Repository(db);
+            var recovered = await repository.LeaseForProcessingAsync(recoveredId, "recovered", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(recovered.History, item => item.Content == "will dead letter");
+            await repository.PersistAnswerAndEnqueueAsync(recovered, Result("recovered answer"), TestContext.Current.CancellationToken);
+        }
+
+        var active = await IngestAsync(seeded.RobotId, "Alice", null, "active prior");
+        var blocked = await IngestAsync(seeded.RobotId, "Alice", null, "blocked later");
+        await using (var db = Database())
+        {
+            await db.ConversationMessages.Where(item => item.Id == active)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "retrying"), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<ConversationSessionBusyException>(() => Repository(db).LeaseForProcessingAsync(blocked, "blocked-retry",
+                DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+
+            await db.ConversationMessages.Where(item => item.Id == active)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "leased"), TestContext.Current.CancellationToken);
+            await db.DurableJobs.Where(item => item.RelatedConversationMessageId == active).ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, "leased").SetProperty(item => item.LeaseOwner, "expired-worker")
+                .SetProperty(item => item.LeaseExpiresAtUtc, DateTime.UtcNow.AddMinutes(-1)), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<ConversationSessionBusyException>(() => Repository(db).LeaseForProcessingAsync(blocked, "blocked-expired",
+                DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+
+            await db.DurableJobs.Where(item => item.RelatedConversationMessageId == active).ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, "leased").SetProperty(item => item.LeaseOwner, "reclaimed-worker")
+                .SetProperty(item => item.LeaseExpiresAtUtc, DateTime.UtcNow.AddMinutes(1)), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<ConversationSessionBusyException>(() => Repository(db).LeaseForProcessingAsync(blocked, "blocked-reclaimed",
+                DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+
+            await db.ConversationMessages.Where(item => item.Id == active)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "deadLetter"), TestContext.Current.CancellationToken);
+            var final = await Repository(db).LeaseForProcessingAsync(blocked, "after-terminal", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            await Repository(db).ReleaseLeaseAsync(final.ConversationSessionId, "after-terminal", TestContext.Current.CancellationToken);
+        }
+    }
+
     private async Task<(Guid RobotId, Guid GroupId)> SeedAsync(bool senderIsolated)
     {
         await using var db = Database();

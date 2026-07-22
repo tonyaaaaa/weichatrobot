@@ -2,7 +2,8 @@ using WechatRobot.Application.Groups;
 
 namespace WechatRobot.Application.Conversations;
 
-public sealed record ConversationHistoryMessage(string Role, string SessionScopeKey, string Content, DateTime CreatedAtUtc, Guid? MessageId = null);
+public sealed record ConversationHistoryMessage(string Role, string SessionScopeKey, string Content, DateTime CreatedAtUtc, Guid? MessageId = null,
+    long? SessionSequence = null);
 public sealed record ConversationContextResult
 {
     public ConversationContextResult(IReadOnlyList<ConversationHistoryMessage> messages, string? summary, bool wasIdleReset, bool wasTokenLimited,
@@ -36,7 +37,8 @@ public sealed class ConversationContextService
         var filtered = history
             .Where(message => !policy.SenderIsolated || string.Equals(message.SessionScopeKey, sessionScopeKey, StringComparison.Ordinal))
             .Where(message => policy.IncludeBotHistory || !string.Equals(message.Role, "assistant", StringComparison.Ordinal))
-            .OrderBy(message => message.CreatedAtUtc)
+            .OrderBy(message => message.SessionSequence ?? 0)
+            .ThenBy(message => message.MessageId ?? Guid.Empty)
             .ToArray();
 
         if (filtered.Length > 0 && filtered[^1].CreatedAtUtc < nowUtc.AddMinutes(-policy.IdleTimeoutMinutes))

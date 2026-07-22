@@ -79,6 +79,7 @@ internal sealed class ConversationMessageConfiguration : IEntityTypeConfiguratio
         builder.Property(entity => entity.WorkToolMessageId).HasMaxLength(128);
         builder.Property(entity => entity.Direction).HasMaxLength(16).HasDefaultValue("inbound").IsRequired();
         builder.Property(entity => entity.Role).HasMaxLength(16).HasDefaultValue("user").IsRequired();
+        builder.Property(entity => entity.ProcessingState).HasMaxLength(32).HasDefaultValue("completed").IsRequired();
         builder.Property(entity => entity.FallbackHash).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.GroupName).HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.SenderDisplayName).HasMaxLength(128).IsRequired();
@@ -139,6 +140,8 @@ internal sealed class DurableJobConfiguration : IEntityTypeConfiguration<Durable
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
         builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });
+        builder.HasIndex(entity => entity.RelatedConversationMessageId).IsUnique();
+        builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.RelatedConversationMessageId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

@@ -50,6 +50,8 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
             var processedDb = processedScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             Assert.Equal(1, await processedDb.SendCommands.CountAsync(command => command.RobotConfigId == robotId, TestContext.Current.CancellationToken));
             Assert.Equal(1, await processedDb.DurableJobs.CountAsync(job => job.Status == "completed" && job.PayloadJson.Contains(robotId.ToString()), TestContext.Current.CancellationToken));
+            Assert.Equal(1, await processedDb.ConversationMessages.CountAsync(message => message.RobotConfigId == robotId &&
+                message.ProcessingState == "completed" && processedDb.DurableJobs.Any(job => job.RelatedConversationMessageId == message.Id), TestContext.Current.CancellationToken));
         }
         await Task.WhenAll(firstSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken), secondSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
         await Task.WhenAll(firstSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken), secondSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
