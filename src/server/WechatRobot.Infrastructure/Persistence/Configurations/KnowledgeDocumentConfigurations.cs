@@ -114,6 +114,7 @@ internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<
         builder.Property(entity => entity.PreviousActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.CollectionName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Distance).HasMaxLength(16).IsRequired();
+        builder.Property(entity => entity.PendingTagIdsJson).HasColumnType("json").HasDefaultValueSql("(JSON_ARRAY())").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
         builder.Property(entity => entity.FailureReason).HasMaxLength(1024);

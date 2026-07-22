@@ -187,6 +187,13 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
                 .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
                 .SetProperty(job => job.UpdatedAtUtc, now)
                 .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
+        await database.KnowledgeIndexJobs.Where(job => job.KnowledgeDocumentId == documentId && job.Operation != "cleanup" &&
+            (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased" || job.Status == "activating"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "cancelled")
+                .SetProperty(job => job.LeaseOwner, (string?)null)
+                .SetProperty(job => job.UpdatedAtUtc, now)
+                .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
         var cleanupId = CleanupJobId(documentId);
         if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken))
             database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
@@ -271,6 +278,9 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         foreach (var job in await database.DurableJobs.Where(job => (job.JobType == "UploadKnowledgeDocument" || job.JobType == "ParseKnowledgeDocument") &&
                      job.PayloadJson.Contains(documentId.ToString()) && job.Status != "completed" && job.Status != "cancelled").ToArrayAsync(cancellationToken))
         { job.Status = "cancelled"; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null; job.UpdatedAtUtc = now; job.Version++; }
+        foreach (var job in await database.KnowledgeIndexJobs.Where(job => job.KnowledgeDocumentId == documentId && job.Operation != "cleanup" &&
+                     (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased" || job.Status == "activating")).ToArrayAsync(cancellationToken))
+        { job.Status = "cancelled"; job.LeaseOwner = null; job.UpdatedAtUtc = now; job.Version++; }
         var cleanupId = CleanupJobId(documentId);
         if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken)) database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
         await database.SaveChangesAsync(cancellationToken);

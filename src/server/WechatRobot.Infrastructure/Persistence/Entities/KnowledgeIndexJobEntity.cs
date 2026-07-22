@@ -14,6 +14,7 @@ public sealed class KnowledgeIndexJobEntity
     public string CollectionName { get; set; } = string.Empty;
     public int Dimension { get; set; }
     public string Distance { get; set; } = "cosine";
+    public string PendingTagIdsJson { get; set; } = "[]";
     public string Status { get; set; } = "pending";
     public int AttemptCount { get; set; }
     public DateTime NextAttemptAtUtc { get; set; } = DateTime.UtcNow;

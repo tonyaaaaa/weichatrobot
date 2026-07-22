@@ -62,7 +62,8 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
 
         Assert.False(jobs.Failed, jobs.FailureReason);
         Assert.Equal(["wechatrobot/knowledge/a.txt"], storage.Deleted);
-        Assert.Equal(["kb_cosine_3_g1", "kb_cosine_3_g2"], vectors.Deleted.Select(item => item.Collection.Name).Order().ToArray());
+        Assert.Equal(["kb_cosine_3_g1", "kb_cosine_3_g2"], vectors.Deleted.Select(item => item.Collection.Name).Distinct().Order().ToArray());
+        Assert.Equal(4, vectors.Deleted.Count);
         Assert.All(vectors.Deleted, item => Assert.Equal(versionId, item.VersionId));
         Assert.True(jobs.Completed);
         Assert.False(jobs.Failed);

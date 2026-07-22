@@ -1,8 +1,12 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
+using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
+using WechatRobot.Application.Storage;
 using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
@@ -160,6 +164,152 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             .SingleAsync(job => job.Id == jobId, TestContext.Current.CancellationToken)).Status);
     }
 
+    [Fact]
+    public async Task Physical_delete_cancels_leased_index_and_cleanup_drains_then_removes_racing_qdrant_write()
+    {
+        await using var qdrant = new ContainerBuilder("qdrant/qdrant:v1.18.2").WithPortBinding(6333, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request => request.ForPort(6333).ForPath("/readyz"))).Build();
+        await qdrant.StartAsync(TestContext.Current.CancellationToken);
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{qdrant.GetMappedPublicPort(6333)}") };
+        var realVectors = new QdrantVectorStore(http);
+        var blockingVectors = new WriteThenBlockVectorStore(realVectors);
+        var storage = new RecordingStorage();
+        var services = new ServiceCollection();
+        services.AddDbContext<WechatRobotDbContext>(builder => builder.UseMySQL(_fixture.ConnectionString));
+        services.AddSingleton(new KnowledgeIndexOptions(3, VectorDistance.Cosine, 1, 2));
+        services.AddSingleton(new KnowledgeIndexWorkerOptions(TimeSpan.FromMilliseconds(450), TimeSpan.FromMilliseconds(40)));
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<ISecretProtector, PassThroughProtector>();
+        services.AddSingleton<IEmbeddingClient, ImmediateEmbeddingClient>();
+        services.AddSingleton<IVectorStore>(blockingVectors);
+        services.AddSingleton<IObjectStorage>(storage);
+        services.AddScoped<IDurableJobRepository, DurableJobRepository>();
+        services.AddScoped<IKnowledgeDocumentStore, KnowledgeDocumentStore>();
+        services.AddScoped<ModelConfigurationService>();
+        services.AddScoped<QdrantKnowledgeService>();
+        services.AddScoped<IKnowledgeService>(provider => provider.GetRequiredService<QdrantKnowledgeService>());
+        services.AddScoped<KnowledgeIndexService>();
+        await using var provider = services.BuildServiceProvider();
+        Guid documentId;
+        Guid versionId;
+        Guid jobId;
+        await using (var setupScope = provider.CreateAsyncScope())
+        {
+            var database = setupScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
+            await database.DurableJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
+            var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
+            var document = new KnowledgeDocumentEntity { Status = "uploaded" };
+            var version = Version(document.Id, 1, "approved", false);
+            var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "racing", Status = "approved" };
+            documentId = document.Id;
+            versionId = version.Id;
+            database.AddRange(tag, document, version, chunk,
+                new ModelConfigEntity
+                {
+                    Name = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding",
+                    BaseUrl = "https://fake/", Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
+                });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+            jobId = await setupScope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>()
+                .QueueIndexAsync(document.Id, version.Id, [tag.Id], false, TestContext.Current.CancellationToken);
+        }
+
+        var indexWorker = new KnowledgeIndexWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
+            provider.GetRequiredService<KnowledgeIndexWorkerOptions>());
+        var indexing = indexWorker.ProcessOnceAsync(TestContext.Current.CancellationToken);
+        await blockingVectors.WriteCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await using (var deleteScope = provider.CreateAsyncScope())
+            Assert.True(await deleteScope.ServiceProvider.GetRequiredService<IKnowledgeDocumentStore>()
+                .RequestPhysicalDeleteAsync(documentId, TestContext.Current.CancellationToken));
+        var cleanupWorker = new KnowledgeDocumentCleanupWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        var cleanup = cleanupWorker.ProcessOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(await indexing.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.True(await cleanup.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        await using var verifyScope = provider.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var indexJob = await verify.KnowledgeIndexJobs.AsNoTracking().SingleAsync(job => job.Id == jobId, TestContext.Current.CancellationToken);
+        Assert.Equal("cancelled", indexJob.Status);
+        Assert.Null(indexJob.LeaseOwner);
+        Assert.Equal("completed", (await verify.DurableJobs.AsNoTracking().SingleAsync(job =>
+            job.JobType == "CleanupKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString()), TestContext.Current.CancellationToken)).Status);
+        Assert.Empty(await realVectors.InspectVersionAsync(new VectorCollection(indexJob.CollectionName, 3, VectorDistance.Cosine), versionId,
+            TestContext.Current.CancellationToken));
+        Assert.Single(storage.Deleted);
+    }
+
+    [Fact]
+    public async Task Same_version_tag_reindex_keeps_active_tags_until_atomic_activation_in_mysql_and_qdrant()
+    {
+        await using var qdrant = new ContainerBuilder("qdrant/qdrant:v1.18.2").WithPortBinding(6333, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request => request.ForPort(6333).ForPath("/readyz"))).Build();
+        await qdrant.StartAsync(TestContext.Current.CancellationToken);
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{qdrant.GetMappedPublicPort(6333)}") };
+        var vectors = new QdrantVectorStore(http);
+        var dbOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString).Options;
+        await using var database = new WechatRobotDbContext(dbOptions);
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
+        var tagA = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
+        var tagB = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
+        var document = new KnowledgeDocumentEntity
+        {
+            Status = "active", ActiveCollectionName = $"kb_cosine_3_tag_live_{Guid.NewGuid():N}", ActiveEmbeddingDimension = 3,
+            ActiveDistance = "cosine", ActiveIndexGeneration = 1
+        };
+        var version = Version(document.Id, 1, "active", true);
+        version.IndexCollectionName = document.ActiveCollectionName;
+        version.EmbeddingDimension = 3;
+        version.VectorDistance = "cosine";
+        version.IndexGeneration = 1;
+        document.ActiveVersionId = version.Id;
+        var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "tagged", Status = "approved" };
+        database.AddRange(tagA, tagB, document, version, chunk,
+            new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagA.Id },
+            new ModelConfigEntity
+            {
+                Name = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
+                Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
+            });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var live = new VectorCollection(document.ActiveCollectionName, 3, VectorDistance.Cosine);
+        await vectors.EnsureCollectionAsync(live, TestContext.Current.CancellationToken);
+        await vectors.UpsertAsync(live,
+            [new VectorPoint(chunk.Id, document.Id, version.Id, [tagA.Id], [1, 0, 0], true, 1)], TestContext.Current.CancellationToken);
+        var service = Service(database);
+
+        var jobId = await service.QueueIndexAsync(document.Id, version.Id, [tagB.Id], true, TestContext.Current.CancellationToken);
+        database.ChangeTracker.Clear();
+        Assert.Equal([tagA.Id], await database.KnowledgeChunkTags.AsNoTracking().Where(binding => binding.KnowledgeChunkId == chunk.Id)
+            .Select(binding => binding.KnowledgeTagId).ToArrayAsync(TestContext.Current.CancellationToken));
+        var failedLease = Assert.IsType<LeasedKnowledgeIndexJob>(await service.LeaseNextAsync("stage-fail", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        var failedWork = await service.LoadIndexWorkAsync(jobId, TestContext.Current.CancellationToken);
+        Assert.Equal([tagB.Id], Assert.Single(failedWork.Chunks).TagIds);
+        var failedStaging = new VectorCollection(failedLease.CollectionName, 3, VectorDistance.Cosine);
+        await vectors.EnsureCollectionAsync(failedStaging, TestContext.Current.CancellationToken);
+        await vectors.UpsertAsync(failedStaging,
+            [new VectorPoint(chunk.Id, document.Id, version.Id, [tagB.Id], [0, 1, 0], false, failedLease.Generation)], TestContext.Current.CancellationToken);
+        Assert.Single(await service.SearchVisibleAsync([1, 0, 0], [tagA.Id], vectors, 5, TestContext.Current.CancellationToken));
+        Assert.Empty(await service.SearchVisibleAsync([0, 1, 0], [tagB.Id], vectors, 5, TestContext.Current.CancellationToken));
+        await service.MarkIndexFailedAsync(jobId, failedLease.LeaseOwner, "staged failure", false, TestContext.Current.CancellationToken);
+        Assert.Equal([tagA.Id], await database.KnowledgeChunkTags.AsNoTracking().Where(binding => binding.KnowledgeChunkId == chunk.Id)
+            .Select(binding => binding.KnowledgeTagId).ToArrayAsync(TestContext.Current.CancellationToken));
+
+        await service.QueueIndexAsync(document.Id, version.Id, [tagB.Id], true, TestContext.Current.CancellationToken);
+        database.ChangeTracker.Clear();
+        Assert.NotNull(await service.LeaseNextAsync("stage-success", DateTime.UtcNow, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        await new KnowledgeIndexService(new TagBEmbeddingClient(), vectors, service, new KnowledgeIndexOptions(3, VectorDistance.Cosine))
+            .IndexAsync(jobId, TestContext.Current.CancellationToken);
+        database.ChangeTracker.Clear();
+
+        Assert.Equal([tagB.Id], await database.KnowledgeChunkTags.AsNoTracking().Where(binding => binding.KnowledgeChunkId == chunk.Id)
+            .Select(binding => binding.KnowledgeTagId).ToArrayAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await service.SearchVisibleAsync([1, 0, 0], [tagA.Id], vectors, 5, TestContext.Current.CancellationToken));
+        Assert.Single(await service.SearchVisibleAsync([0, 1, 0], [tagB.Id], vectors, 5, TestContext.Current.CancellationToken));
+    }
+
     private static QdrantKnowledgeService Service(WechatRobotDbContext database) => new(database,
         new ModelConfigurationService(new PassThroughProtector()), new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
 
@@ -191,6 +341,39 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             Calls++; Started.TrySetResult(); await Release.Task.WaitAsync(token);
             return new EmbeddingBatchResponse(request.Inputs.Select(_ => (IReadOnlyList<float>)new float[] { 1, 0, 0 }).ToArray());
         }
+    }
+    private sealed class ImmediateEmbeddingClient : IEmbeddingClient
+    {
+        public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(ModelProviderConfiguration configuration, EmbeddingBatchRequest request,
+            CancellationToken token = default) => Task.FromResult(new EmbeddingBatchResponse(
+                request.Inputs.Select(_ => (IReadOnlyList<float>)new float[] { 1, 0, 0 }).ToArray()));
+    }
+    private sealed class TagBEmbeddingClient : IEmbeddingClient
+    {
+        public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(ModelProviderConfiguration configuration, EmbeddingBatchRequest request,
+            CancellationToken token = default) => Task.FromResult(new EmbeddingBatchResponse(
+                request.Inputs.Select(_ => (IReadOnlyList<float>)new float[] { 0, 1, 0 }).ToArray()));
+    }
+    private sealed class WriteThenBlockVectorStore(IVectorStore inner) : IVectorStore
+    {
+        public TaskCompletionSource WriteCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => inner.EnsureCollectionAsync(collection, token);
+        public async Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token)
+        {
+            await inner.UpsertAsync(collection, points, token);
+            WriteCompleted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        }
+        public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => inner.SetVersionActiveAsync(collection, versionId, active, token);
+        public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => inner.DeleteVersionAsync(collection, versionId, token);
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => inner.InspectVersionAsync(collection, versionId, token);
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => inner.SearchAsync(request, token);
+    }
+    private sealed class RecordingStorage : IObjectStorage
+    {
+        public List<string> Deleted { get; } = [];
+        public Task DeleteAsync(string objectKey, CancellationToken token) { Deleted.Add(objectKey); return Task.CompletedTask; }
+        public Task<StoredObject> PutAsync(string objectKey, Stream content, string contentType, CancellationToken token) => throw new NotSupportedException();
     }
     private sealed class MemoryVectorStore : IVectorStore
     {

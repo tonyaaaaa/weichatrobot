@@ -1,6 +1,7 @@
 using System.Data;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using MySql.Data.MySqlClient;
@@ -26,7 +27,7 @@ public sealed class QdrantKnowledgeService(
     public async Task<Guid> QueueIndexAsync(Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds, bool explicitReindex, CancellationToken token)
     {
         if (tagIds.Count == 0) throw new ArgumentException("At least one knowledge tag is required.", nameof(tagIds));
-        var distinctTags = tagIds.Distinct().ToArray();
+        var distinctTags = tagIds.Distinct().Order().ToArray();
         if (await database.KnowledgeTags.CountAsync(tag => tag.IsEnabled && distinctTags.Contains(tag.Id), token) != distinctTags.Length)
             throw new ArgumentException("Only enabled knowledge tags may be indexed.", nameof(tagIds));
         var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, token) ?? throw new KeyNotFoundException();
@@ -45,12 +46,8 @@ public sealed class QdrantKnowledgeService(
         var generation = (existing?.Generation ?? 0) + 1;
         var stagingCollection = StagingCollection(options.CollectionName, id, generation);
         await using var transaction = await BeginTransactionAsync(token);
-        database.KnowledgeChunkTags.RemoveRange(await database.KnowledgeChunkTags
-            .Where(binding => database.KnowledgeChunks.Where(chunk => chunk.KnowledgeDocumentVersionId == versionId).Select(chunk => chunk.Id).Contains(binding.KnowledgeChunkId))
-            .ToArrayAsync(token));
         var chunks = await database.KnowledgeChunks.Where(chunk => chunk.KnowledgeDocumentVersionId == versionId && chunk.Status == "approved").ToArrayAsync(token);
         if (chunks.Length == 0) throw new InvalidOperationException("The version has no approved chunks.");
-        database.KnowledgeChunkTags.AddRange(chunks.SelectMany(chunk => distinctTags.Select(tagId => new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagId })));
         var now = timeProvider.GetUtcNow().UtcDateTime;
         if (existing is null)
         {
@@ -66,6 +63,7 @@ public sealed class QdrantKnowledgeService(
         existing.CollectionName = stagingCollection;
         existing.Dimension = options.Dimension;
         existing.Distance = DistanceValue(options.Distance);
+        existing.PendingTagIdsJson = SerializeTagIds(distinctTags);
         existing.Status = "pending";
         existing.AttemptCount = 0;
         existing.NextAttemptAtUtc = now;
@@ -122,15 +120,10 @@ public sealed class QdrantKnowledgeService(
         if (job.Operation == "cleanup" || job.Status != "leased" || job.LeaseOwner is null) throw new InvalidOperationException("The index job is not owned by an active worker.");
         var chunks = await database.KnowledgeChunks.AsNoTracking().Where(chunk => chunk.KnowledgeDocumentVersionId == job.KnowledgeDocumentVersionId && chunk.Status == "approved")
             .OrderBy(chunk => chunk.Sequence).Select(chunk => new { chunk.Id, chunk.Text }).ToArrayAsync(token);
-        var chunkIds = chunks.Select(chunk => chunk.Id).ToArray();
-        var tagRows = await (from binding in database.KnowledgeChunkTags.AsNoTracking()
-                             join tag in database.KnowledgeTags.AsNoTracking() on binding.KnowledgeTagId equals tag.Id
-                             where chunkIds.Contains(binding.KnowledgeChunkId) && tag.IsEnabled
-                             select new { binding.KnowledgeChunkId, binding.KnowledgeTagId }).ToArrayAsync(token);
-        var tags = tagRows.ToLookup(item => item.KnowledgeChunkId, item => item.KnowledgeTagId);
+        var tags = ParseTagIds(job.PendingTagIdsJson);
         return new KnowledgeIndexWork(job.Id, job.KnowledgeDocumentId, job.KnowledgeDocumentVersionId, job.PreviousActiveVersionId,
             job.CollectionName, job.Dimension, ParseDistance(job.Distance), chunks.Select(chunk => new KnowledgeIndexChunk(chunk.Id, job.KnowledgeDocumentId,
-                job.KnowledgeDocumentVersionId, chunk.Text, tags[chunk.Id].ToArray())).ToArray(), job.LeaseOwner, job.Generation,
+                job.KnowledgeDocumentVersionId, chunk.Text, tags)).ToArray(), job.LeaseOwner, job.Generation,
             job.PreviousActiveCollectionName, job.PreviousActiveEmbeddingDimension,
             job.PreviousActiveDistance is null ? null : ParseDistance(job.PreviousActiveDistance));
     }
@@ -167,6 +160,13 @@ public sealed class QdrantKnowledgeService(
                 .SetProperty(version => version.VectorDistance, DistanceValue(work.Distance)).SetProperty(version => version.IndexGeneration, work.Generation)
                 .SetProperty(version => version.UpdatedAtUtc, now), token);
         if (versionChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
+        var chunkIds = work.Chunks.Select(chunk => chunk.Id).ToArray();
+        if (database.Database.IsRelational())
+            await database.KnowledgeChunkTags.Where(binding => chunkIds.Contains(binding.KnowledgeChunkId)).ExecuteDeleteAsync(token);
+        else
+            database.KnowledgeChunkTags.RemoveRange(await database.KnowledgeChunkTags.Where(binding => chunkIds.Contains(binding.KnowledgeChunkId)).ToArrayAsync(token));
+        database.KnowledgeChunkTags.AddRange(work.Chunks.SelectMany(chunk => chunk.TagIds.Select(tagId =>
+            new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagId })));
         if (work.PreviousActiveVersionId is { } oldVersion && work.PreviousActiveCollectionName is { } oldCollection && oldCollection != work.CollectionName)
         {
             if (oldVersion != work.VersionId)
@@ -175,10 +175,11 @@ public sealed class QdrantKnowledgeService(
             await AddCleanupJobAsync(work.DocumentId, oldVersion, oldCollection, work.PreviousActiveEmbeddingDimension ?? work.Dimension,
                 work.PreviousActiveDistance ?? work.Distance, 0, now, token);
         }
-        await database.KnowledgeIndexJobs.Where(job => job.Id == work.JobId && job.Status == "activating" && job.LeaseOwner == work.LeaseOwner)
+        var completed = await database.KnowledgeIndexJobs.Where(job => job.Id == work.JobId && job.Status == "activating" && job.LeaseOwner == work.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed").SetProperty(job => job.LeaseOwner, (string?)null)
                 .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null).SetProperty(job => job.FailureReason, (string?)null)
                 .SetProperty(job => job.Version, job => job.Version + 1).SetProperty(job => job.UpdatedAtUtc, now), token);
+        if (completed != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
         await database.SaveChangesAsync(token);
         if (transaction is not null) await transaction.CommitAsync(token);
         return true;
@@ -210,6 +211,9 @@ public sealed class QdrantKnowledgeService(
     {
         var job = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(item => item.Id == jobId, token) ?? throw new KeyNotFoundException();
         if (job.Status is not ("failed" or "retrying")) throw new InvalidOperationException("Only failed or retrying index jobs can be retried.");
+        if (await database.KnowledgeDocuments.AnyAsync(document => document.Id == job.KnowledgeDocumentId &&
+            (document.IsDeleteRequested || document.Status == "disabled"), token))
+            throw new InvalidOperationException("A deleted document cannot restart indexing.");
         job.Status = "pending"; job.NextAttemptAtUtc = timeProvider.GetUtcNow().UtcDateTime; job.LeaseOwner = null; job.LeaseExpiresAtUtc = null;
         job.FailureReason = null; job.Version++; job.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
         await database.SaveChangesAsync(token);
@@ -257,9 +261,11 @@ public sealed class QdrantKnowledgeService(
         foreach (var chunk in expected)
         {
             if (!actualById.TryGetValue(chunk.Id, out var point)) { drift.Add($"missing:{chunk.Id:D}"); continue; }
-            if (point.DocumentId != documentId || point.VersionId != active || !point.Active || point.Generation != (document.ActiveIndexGeneration ?? point.Generation) ||
+            if (point.DocumentId != documentId || point.VersionId != active || !point.Active || document.ActiveIndexGeneration is null ||
+                point.Generation != document.ActiveIndexGeneration.Value ||
                 !point.TagIds.ToHashSet().SetEquals(tags[chunk.Id])) drift.Add($"payload:{chunk.Id:D}");
         }
+        if (document.ActiveIndexGeneration is null) drift.Insert(0, "missing-active-generation");
         foreach (var unexpected in actual.Where(point => !ids.Contains(point.ChunkId))) drift.Add($"unexpected:{unexpected.ChunkId:D}");
         return new KnowledgeIndexStatus(document.Id, active, document.Status, name, expected.Length, actual.Count,
             drift.Count == 0 ? "consistent" : "drift", drift, jobs);
@@ -306,6 +312,11 @@ public sealed class QdrantKnowledgeService(
         return versions.Concat(pending).Select(item => (new VectorCollection(item.CollectionName, item.Dimension, ParseDistance(item.Distance)), item.VersionId)).Distinct().ToArray();
     }
 
+    public Task<DateTime?> GetDocumentIndexDrainDeadlineAsync(Guid documentId, DateTime nowUtc, CancellationToken token) => database.KnowledgeIndexJobs
+        .AsNoTracking().Where(job => job.KnowledgeDocumentId == documentId && job.Operation != "cleanup" && job.LeaseExpiresAtUtc > nowUtc &&
+            (job.Status == "cancelled" || job.Status == "leased" || job.Status == "activating"))
+        .MaxAsync(job => (DateTime?)job.LeaseExpiresAtUtc, token);
+
     private async Task AddCleanupJobAsync(Guid documentId, Guid versionId, string collection, int dimension, VectorDistance distance,
         int generation, DateTime now, CancellationToken token)
     {
@@ -326,5 +337,7 @@ public sealed class QdrantKnowledgeService(
     private static string StagingCollection(string baseName, Guid jobId, int generation) => $"{baseName}_g{generation}_{jobId:N}";
     private static string DistanceValue(VectorDistance distance) => distance.ToString().ToLowerInvariant();
     private static VectorDistance ParseDistance(string value) => Enum.Parse<VectorDistance>(value, true);
+    private static string SerializeTagIds(IEnumerable<Guid> tagIds) => JsonSerializer.Serialize(tagIds.Order().Select(id => id.ToString("D")));
+    private static Guid[] ParseTagIds(string json) => JsonSerializer.Deserialize<string[]>(json)?.Select(Guid.Parse).Order().ToArray() ?? [];
     private sealed record VectorContractRow(Guid VersionId, string CollectionName, int Dimension, string Distance);
 }

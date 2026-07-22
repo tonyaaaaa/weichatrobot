@@ -27,11 +27,21 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
             var objectKeys = await database.KnowledgeDocumentVersions.AsNoTracking().Where(version => version.KnowledgeDocumentId == documentId && version.ObjectKey != "")
                 .Select(version => version.ObjectKey).Distinct().ToArrayAsync(token);
             var knowledge = scope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>();
-            var contracts = await knowledge.GetDocumentVectorContractsAsync(documentId, token);
+            while (await knowledge.GetDocumentIndexDrainDeadlineAsync(documentId, timeProvider.GetUtcNow().UtcDateTime, token) is { } drainDeadline)
+            {
+                var delay = drainDeadline - timeProvider.GetUtcNow().UtcDateTime + TimeSpan.FromMilliseconds(25);
+                if (delay > TimeSpan.Zero) await Task.Delay(delay, token);
+            }
             var storage = scope.ServiceProvider.GetRequiredService<IObjectStorage>();
             foreach (var key in objectKeys) await storage.DeleteAsync(key, token);
             var vectors = scope.ServiceProvider.GetRequiredService<IVectorStore>();
+            var contracts = await knowledge.GetDocumentVectorContractsAsync(documentId, token);
             foreach (var contract in contracts) await vectors.DeleteVersionAsync(contract.Collection, contract.VersionId, token);
+            contracts = (await knowledge.GetDocumentVectorContractsAsync(documentId, token)).Distinct().ToArray();
+            foreach (var contract in contracts) await vectors.DeleteVersionAsync(contract.Collection, contract.VersionId, token);
+            foreach (var contract in contracts)
+                if ((await vectors.InspectVersionAsync(contract.Collection, contract.VersionId, token)).Count != 0)
+                    throw new InvalidOperationException($"Vector cleanup verification failed for {contract.Collection.Name}/{contract.VersionId:D}.");
             await jobs.CompleteJobAsync(job.Id, job.LeaseOwner, timeProvider.GetUtcNow().UtcDateTime, token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }

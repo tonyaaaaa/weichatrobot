@@ -97,6 +97,56 @@ public sealed class KnowledgeRetrievalVisibilityTests
         Assert.Contains(status.DriftDetails, detail => detail == $"payload:{chunk.Id:D}");
     }
 
+    [Fact]
+    public async Task Consistency_check_reports_drift_when_active_generation_is_missing()
+    {
+        var dbOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var database = new WechatRobotDbContext(dbOptions);
+        var tag = new KnowledgeTagEntity { Name = "产品", NormalizedName = "产品" };
+        var document = new KnowledgeDocumentEntity
+        {
+            Status = "active", ActiveCollectionName = "kb_cosine_3_g2", ActiveEmbeddingDimension = 3,
+            ActiveDistance = "cosine", ActiveIndexGeneration = null
+        };
+        var version = Version(document.Id, "active", true);
+        document.ActiveVersionId = version.Id;
+        var chunk = Chunk(version.Id);
+        database.AddRange(tag, document, version, chunk,
+            new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tag.Id });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new RecordingVectorStore(new VectorSearchHit(chunk.Id, document.Id, version.Id, 1),
+            [new VectorPointMetadata(chunk.Id, document.Id, version.Id, [tag.Id], true, 2)]);
+        var service = new QdrantKnowledgeService(database, new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
+
+        var status = await service.GetStatusAsync(document.Id, vectors, true, TestContext.Current.CancellationToken);
+
+        Assert.Equal("drift", status.Consistency);
+        Assert.Contains(status.DriftDetails, detail => detail == "missing-active-generation");
+    }
+
+    [Fact]
+    public async Task Retry_cannot_restart_failed_index_after_physical_delete()
+    {
+        var dbOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var database = new WechatRobotDbContext(dbOptions);
+        var document = new KnowledgeDocumentEntity { Status = "disabled", IsDeleteRequested = true };
+        var version = Version(document.Id, "disabled", false);
+        var job = new KnowledgeIndexJobEntity
+        {
+            KnowledgeDocumentId = document.Id, KnowledgeDocumentVersionId = version.Id, Operation = "index", Status = "failed",
+            CollectionName = "kb_cosine_3_failed", Dimension = 3, Distance = "cosine"
+        };
+        database.AddRange(document, version, job);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var service = new QdrantKnowledgeService(database, new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RetryAsync(job.Id, TestContext.Current.CancellationToken));
+
+        Assert.Equal("failed", job.Status);
+    }
+
     private static KnowledgeDocumentVersionEntity Version(Guid documentId, string status, bool published) => new()
     {
         KnowledgeDocumentId = documentId, Version = 1, OriginalFileName = Guid.NewGuid() + ".txt", SafeFileName = "file.txt", ContentType = "text/plain",

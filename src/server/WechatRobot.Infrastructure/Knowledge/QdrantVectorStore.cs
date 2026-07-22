@@ -75,6 +75,7 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
             {
                 filter = VersionFilter(versionId), limit = 256, offset, with_payload = true, with_vector = false
             }, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.NotFound) return [];
             if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "inspect version", cancellationToken);
             using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
             var page = json.RootElement.GetProperty("result");
