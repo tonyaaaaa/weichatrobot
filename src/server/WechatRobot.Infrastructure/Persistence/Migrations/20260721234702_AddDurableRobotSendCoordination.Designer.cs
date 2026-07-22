@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WechatRobot.Infrastructure.Persistence;
 
@@ -10,9 +11,11 @@ using WechatRobot.Infrastructure.Persistence;
 namespace WechatRobot.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(WechatRobotDbContext))]
-    partial class WechatRobotDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260721234702_AddDurableRobotSendCoordination")]
+    partial class AddDurableRobotSendCoordination
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -568,7 +571,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasPrecision(10, 4)
                         .HasColumnType("decimal(10,4)")
-                        .HasDefaultValue(50m);
+                        .HasDefaultValue(0m);
 
                     b.Property<DateTime>("SendRateUpdatedAtUtc")
                         .HasColumnType("datetime(6)");

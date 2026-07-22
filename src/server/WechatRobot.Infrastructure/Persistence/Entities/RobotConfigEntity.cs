@@ -8,6 +8,11 @@ public sealed class RobotConfigEntity
     public string CallbackSecretHash { get; set; } = string.Empty;
     public bool IsEnabled { get; set; } = true;
     public int SendRateLimitPerMinute { get; set; } = 50;
+    public decimal SendRateTokens { get; set; } = 50m;
+    public DateTime SendRateUpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public string? SendLeaseOwner { get; set; }
+    public DateTime? SendLeaseExpiresAtUtc { get; set; }
+    public int SendCoordinationVersion { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

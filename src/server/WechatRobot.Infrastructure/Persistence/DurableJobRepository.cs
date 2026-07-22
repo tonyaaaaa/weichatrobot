@@ -161,22 +161,41 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
     public async Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
     {
-        var candidate = await database.SendCommands.AsNoTracking()
-            .Where(command =>
-                (((command.Status == "pending" || command.Status == "retrying") && command.NextAttemptAtUtc <= nowUtc) ||
-                (command.Status == "leased" && command.LeaseExpiresAtUtc <= nowUtc)) &&
-                !database.SendCommands.Any(earlier =>
-                    earlier.RobotConfigId == command.RobotConfigId &&
-                    earlier.Id != command.Id &&
-                    earlier.CreatedAtUtc < command.CreatedAtUtc &&
-                    earlier.Status != "completed" &&
-                    earlier.Status != "deadLetter"))
-            .OrderBy(command => command.NextAttemptAtUtc)
-            .ThenBy(command => command.CreatedAtUtc)
-            .Select(command => new { command.Id, command.Version })
+        var candidate = await (from command in database.SendCommands.AsNoTracking()
+                               join robot in database.RobotConfigs.AsNoTracking() on command.RobotConfigId equals robot.Id
+                               where (((command.Status == "pending" || command.Status == "retrying") && command.NextAttemptAtUtc <= nowUtc) ||
+                                      (command.Status == "leased" && command.LeaseExpiresAtUtc <= nowUtc)) &&
+                                     (robot.SendLeaseOwner == null || robot.SendLeaseExpiresAtUtc <= nowUtc)
+                               orderby command.NextAttemptAtUtc, command.CreatedAtUtc, command.Id
+                               select new { command.Id, command.RobotConfigId, command.Version })
             .FirstOrDefaultAsync(cancellationToken);
         if (candidate is null)
         {
+            return null;
+        }
+
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var robotState = await database.RobotConfigs.AsNoTracking().SingleAsync(value => value.Id == candidate.RobotConfigId, cancellationToken);
+        var capacity = (decimal)robotState.SendRateLimitPerMinute;
+        var elapsedSeconds = Math.Max(0, (nowUtc - robotState.SendRateUpdatedAtUtc).TotalSeconds);
+        var availableTokens = Math.Min(capacity, robotState.SendRateTokens + (decimal)(elapsedSeconds * robotState.SendRateLimitPerMinute / 60d));
+        if (availableTokens < 1)
+        {
+            return null;
+        }
+
+        var robotUpdated = await database.RobotConfigs
+            .Where(value => value.Id == robotState.Id && value.SendCoordinationVersion == robotState.SendCoordinationVersion &&
+                (value.SendLeaseOwner == null || value.SendLeaseExpiresAtUtc <= nowUtc))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(value => value.SendRateTokens, availableTokens - 1)
+                .SetProperty(value => value.SendRateUpdatedAtUtc, nowUtc)
+                .SetProperty(value => value.SendLeaseOwner, leaseOwner)
+                .SetProperty(value => value.SendLeaseExpiresAtUtc, nowUtc.Add(leaseDuration))
+                .SetProperty(value => value.SendCoordinationVersion, value => value.SendCoordinationVersion + 1), cancellationToken);
+        if (robotUpdated != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken);
             return null;
         }
 
@@ -191,24 +210,35 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
         if (updated != 1)
         {
+            await transaction.RollbackAsync(cancellationToken);
             return null;
         }
 
+        await transaction.CommitAsync(cancellationToken);
         var leased = await database.SendCommands.AsNoTracking().SingleAsync(command => command.Id == candidate.Id, cancellationToken);
-        var robot = await database.RobotConfigs.AsNoTracking().SingleAsync(config => config.Id == leased.RobotConfigId, cancellationToken);
         var payload = JsonSerializer.Deserialize<SendPayload>(leased.PayloadJson) ?? throw new InvalidOperationException("Send command payload is invalid.");
-        return new LeasedSendCommand(leased.Id, leased.RobotConfigId, payload.WorkToolRobotId, payload.GroupName, payload.Text, leased.IdempotencyKey, robot.SendRateLimitPerMinute, leased.AttemptCount, leaseOwner);
+        return new LeasedSendCommand(leased.Id, leased.RobotConfigId, payload.WorkToolRobotId, payload.GroupName, payload.Text, leased.IdempotencyKey, robotState.SendRateLimitPerMinute, leased.AttemptCount, leaseOwner);
     }
 
-    public Task CompleteSendCommandAsync(Guid commandId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken) => database.SendCommands
-        .Where(command => command.Id == commandId && command.Status == "leased" && command.LeaseOwner == leaseOwner)
-        .ExecuteUpdateAsync(setters => setters
-            .SetProperty(command => command.Status, "completed")
-            .SetProperty(command => command.SentAtUtc, completedAtUtc)
-            .SetProperty(command => command.CompletedAtUtc, completedAtUtc)
-            .SetProperty(command => command.LeaseOwner, (string?)null)
-            .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
-            .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+    public async Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var completed = await database.SendCommands
+            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(value => value.Status, "completed")
+                .SetProperty(value => value.SentAtUtc, completedAtUtc)
+                .SetProperty(value => value.CompletedAtUtc, completedAtUtc)
+                .SetProperty(value => value.LeaseOwner, (string?)null)
+                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
+        if (completed != 1 || await ReleaseRobotGuardAsync(command, cancellationToken) != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
 
     public async Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken)
     {
@@ -228,12 +258,14 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             {
                 database.DeadLetters.Add(new DeadLetterEntity { SendCommandId = command.Id, Reason = reason, PayloadJson = JsonSerializer.Serialize(command), CreatedAtUtc = failedAtUtc });
                 await database.SaveChangesAsync(cancellationToken);
+                await ReleaseRobotGuardAsync(command, cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
             return;
         }
 
-        await database.SendCommands
+        await using var retryTransaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var retried = await database.SendCommands
             .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.Status, "retrying")
@@ -242,16 +274,43 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 .SetProperty(value => value.LeaseOwner, (string?)null)
                 .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
                 .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
+        if (retried == 1)
+        {
+            await ReleaseRobotGuardAsync(command, cancellationToken);
+            await retryTransaction.CommitAsync(cancellationToken);
+        }
+        else
+        {
+            await retryTransaction.RollbackAsync(cancellationToken);
+        }
     }
 
-    public Task ReleaseSendCommandAsync(Guid commandId, string leaseOwner, DateTime availableAtUtc, CancellationToken cancellationToken) => database.SendCommands
-        .Where(command => command.Id == commandId && command.Status == "leased" && command.LeaseOwner == leaseOwner)
+    public async Task<bool> RenewSendLeasesAsync(LeasedSendCommand command, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var commandRenewed = await database.SendCommands
+            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.LeaseExpiresAtUtc, nowUtc.Add(leaseDuration)), cancellationToken);
+        var robotRenewed = await database.RobotConfigs
+            .Where(value => value.Id == command.RobotConfigId && value.SendLeaseOwner == command.LeaseOwner)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(value => value.SendLeaseExpiresAtUtc, nowUtc.Add(leaseDuration))
+                .SetProperty(value => value.SendCoordinationVersion, value => value.SendCoordinationVersion + 1), cancellationToken);
+        if (commandRenewed != 1 || robotRenewed != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    private Task<int> ReleaseRobotGuardAsync(LeasedSendCommand command, CancellationToken cancellationToken) => database.RobotConfigs
+        .Where(value => value.Id == command.RobotConfigId && value.SendLeaseOwner == command.LeaseOwner)
         .ExecuteUpdateAsync(setters => setters
-            .SetProperty(command => command.Status, "pending")
-            .SetProperty(command => command.NextAttemptAtUtc, availableAtUtc)
-            .SetProperty(command => command.LeaseOwner, (string?)null)
-            .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
-            .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+            .SetProperty(value => value.SendLeaseOwner, (string?)null)
+            .SetProperty(value => value.SendLeaseExpiresAtUtc, (DateTime?)null)
+            .SetProperty(value => value.SendCoordinationVersion, value => value.SendCoordinationVersion + 1), cancellationToken);
 
     private static TimeSpan SendRetryDelay(int attempts) => attempts switch
     {

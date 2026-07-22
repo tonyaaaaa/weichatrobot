@@ -14,6 +14,9 @@ internal sealed class RobotConfigConfiguration : IEntityTypeConfiguration<RobotC
         builder.Property(entity => entity.WorkToolRobotId).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.CallbackSecretHash).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.SendRateLimitPerMinute).HasDefaultValue(50).IsRequired();
+        builder.Property(entity => entity.SendRateTokens).HasPrecision(10, 4).HasDefaultValue(50m).IsRequired();
+        builder.Property(entity => entity.SendLeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.SendCoordinationVersion).IsConcurrencyToken();
         builder.ToTable(table => table.HasCheckConstraint("CK_robot_config_send_rate_limit", "`SendRateLimitPerMinute` BETWEEN 1 AND 60"));
         builder.HasIndex(entity => entity.WorkToolRobotId).IsUnique();
     }
