@@ -38,6 +38,7 @@ public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiF
         Assert.Contains("/api/knowledge/candidates/", routes);
         Assert.Contains("/api/knowledge/candidates/{id:guid}", routes);
         Assert.Contains("/api/knowledge/candidates/{id:guid}/reviews", routes);
+        Assert.Contains("/api/audit/conversations", routes);
     }
 
     [Fact]
@@ -84,6 +85,17 @@ public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiF
         Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.PostAsJsonAsync("/api/handoffs/manual", new { }, TestContext.Current.CancellationToken)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await human.GetAsync("/api/knowledge/candidates/", TestContext.Current.CancellationToken)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.GetAsync("/api/handoffs/", TestContext.Current.CancellationToken)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Human_agent_cannot_read_conversation_audit()
+    {
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.HumanAgent));
+
+        var response = await client.GetAsync("/api/audit/conversations", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]

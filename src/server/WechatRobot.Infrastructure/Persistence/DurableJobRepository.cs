@@ -39,6 +39,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 request.GroupName,
                 request.SenderDisplayName,
                 request.StableSenderId,
+                request.WasMentioned,
                 request.Text,
                 request.ReceivedAtUtc
             })

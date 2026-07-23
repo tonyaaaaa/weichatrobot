@@ -24,7 +24,8 @@ public sealed record InboundMessageIngestRequest(
     string SenderDisplayName,
     string Text,
     DateTime ReceivedAtUtc,
-    string? StableSenderId = null);
+    string? StableSenderId = null,
+    bool WasMentioned = false);
 
 public enum InboundMessageIngestResult
 {

@@ -11,16 +11,16 @@ The browser suite rejects any request whose host is not `127.0.0.1` or `localhos
 | Design acceptance condition | Task 18 automated evidence | Real/manual status |
 | --- | --- | --- |
 | Document upload, chunk approval, indexing | Safe Markdown upload through built UI; approved chunk and queued index asserted | TXT, PDFs, DOCX remain covered by server suites; real OSS/OCR run pending |
-| Exact/contains/regex/exclude group rules | API-seeded `技术部` preview and exclusion result asserted | Real target pending |
+| Exact/contains/regex/exclude group rules | Browser submits exact, contains, regex, and exclude rules; controlled API records all submitted modes and asserts preview/exclusion results | Real target pending |
 | Existing-group invitation and configuration | Runbook requires manual invitation and permission confirmation | Pending explicit approval |
 | New external group and contacts | Separately gated command 206/207 test | Pending separate explicit approval |
 | No-at answer using allowed knowledge/context | Sanitized recorded callback preserves `atMe=false`; server pipeline tests cover processing | Real target pending |
-| No source in group; full authorized audit evidence | Browser asserts the UI honestly reports the absent audit-read API; safe handoff evidence is visible | Full audit-page real check pending backend read API and explicit run |
+| No source in group; full authorized audit evidence | Authenticated audit API and browser display retrieval, model summary, send, handoff, and candidate evidence; signed URLs and secrets are removed | Real target pending |
 | Duplicate callback | Existing integration coverage plus real evidence key | Real target pending |
 | Rate limit, retry, dead letter | Existing server suites and operations acceptance | Real observation pending |
 | Transfer, employee notification, AI pause | API-seeded handoff reason, assignment, resolution, and transitions | Notification/real pause pending |
 | Human answer approval and later retrieval | Browser resolves handoff and approves resulting candidate | Later real semantic retrieval pending |
-| Three-role authorization | Knowledge and human navigation plus direct route guard assertions; server role tests remain authoritative | Final role/page matrix is outside Task 18 |
+| Three-role authorization | Admin, KnowledgeOperator, and HumanAgent direct-route and controlled API allow/deny matrices are asserted; server policy tests cover audit/robot endpoints | Final production page matrix remains outside Task 18 |
 
 ## Evidence handling
 
@@ -39,7 +39,8 @@ npm ci --prefix src/web/wechatrobot-admin
 npm run test --prefix src/web/wechatrobot-admin
 npm run typecheck --prefix src/web/wechatrobot-admin
 npm run build --prefix src/web/wechatrobot-admin
-python -m pytest src/ocr-service/tests -q
+$env:PYTHONPATH = (Resolve-Path 'src/ocr-service').Path
+& 'src/ocr-service/.venv/Scripts/python.exe' -m pytest src/ocr-service/tests -q
 npm ci --prefix tests/e2e
 npm test --prefix tests/e2e
 docker compose config

@@ -33,7 +33,8 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
             Normalize(callback.ReceivedName)!,
             Normalize(callback.Spoken)!,
             receivedAtUtc,
-            Normalize(callback.ConnectorStableSenderId)), cancellationToken);
+            Normalize(callback.ConnectorStableSenderId),
+            callback.AtMe == true), cancellationToken);
     }
 
     public static DeduplicationKey CreateDeduplicationKey(

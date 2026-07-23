@@ -18,6 +18,12 @@ async function login(page: Page, user: keyof typeof users): Promise<void> {
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
 }
 
+async function loginToken(page: Page, user: keyof typeof users): Promise<string> {
+  const response = await page.request.post('/api/auth/login', { data: users[user] });
+  expect(response.ok()).toBeTruthy();
+  return (await response.json()).accessToken as string;
+}
+
 test.beforeEach(async ({ page }) => {
   await reset(page);
   page.on('request', request => {
@@ -28,20 +34,59 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('login enforces role-specific navigation and route guards', async ({ page }) => {
+  await login(page, 'admin');
+  for (const [path, heading] of [['/robots', '机器人设置'], ['/groups', '群管理'], ['/knowledge/documents', '知识文档'],
+    ['/handoffs', '人工转接'], ['/audit', '会话审计']] as const) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
+  }
+
+  await page.evaluate(() => localStorage.clear());
   await login(page, 'knowledge');
   await expect(page.getByRole('link', { name: '知识库', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: '群管理' })).toHaveCount(0);
-  await page.goto('/groups');
-  await expect(page).toHaveURL('/');
+  for (const path of ['/groups', '/handoffs', '/robots']) {
+    await page.goto(path);
+    await expect(page).toHaveURL('/');
+  }
+  await page.goto('/audit');
+  await expect(page.getByRole('heading', { name: '会话审计' })).toBeVisible();
 
   await page.evaluate(() => localStorage.clear());
   await login(page, 'human');
   await expect(page.getByRole('link', { name: '人工转接' })).toBeVisible();
   await expect(page.getByRole('link', { name: '知识库', exact: true })).toHaveCount(0);
+  await page.goto('/handoffs');
+  await expect(page.getByRole('heading', { name: '人工转接' })).toBeVisible();
+  for (const path of ['/groups', '/knowledge/documents', '/audit', '/robots']) {
+    await page.goto(path);
+    await expect(page).toHaveURL('/');
+  }
+
+  const adminToken = await loginToken(page, 'admin');
+  const knowledgeToken = await loginToken(page, 'knowledge');
+  const humanToken = await loginToken(page, 'human');
+  const get = (path: string, token: string) => page.request.get(path, { headers: { Authorization: `Bearer ${token}` } });
+  const paths = ['/api/admin/model-configurations', '/api/audit/conversations', '/api/handoffs/', '/api/knowledge/candidates/'];
+  const expected = {
+    admin: [200, 200, 200, 200],
+    knowledge: [403, 200, 403, 200],
+    human: [403, 403, 200, 403]
+  };
+  for (const [role, token] of Object.entries({ admin: adminToken, knowledge: knowledgeToken, human: humanToken })) {
+    for (let index = 0; index < paths.length; index += 1)
+      expect((await get(paths[index], token)).status()).toBe(expected[role as keyof typeof expected][index]);
+  }
 });
 
-test('admin updates fake model settings and previews group rules', async ({ page }) => {
+test('admin updates robot and fake model settings and previews every group rule mode', async ({ page }) => {
   await login(page, 'admin');
+  await page.getByRole('link', { name: '机器人设置' }).click();
+  await page.getByLabel('机器人名称').fill('安全验收机器人');
+  await page.getByLabel('发送限流').fill('40');
+  await page.getByTestId('save-robot-robot-e2e').click();
+  await expect(page.getByText('机器人设置已保存。')).toBeVisible();
+
   await page.getByRole('link', { name: '模型配置' }).click();
   await expect(page.getByText('••••1234')).toBeVisible();
   await page.locator('#model-e2e-chat').fill('safe-chat-v2');
@@ -53,13 +98,21 @@ test('admin updates fake model settings and previews group rules', async ({ page
   await page.getByRole('link', { name: '群管理' }).click();
   await page.getByLabel('群配置 ID').fill('group-e2e');
   await page.getByRole('button', { name: '读取配置' }).click();
+  await page.getByTestId('add-exact-include').click();
+  await page.getByLabel('include-1-模式').fill('技术部');
+  await page.getByTestId('add-contains-include').click();
+  await page.getByLabel('include-2-模式').fill('技术');
   await page.getByPlaceholder('每行一个已知群名称').fill('技术部\n技术部-禁用');
   await page.getByTestId('preview-rules').click();
   await expect(page.getByText('技术部：将匹配')).toBeVisible();
   await expect(page.getByText('技术部-禁用：已排除')).toBeVisible();
+  const ruleEvidence = await page.request.get('/__e2e/evidence');
+  expect(await ruleEvidence.json()).toMatchObject({
+    ruleKinds: { include: ['contains', 'exact', 'regex'], exclude: ['contains'] }
+  });
 });
 
-test('knowledge operator uploads, approves chunks, queues indexing, and sees honest audit boundary', async ({ page }) => {
+test('knowledge operator uploads, approves chunks, queues indexing, and reads sanitized audit evidence', async ({ page }) => {
   await login(page, 'knowledge');
   await page.getByRole('link', { name: '知识库', exact: true }).click();
   await page.locator('#knowledge-file').setInputFiles({
@@ -79,7 +132,8 @@ test('knowledge operator uploads, approves chunks, queues indexing, and sees hon
   await expect(page.getByText('索引任务已排队。')).toBeVisible();
 
   await page.getByRole('link', { name: '会话审计' }).click();
-  await expect(page.getByText('后端暂未提供会话审计查询 API', { exact: true })).toBeVisible();
+  await expect(page.getByText('安全手册', { exact: true })).toBeVisible();
+  await expect(page.getByText('请使用安全重置页面。')).toBeVisible();
   const evidence = await page.request.get('/__e2e/evidence');
   expect(await evidence.json()).toMatchObject({
     documentIndexed: true,

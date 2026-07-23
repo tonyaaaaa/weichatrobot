@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: '.',
-  testMatch: 'admin-workflows.spec.ts',
+  testMatch: ['admin-workflows.spec.ts', 'request-classifier.spec.ts'],
   fullyParallel: false,
   workers: 1,
   reporter: [['line']],

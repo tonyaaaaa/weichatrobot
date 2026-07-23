@@ -2,6 +2,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { classifyRequest } from './request-classifier.mjs';
 
 const root = resolve(fileURLToPath(new URL('../../src/web/wechatrobot-admin/dist', import.meta.url)));
 const port = 4178;
@@ -18,10 +19,12 @@ function resetState() {
     approvedChunks: 0,
     externalProviderCalls: 0,
     workToolRequests: 0,
+    ruleKinds: { include: [], exclude: [] },
     handoffState: 'WaitingHuman',
     handoffVersion: 1,
     candidateStatus: 'pending',
     finalAnswer: '由人工确认的安全答案。',
+    robot: { id: 'robot-e2e', name: 'E2E 机器人', isEnabled: true, sendRateLimitPerMinute: 50, updatedAtUtc: '2026-07-23T00:00:00Z' },
     model: {
       id: 'model-e2e', name: 'e2e-chat', provider: 'fake-local', configurationType: 'chat',
       baseUrl: 'http://127.0.0.1:4178/__fake/chat', model: 'safe-chat-v1',
@@ -58,6 +61,13 @@ function userFromRequest(request) {
   return email ? users[email] : undefined;
 }
 
+function requiredRoles(pathname) {
+  if (pathname.startsWith('/api/admin/') || pathname.startsWith('/api/groups/') || pathname === '/api/group-rules/preview') return ['Admin'];
+  if (pathname.startsWith('/api/knowledge/') || pathname.startsWith('/api/audit/')) return ['Admin', 'KnowledgeOperator'];
+  if (pathname.startsWith('/api/handoffs/')) return ['Admin', 'HumanAgent'];
+  return [];
+}
+
 function page(items) {
   return { items, total: items.length, page: 1, pageSize: 20 };
 }
@@ -82,9 +92,14 @@ function groupConfiguration() {
 }
 
 async function handleApi(request, response, url) {
-  if (url.pathname.startsWith('/wework/') || url.pathname.startsWith('/api/worktool/')) {
+  const classification = classifyRequest(url.pathname);
+  if (classification === 'worktool') {
     state.workToolRequests += 1;
     return sendJson(response, 500, { error: 'Default E2E forbids WorkTool requests.' });
+  }
+  if (classification === 'external-provider') {
+    state.externalProviderCalls += 1;
+    return sendJson(response, 500, { error: 'Default E2E forbids external provider requests.' });
   }
 
   if (url.pathname === '/api/auth/login' && request.method === 'POST') {
@@ -103,8 +118,16 @@ async function handleApi(request, response, url) {
     const email = request.headers.authorization.replace(/^Bearer e2e-token:/, '');
     return sendJson(response, 200, { id: `${email}-id`, email, displayName: user.displayName, roles: user.roles });
   }
+  const roles = requiredRoles(url.pathname);
+  if (roles.length && !user.roles.some(role => roles.includes(role))) return sendJson(response, 403, { error: 'forbidden' });
 
   if (url.pathname === '/api/admin/model-configurations' && request.method === 'GET') return sendJson(response, 200, [state.model]);
+  if (url.pathname === '/api/admin/robots/' && request.method === 'GET') return sendJson(response, 200, [state.robot]);
+  if (url.pathname === '/api/admin/robots/robot-e2e' && request.method === 'PUT') {
+    const body = await readJson(request);
+    state.robot = { ...state.robot, ...body, updatedAtUtc: '2026-07-23T00:01:00Z' };
+    return sendJson(response, 200, state.robot);
+  }
   if (url.pathname === '/api/admin/model-configurations/e2e-chat' && request.method === 'PUT') {
     const body = await readJson(request);
     state.model = { ...state.model, ...body, hasApiKey: true, lastFour: '1234' };
@@ -118,12 +141,39 @@ async function handleApi(request, response, url) {
   if (/^\/api\/groups\/[^/]+\/configuration$/.test(url.pathname)) return sendJson(response, 200, groupConfiguration());
   if (url.pathname === '/api/group-rules/preview' && request.method === 'POST') {
     const body = await readJson(request);
+    state.ruleKinds = {
+      include: [...new Set(body.includeRules.map(rule => rule.patternKind))].sort(),
+      exclude: [...new Set(body.excludeRules.map(rule => rule.patternKind))].sort()
+    };
+    const matches = (rule, groupName) => {
+      const source = rule.ignoreCase ? groupName.toLowerCase() : groupName;
+      const pattern = rule.ignoreCase ? rule.pattern.toLowerCase() : rule.pattern;
+      if (rule.patternKind === 'exact') return source === pattern;
+      if (rule.patternKind === 'contains') return source.includes(pattern);
+      return new RegExp(rule.pattern, rule.ignoreCase ? 'i' : '').test(groupName);
+    };
     return sendJson(response, 200, {
       results: body.groupNames.map(groupName => ({
         groupName,
-        isExcluded: groupName.includes('禁用'),
-        isMatch: groupName.startsWith('技术部') && !groupName.includes('禁用')
+        isExcluded: body.excludeRules.some(rule => matches(rule, groupName)),
+        isMatch: body.includeRules.some(rule => matches(rule, groupName))
+          && !body.excludeRules.some(rule => matches(rule, groupName))
       }))
+    });
+  }
+
+  if (url.pathname === '/api/audit/conversations' && request.method === 'GET') {
+    return sendJson(response, 200, {
+      items: [{
+        id: 'audit-e2e', groupProfileId: 'group-e2e', workToolMessageId: 'recorded-e2e-message',
+        question: '如何重置密码？', answer: '请使用安全重置页面。', decision: 'Answer',
+        createdAtUtc: '2026-07-23T00:00:00Z', sources: ['安全手册'],
+        evidence: [{ documentId: 'safe-document', chunkId: 'safe-chunk', title: '安全手册' }],
+        inputSummary: { promptTemplateVersion: 'grounded-v2' },
+        send: { status: 'completed', attemptCount: 1 },
+        handoff: null, knowledgeCandidate: null
+      }],
+      total: 1, page: 1, pageSize: 20
     });
   }
 
@@ -210,9 +260,11 @@ createServer(async (request, response) => {
     if (url.pathname === '/__e2e/reset' && request.method === 'POST') { resetState(); return sendJson(response, 200, { reset: true }); }
     if (url.pathname === '/__e2e/evidence') return sendJson(response, 200, {
       documentIndexed: state.documentIndexed, approvedChunks: state.approvedChunks,
-      externalProviderCalls: state.externalProviderCalls, workToolRequests: state.workToolRequests
+      externalProviderCalls: state.externalProviderCalls, workToolRequests: state.workToolRequests,
+      ruleKinds: state.ruleKinds
     });
-    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/wework/')) return await handleApi(request, response, url);
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/wework/') || url.pathname.startsWith('/v1/')
+      || url.pathname.startsWith('/__fake/')) return await handleApi(request, response, url);
     return serveStatic(response, url.pathname);
   } catch (error) {
     return sendJson(response, 500, { error: error instanceof Error ? error.message : 'unknown error' });

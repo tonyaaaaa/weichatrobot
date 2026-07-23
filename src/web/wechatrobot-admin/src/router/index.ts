@@ -18,6 +18,7 @@ export const navigation: NavigationItem[] = [
   { name: 'handoffs', label: '人工转接', roles: ['Admin', 'HumanAgent'] },
   { name: 'audit', label: '会话审计', roles: ['Admin', 'KnowledgeOperator'] },
   { name: 'model-settings', label: '模型配置', roles: ['Admin'] },
+  { name: 'robot-settings', label: '机器人设置', roles: ['Admin'] },
   { name: 'users', label: '用户与角色', roles: ['Admin'] },
   { name: 'system-settings', label: '系统设置', roles: ['Admin'] }
 ];
@@ -41,6 +42,7 @@ export const routes: RouteRecordRaw[] = [
       { path: 'handoffs', name: 'handoffs', component: () => import('../views/handoffs/HandoffQueueView.vue'), meta: { roles: ['Admin', 'HumanAgent'] } },
       { path: 'audit', name: 'audit', component: () => import('../views/audit/ConversationAuditView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'models', name: 'model-settings', component: () => import('../views/models/ModelSettingsView.vue'), meta: { roles: ['Admin'] } },
+      { path: 'robots', name: 'robot-settings', component: () => import('../views/settings/RobotSettingsView.vue'), meta: { roles: ['Admin'] } },
       { path: 'users', name: 'users', component: () => import('../views/users/UserRolesView.vue'), meta: { roles: ['Admin'] } },
       { path: 'settings', name: 'system-settings', component: () => import('../views/settings/SystemSettingsView.vue'), meta: { roles: ['Admin'] } }
     ]
