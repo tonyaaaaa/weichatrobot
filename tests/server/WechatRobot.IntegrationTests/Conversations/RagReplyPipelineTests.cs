@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
@@ -180,7 +181,9 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
     private sealed class FakeEvidence : IRetrievalEvidenceProvider
     {
         public List<string> Queries { get; } = [];
-        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token)
+        public Task<KnowledgeTagScope> ResolveScopeAsync(IReadOnlyList<Guid> requestedTagIds, CancellationToken token) =>
+            Task.FromResult(new KnowledgeTagScope(requestedTagIds, requestedTagIds, "tag_ids:any-of-effective-visible-tags"));
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, KnowledgeTagScope scope, int limit, CancellationToken token)
         {
             Queries.Add(question);
             return Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 4, .94, [], "manual.pdf", "Warranty is two years.")]);

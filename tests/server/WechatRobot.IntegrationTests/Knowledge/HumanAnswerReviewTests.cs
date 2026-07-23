@@ -99,8 +99,9 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         Assert.NotNull(published.PublishedAtUtc);
         Assert.Equal("leased", (await db.DurableJobs.AsNoTracking().SingleAsync(x => x.Id == publishJob.Id, TestContext.Current.CancellationToken)).Status);
         await durable.CompleteJobAsync(publishJob.Id, "publisher", DateTime.UtcNow, TestContext.Current.CancellationToken);
-        var retrieval = new KnowledgeRetrievalEvidenceProvider(db, knowledge, embeddings, vectors);
-        var evidence = await retrieval.RetrieveAsync("售后申请需要提供什么？", [tag.Id], 3, TestContext.Current.CancellationToken);
+        var retrieval = new KnowledgeRetrievalEvidenceProvider(db, knowledge, new KnowledgeTagScopeResolver(db), embeddings, vectors);
+        var scope = await retrieval.ResolveScopeAsync([tag.Id], TestContext.Current.CancellationToken);
+        var evidence = await retrieval.RetrieveAsync("售后申请需要提供什么？", scope, 3, TestContext.Current.CancellationToken);
         Assert.Contains("请提交订单号。", Assert.Single(evidence).Text);
         var grounded = await new GroundedAnswerService(retrieval, new EvidenceAnswerChat(), new GroundedAnswerOptions(.1), new AnswerOutputFirewall())
             .AnswerAsync(new(Guid.NewGuid(), group.Id, "group", "售后申请需要提供什么？", [tag.Id], new([], null, false, false, [], 0),

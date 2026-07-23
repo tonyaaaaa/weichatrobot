@@ -11,6 +11,26 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeRetrievalVisibilityTests
 {
     [Fact]
+    public async Task Tag_scope_resolution_removes_disabled_requested_tags_and_adds_enabled_global_public_tags()
+    {
+        var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var database = new WechatRobotDbContext(options);
+        var requested = new KnowledgeTagEntity { Name = "产品", NormalizedName = "产品" };
+        var disabled = new KnowledgeTagEntity { Name = "停用", NormalizedName = "停用", IsEnabled = false };
+        var global = new KnowledgeTagEntity { Name = "公开", NormalizedName = "公开", IsGlobalPublic = true };
+        var disabledGlobal = new KnowledgeTagEntity { Name = "停用公开", NormalizedName = "停用公开", IsEnabled = false, IsGlobalPublic = true };
+        database.AddRange(requested, disabled, global, disabledGlobal);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var scope = await new KnowledgeTagScopeResolver(database).ResolveAsync(
+            [disabled.Id, requested.Id, requested.Id], TestContext.Current.CancellationToken);
+
+        Assert.Equal(new[] { requested.Id, disabled.Id }.Order(), scope.RequestedTagIds);
+        Assert.Equal(new[] { requested.Id, global.Id }.Order(), scope.EffectiveVisibleTagIds);
+        Assert.Equal("tag_ids:any-of-effective-visible-tags", scope.FilterDescriptor);
+    }
+
+    [Fact]
     public async Task Mysql_recheck_rejects_disabled_or_inactive_hits_even_when_vector_store_returns_them()
     {
         var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
@@ -31,11 +51,13 @@ public sealed class KnowledgeRetrievalVisibilityTests
         var vectors = new MaliciousVectorStore(allowedChunk, activeDocument, activeVersion, staleChunk, disabledDocument, disabledVersion);
         var service = new QdrantKnowledgeService(database, new ModelConfigurationService(new PassThroughProtector()),
             new KnowledgeIndexOptions(3, VectorDistance.Cosine), TimeProvider.System);
+        var scope = await new KnowledgeTagScopeResolver(database).ResolveAsync(
+            [enabledTag.Id, disabledTag.Id], TestContext.Current.CancellationToken);
 
-        var hits = await service.SearchVisibleAsync([1, 0, 0], [enabledTag.Id, disabledTag.Id], vectors, 10, TestContext.Current.CancellationToken);
+        var hits = await service.SearchVisibleAsync([1, 0, 0], scope, vectors, 10, TestContext.Current.CancellationToken);
 
         Assert.Equal(allowedChunk.Id, Assert.Single(hits).ChunkId);
-        Assert.Equal([enabledTag.Id], vectors.Request!.AllowedTagIds);
+        Assert.Equal(scope.EffectiveVisibleTagIds, vectors.Request!.EffectiveVisibleTagIds);
         Assert.Equal([activeVersion.Id], vectors.Request.ActiveVersionIds);
     }
 

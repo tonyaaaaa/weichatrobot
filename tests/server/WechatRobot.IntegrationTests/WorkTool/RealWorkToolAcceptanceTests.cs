@@ -67,8 +67,10 @@ public sealed class RealWorkToolAcceptanceTests
                 .Where(item => expectedIds.Contains(item.Id)).OrderBy(item => item.CreatedAtUtc)
                 .ToArrayAsync(TestContext.Current.CancellationToken);
             if (audits.Length != 2
-                || !ExactOperation(audits, createAuditId, 206, settings.RobotConfigId, settings.NewGroupName)
-                || !ExactOperation(audits, renameAuditId, 207, settings.RobotConfigId, settings.NewGroupName))
+                || !RealAcceptanceEvidenceVerifier.ExactOperation(audits, OperationExpectation(createAuditId, 206,
+                    settings.RobotConfigId, "Create", settings.NewGroupName, settings.MemberIds, settings.Announcement, settings.OperatorName))
+                || !RealAcceptanceEvidenceVerifier.ExactOperation(audits, OperationExpectation(renameAuditId, 207,
+                    settings.RobotConfigId, "Rename", settings.NewGroupName, [], settings.RenamedGroupName, settings.OperatorName)))
                 throw new RealAcceptanceVerificationException("group-mutation-exact-audit-mismatch");
             foreach (var audit in audits)
                 TestContext.Current.TestOutputHelper?.WriteLine("group-mutation utc={0:O} auditId={1:D} command={2}", audit.CreatedAtUtc, audit.Id, audit.WorkToolCommandNumber);
@@ -130,15 +132,26 @@ public sealed class RealWorkToolAcceptanceTests
         var disallowedAudit = disallowed is null ? null : await AuditAsync(db, disallowed.Id, token);
         var groupTags = await db.GroupProfileTags.AsNoTracking().Where(item => item.GroupProfileId == group.Id)
             .Select(item => item.KnowledgeTagId).OrderBy(item => item).ToArrayAsync(token);
+        var disallowedTag = await db.KnowledgeTags.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == manifest.DisallowedTagId, token);
+        var enabledTagMetadata = await db.KnowledgeTags.AsNoTracking().Where(item => item.IsEnabled)
+            .Select(item => new { item.Id, item.IsGlobalPublic }).ToArrayAsync(token);
+        var groupTagSet = groupTags.ToHashSet();
+        var expectedEffectiveTags = enabledTagMetadata
+            .Where(item => item.IsGlobalPublic || groupTagSet.Contains(item.Id))
+            .Select(item => item.Id).Order().ToArray();
+        var auditedTagScope = ReadTagScope(disallowedAudit);
         var forbiddenProbe = await (
             from chunk in db.KnowledgeChunks.AsNoTracking()
             join version in db.KnowledgeDocumentVersions.AsNoTracking() on chunk.KnowledgeDocumentVersionId equals version.Id
             join document in db.KnowledgeDocuments.AsNoTracking() on version.KnowledgeDocumentId equals document.Id
             join binding in db.KnowledgeChunkTags.AsNoTracking() on chunk.Id equals binding.KnowledgeChunkId
+            join tag in db.KnowledgeTags.AsNoTracking() on binding.KnowledgeTagId equals tag.Id
             where document.Id == manifest.ForbiddenDocumentId
                 && version.Id == manifest.ForbiddenVersionId
                 && chunk.Id == manifest.ForbiddenChunkId
                 && binding.KnowledgeTagId == manifest.DisallowedTagId
+                && tag.IsEnabled && !tag.IsGlobalPublic
                 && chunk.Question == manifest.DisallowedProbeQuestion
                 && chunk.Status == "approved"
                 && version.Status == "active" && version.IsPublished
@@ -179,7 +192,7 @@ public sealed class RealWorkToolAcceptanceTests
             Evidence("laterSemanticRetrieval", laterAudit?.Id, laterAudit?.CreatedAtUtc)
         };
 
-        return new(manifest.FromUtc, manifest.ToUtc, true, callbackSecretMatched, noAtWasMentioned,
+        return new RealAcceptanceEvidenceSnapshot(manifest.FromUtc, manifest.ToUtc, true, callbackSecretMatched, noAtWasMentioned,
             noAtAudit is not null && noAtAnswer is not null && noAtSend is not null && noAtSend.Status == "completed",
             duplicateCount,
             HasEvidence(allowedAudit) && EvidenceContainsTag(allowedAudit!.EvidenceJson, manifest.AllowedTagId),
@@ -188,7 +201,7 @@ public sealed class RealWorkToolAcceptanceTests
             disallowed is not null && disallowed.Text == manifest.DisallowedProbeQuestion,
             disallowed is not null && disallowed.ProcessingState == "completed"
                 && disallowedSend is not null && disallowedSend.Status == "completed",
-            disallowedAudit is not null && TagScopeFilterMatches(disallowedAudit, groupTags, manifest),
+            TagScopeFilterMatches(disallowedAudit, auditedTagScope, groupTags),
             disallowedAudit is not null && disallowedAudit.Decision == manifest.DisallowedExpectedDecision
                 && disallowedAudit.FailureCode == "scoped_zero_hits" && !HasEvidence(disallowedAudit),
             allowedAnswer is not null && allowedAudit is not null && !ContainsVisibleSource(allowedAnswer.Text, allowedAudit.EvidenceJson),
@@ -199,7 +212,15 @@ public sealed class RealWorkToolAcceptanceTests
                 && transitions.Any(item => item.ToState == "Resolved"),
             candidate is not null && review is not null && candidate.Status is "approved_pending_index" or "indexing" or "published",
             candidate?.KnowledgeDocumentVersionId is { } versionId && laterAudit is not null && EvidenceContainsVersion(laterAudit.EvidenceJson, versionId),
-            evidence);
+            evidence)
+        {
+            DisallowedTagEnabled = disallowedTag?.IsEnabled == true,
+            DisallowedTagPrivate = disallowedTag is { IsGlobalPublic: false },
+            DisallowedEffectiveScopeExcludesTag = auditedTagScope is not null
+                && !auditedTagScope.EffectiveVisibleTagIds.Contains(manifest.DisallowedTagId),
+            EnabledGlobalPublicScopeMatched = auditedTagScope is not null
+                && auditedTagScope.EffectiveVisibleTagIds.SequenceEqual(expectedEffectiveTags)
+        };
     }
 
     private static RealAcceptanceEvidenceSnapshot EmptySnapshot(RealEvidenceManifest manifest, bool identity, bool secret) =>
@@ -220,19 +241,33 @@ public sealed class RealWorkToolAcceptanceTests
     private static bool HasEvidence(RetrievalAuditEntity? audit) => audit is not null && JsonDocument.Parse(audit.EvidenceJson).RootElement.GetArrayLength() > 0;
     private static bool EvidenceContainsTag(string json, Guid tagId) => json.Contains(tagId.ToString("D"), StringComparison.OrdinalIgnoreCase);
     private static bool EvidenceContainsVersion(string json, Guid versionId) => json.Contains(versionId.ToString("D"), StringComparison.OrdinalIgnoreCase);
-    private static bool TagScopeFilterMatches(RetrievalAuditEntity audit, IReadOnlyList<Guid> groupTags, RealEvidenceManifest manifest)
+    private static bool TagScopeFilterMatches(RetrievalAuditEntity? audit, AuditedTagScope? scope, IReadOnlyList<Guid> groupTags)
     {
-        if (audit.FailureCode != "scoped_zero_hits" || HasEvidence(audit)) return false;
-        using var input = JsonDocument.Parse(audit.InputSummaryJson);
-        var root = input.RootElement;
-        if (!root.TryGetProperty("RetrievalFilter", out var filter) || filter.GetString() != "allowed-tags"
-            || !root.TryGetProperty("RetrievalResultCount", out var count) || count.GetInt32() != 0
-            || !root.TryGetProperty("AllowedTagIds", out var allowed) || allowed.ValueKind != JsonValueKind.Array)
-            return false;
-        var auditedTags = allowed.EnumerateArray().Select(item => item.GetGuid()).OrderBy(item => item).ToArray();
-        return auditedTags.SequenceEqual(groupTags.OrderBy(item => item))
-            && !auditedTags.Contains(manifest.DisallowedTagId);
+        return audit?.FailureCode == "scoped_zero_hits" && !HasEvidence(audit) && scope is not null
+            && scope.FilterDescriptor == "tag_ids:any-of-effective-visible-tags"
+            && scope.RetrievalResultCount == 0
+            && scope.RequestedTagIds.SequenceEqual(groupTags.Order());
     }
+    private static AuditedTagScope? ReadTagScope(RetrievalAuditEntity? audit)
+    {
+        if (audit is null) return null;
+        try
+        {
+            using var input = JsonDocument.Parse(audit.InputSummaryJson);
+            var root = input.RootElement;
+            if (!root.TryGetProperty("RetrievalFilter", out var filter)
+                || !root.TryGetProperty("RetrievalResultCount", out var count) || count.ValueKind != JsonValueKind.Number
+                || !root.TryGetProperty("RequestedTagIds", out var requested) || requested.ValueKind != JsonValueKind.Array
+                || !root.TryGetProperty("EffectiveVisibleTagIds", out var effective) || effective.ValueKind != JsonValueKind.Array)
+                return null;
+            return new(filter.GetString() ?? string.Empty, count.GetInt32(),
+                requested.EnumerateArray().Select(item => item.GetGuid()).Order().ToArray(),
+                effective.EnumerateArray().Select(item => item.GetGuid()).Order().ToArray());
+        }
+        catch (JsonException) { return null; }
+    }
+    private sealed record AuditedTagScope(string FilterDescriptor, int RetrievalResultCount,
+        IReadOnlyList<Guid> RequestedTagIds, IReadOnlyList<Guid> EffectiveVisibleTagIds);
     private static bool ContainsVisibleSource(string text, string evidenceJson)
     {
         if (text.Contains("来源", StringComparison.OrdinalIgnoreCase) || text.Contains("source", StringComparison.OrdinalIgnoreCase)) return true;
@@ -249,15 +284,14 @@ public sealed class RealWorkToolAcceptanceTests
         using var json = JsonDocument.Parse(payload);
         return json.RootElement.TryGetProperty("AtList", out var list) && list.ValueKind == JsonValueKind.Array && list.GetArrayLength() > 0;
     }
-    private static bool ExactOperation(IReadOnlyList<WorkToolOperationAuditEntity> audits, Guid auditId, int command,
-        Guid robotConfigId, string groupIdentifier)
+    private static RealOperationExpectation OperationExpectation(Guid auditId, int command, Guid robotConfigId,
+        string operation, string groupIdentifier, IReadOnlyList<string> memberIds, string value, string operatorName)
     {
-        var audit = audits.SingleOrDefault(item => item.Id == auditId);
-        if (audit is null || audit.Status != "Succeeded" || audit.WorkToolCommandNumber != command) return false;
-        using var request = JsonDocument.Parse(audit.SanitizedRequestJson);
-        var root = request.RootElement;
-        return root.TryGetProperty("robotConfigId", out var robot) && robot.GetGuid() == robotConfigId
-            && root.TryGetProperty("groupIdentifier", out var group) && group.GetString() == groupIdentifier;
+        var normalizedMembers = memberIds.Select(item => item.Trim()).OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        var normalizedValue = value.Trim();
+        return new(auditId, "Succeeded", command, robotConfigId, groupIdentifier.Trim(), operation,
+            normalizedMembers.Length, Hash(string.Join("\n", normalizedMembers)), normalizedValue.Length,
+            Hash(normalizedValue), operatorName.Trim());
     }
     private static bool WasMentioned(string payload)
     {
@@ -274,6 +308,8 @@ public sealed class RealWorkToolAcceptanceTests
         }
         catch (FormatException) { return false; }
     }
+    private static string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static WechatRobotDbContext Database(string connectionString)
     {
         var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(connectionString).Options;
@@ -319,7 +355,7 @@ public sealed class RealWorkToolAcceptanceTests
 
     private sealed record MutationSettings(
         Uri ApiBaseUrl, string BearerToken, string ConnectionString, Guid RobotConfigId,
-        string NewGroupName, string RenamedGroupName, string Announcement, string[] MemberIds)
+        string NewGroupName, string RenamedGroupName, string Announcement, string[] MemberIds, string OperatorName)
     {
         public static MutationSettings? TryLoad()
         {
@@ -332,12 +368,13 @@ public sealed class RealWorkToolAcceptanceTests
             var renamed = Required("WORKTOOL_GROUP_MUTATION_RENAMED_GROUP");
             var announcement = Required("WORKTOOL_GROUP_MUTATION_ANNOUNCEMENT");
             var members = Required("WORKTOOL_GROUP_MUTATION_MEMBER_IDS");
+            var operatorName = Required("WORKTOOL_GROUP_MUTATION_OPERATOR");
             var confirmed = Required("WORKTOOL_GROUP_MUTATION_TARGET_CONFIRMED");
             if (apiBase is null || bearer is null || connection is null || !Guid.TryParse(robot, out var robotId) || newGroup is null
-                || renamed is null || announcement is null || members is null || confirmed != newGroup
+                || renamed is null || announcement is null || members is null || operatorName is null || confirmed != newGroup
                 || !Uri.TryCreate(apiBase, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) return null;
             var memberIds = members.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            return memberIds.Length == 0 ? null : new(uri, bearer, connection, robotId, newGroup, renamed, announcement, memberIds);
+            return memberIds.Length == 0 ? null : new(uri, bearer, connection, robotId, newGroup, renamed, announcement, memberIds, operatorName);
         }
     }
 

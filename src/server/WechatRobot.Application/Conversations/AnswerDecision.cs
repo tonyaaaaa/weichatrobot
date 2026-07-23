@@ -1,4 +1,5 @@
 using WechatRobot.Application.Groups;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
 
 namespace WechatRobot.Application.Conversations;
@@ -18,7 +19,8 @@ public sealed record GroundedAnswerRequest(Guid MessageId, Guid GroupProfileId, 
 
 public interface IRetrievalEvidenceProvider
 {
-    Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token);
+    Task<KnowledgeTagScope> ResolveScopeAsync(IReadOnlyList<Guid> requestedTagIds, CancellationToken token);
+    Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, KnowledgeTagScope scope, int limit, CancellationToken token);
 }
 
 public sealed class RetrievalUnavailableException(string message, Exception? innerException = null) : Exception(message, innerException);

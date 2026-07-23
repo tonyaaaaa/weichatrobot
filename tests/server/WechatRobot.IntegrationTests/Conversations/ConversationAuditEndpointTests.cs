@@ -60,6 +60,8 @@ public sealed class ConversationAuditEndpointTests : IClassFixture<ConversationA
         Assert.Equal("Resolved", item.GetProperty("handoff").GetProperty("state").GetString());
         Assert.Equal("approved_pending_index", item.GetProperty("knowledgeCandidate").GetProperty("status").GetString());
         Assert.NotEmpty(item.GetProperty("sources").EnumerateArray());
+        Assert.Contains("00000000-0000-0000-0000-000000000123",
+            item.GetProperty("sources").EnumerateArray().Select(source => source.GetString()));
         Assert.Contains("[REDACTED]", json, StringComparison.Ordinal);
     }
 }
@@ -116,7 +118,7 @@ public sealed class ConversationAuditApiFactory : WebApplicationFactory<Program>
             SenderDisplayName = "机器人", Text = "请使用安全重置页面。", ReceivedAtUtc = at.AddSeconds(1), CreatedAtUtc = at.AddSeconds(1) };
         var audit = new RetrievalAuditEntity { ConversationMessageId = inbound.Id, GroupProfileId = group.Id, Decision = "Answer",
             ConfidenceThreshold = .7, ConfidenceValue = .9, ContextPolicy = "group", CreatedAtUtc = at.AddSeconds(1),
-            EvidenceJson = """[{"documentId":"d1","chunkId":"c1","title":"安全手册","url":"https://oss.test/doc?Signature=raw-signature","apiKey":"provider-secret"}]""",
+            EvidenceJson = """[{"documentId":"d1","chunkId":"c1","title":"安全手册","url":"https://oss.test/doc?Signature=raw-signature","apiKey":"provider-secret"},{"documentId":"00000000-0000-0000-0000-000000000123","chunkId":"c2"}]""",
             InputSummaryJson = """{"modelConfigurationId":"m1","authorization":"Bearer provider-secret"}""" };
         var send = new SendCommandEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, IdempotencyKey = $"grounded-reply:{inbound.Id:D}",
             PayloadJson = """{"Text":"请使用安全重置页面。","WorkToolRobotId":"secret-robot-id"}""", Status = "completed", AttemptCount = 1,

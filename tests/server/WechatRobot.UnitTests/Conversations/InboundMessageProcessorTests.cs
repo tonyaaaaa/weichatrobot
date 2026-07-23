@@ -2,6 +2,7 @@ using System.Text.Json;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Handoffs;
@@ -143,7 +144,9 @@ public sealed class InboundMessageProcessorTests
     private sealed class FakeRetrieval : IRetrievalEvidenceProvider
     {
         public string Query { get; private set; } = string.Empty;
-        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token)
+        public Task<KnowledgeTagScope> ResolveScopeAsync(IReadOnlyList<Guid> requestedTagIds, CancellationToken token) =>
+            Task.FromResult(new KnowledgeTagScope(requestedTagIds, requestedTagIds, "tag_ids:any-of-effective-visible-tags"));
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, KnowledgeTagScope scope, int limit, CancellationToken token)
         {
             Query = question;
             return Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1, .9, [], "internal", "evidence")]);

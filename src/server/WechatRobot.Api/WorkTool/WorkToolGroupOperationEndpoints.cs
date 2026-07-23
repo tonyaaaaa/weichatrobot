@@ -108,7 +108,7 @@ public static class WorkToolGroupOperationEndpoints
     private static async Task<IResult> PreviewAsync(GroupOperationRequest request, ClaimsPrincipal user, WechatRobotDbContext database, GroupOperationConfirmationService confirmation, CancellationToken cancellationToken)
     {
         if (!TryBuild(request, out var operation, out var sanitized, out var error)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["operation"] = [error!] });
-        var operatorName = RequireOperator(user);
+        if (!TryGetOperator(user, out var operatorName)) return Results.Forbid();
         var now = DateTime.UtcNow;
         var token = confirmation.Issue(operatorName, sanitized, now, ConfirmationLifetime);
         database.WorkToolOperationConfirmations.Add(new WorkToolOperationConfirmationEntity { TokenHash = Hash(token), OperatorName = operatorName, PayloadHash = Hash(sanitized), ExpiresAtUtc = now.Add(ConfirmationLifetime) });
@@ -120,7 +120,7 @@ public static class WorkToolGroupOperationEndpoints
     private static async Task<IResult> ExecuteAsync(ExecuteOperationRequest request, ClaimsPrincipal user, WechatRobotDbContext database, GroupOperationConfirmationService confirmation, IWorkToolClient client, CancellationToken cancellationToken)
     {
         if (!TryBuild(request.Operation, out var operation, out var sanitized, out var error)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["operation"] = [error!] });
-        var operatorName = RequireOperator(user);
+        if (!TryGetOperator(user, out var operatorName)) return Results.Forbid();
         var now = DateTime.UtcNow;
         var confirmationRow = await database.WorkToolOperationConfirmations.SingleOrDefaultAsync(item => item.TokenHash == Hash(request.ConfirmationToken), cancellationToken);
         var valid = confirmationRow is not null && confirmationRow.ConsumedAtUtc is null && confirmationRow.ExpiresAtUtc >= now && confirmationRow.OperatorName == operatorName && confirmationRow.PayloadHash == Hash(sanitized) && confirmation.IsValid(request.ConfirmationToken, operatorName, sanitized, now);
@@ -148,7 +148,18 @@ public static class WorkToolGroupOperationEndpoints
     }
 
     private static WorkToolOperationAuditEntity NewAudit(string operatorName, WorkToolGroupOperationKind operation, string request, string status, string? result) => new() { OperatorName = operatorName, Operation = operation.ToString(), WorkToolCommandNumber = operation == WorkToolGroupOperationKind.Create ? 206 : 207, SanitizedRequestJson = request, Status = status, Result = SafeResult(result) };
-    private static string RequireOperator(ClaimsPrincipal user) => user.Identity?.Name ?? "unknown";
+    private static bool TryGetOperator(ClaimsPrincipal user, out string operatorName)
+    {
+        operatorName = new[]
+            {
+                user.Identity?.Name,
+                user.FindFirstValue(ClaimTypes.NameIdentifier),
+                user.FindFirstValue("sub")
+            }
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim()
+            ?? string.Empty;
+        return operatorName.Length > 0;
+    }
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static string? SafeResult(string? value) => string.IsNullOrWhiteSpace(value) ? value : value.Length > 512 ? value[..512] : value;
     private static string MaskRobotId(string value) => value.Length <= 4 ? "****" : $"***{value[^4..]}";

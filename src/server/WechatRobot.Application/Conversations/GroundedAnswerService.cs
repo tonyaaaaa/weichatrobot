@@ -1,6 +1,7 @@
 using System.Text;
 using System.Security.Cryptography;
 using System.Text.Json;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
 
 namespace WechatRobot.Application.Conversations;
@@ -11,14 +12,25 @@ public sealed class GroundedAnswerService(IRetrievalEvidenceProvider retrieval, 
     {
         options.Validate();
         var contextPolicy = $"senderIsolated={request.ContextPolicy.SenderIsolated};turns={request.ContextPolicy.HistoryTurns};idleMinutes={request.ContextPolicy.IdleTimeoutMinutes};tokenCap={request.ContextPolicy.TokenCap};summary={request.ContextPolicy.SummaryEnabled};botHistory={request.ContextPolicy.IncludeBotHistory}";
-        var inputSummaryJson = BuildInputSummary(request, null);
+        KnowledgeTagScope scope;
+        try
+        {
+            scope = await retrieval.ResolveScopeAsync(request.AllowedTagIds, token);
+        }
+        catch (RetrievalUnavailableException)
+        {
+            scope = new(request.AllowedTagIds.Distinct().Order().ToArray(), [], "not-sent:tag-scope-resolution-failed");
+            return Result(AnswerDecisionKind.SystemFailure, options.SystemFailureText, [], null, contextPolicy, "retrieval_unavailable",
+                BuildInputSummary(request, scope, null));
+        }
+        var inputSummaryJson = BuildInputSummary(request, scope, null);
         if (options.SensitiveTerms.Any(term => request.Question.Contains(term, StringComparison.OrdinalIgnoreCase)))
             return Result(AnswerDecisionKind.Handoff, options.SensitiveHandoffText, [], null, contextPolicy, "sensitive_topic", inputSummaryJson);
 
         IReadOnlyList<RetrievalEvidence> evidence;
         try
         {
-            evidence = await retrieval.RetrieveAsync(request.RetrievalQuery?.Query ?? request.Question, request.AllowedTagIds, options.MaximumEvidence, token);
+            evidence = await retrieval.RetrieveAsync(request.RetrievalQuery?.Query ?? request.Question, scope, options.MaximumEvidence, token);
         }
         catch (RetrievalUnavailableException)
         {
@@ -29,10 +41,10 @@ public sealed class GroundedAnswerService(IRetrievalEvidenceProvider retrieval, 
             return Result(AnswerDecisionKind.SystemFailure, options.SystemFailureText, [], null, contextPolicy, "embedding_unavailable", inputSummaryJson);
         }
 
-        inputSummaryJson = BuildInputSummary(request, evidence.Count);
+        inputSummaryJson = BuildInputSummary(request, scope, evidence.Count);
         var confidence = evidence.Count == 0 ? (double?)null : evidence.Max(item => item.Similarity);
         if (confidence is null || confidence < options.ConfidenceThreshold)
-            return NoEvidence(request, evidence, confidence, contextPolicy, inputSummaryJson);
+            return NoEvidence(scope, evidence, confidence, contextPolicy, inputSummaryJson);
 
         var prompt = BuildPrompt(request, evidence);
         try
@@ -63,10 +75,10 @@ public sealed class GroundedAnswerService(IRetrievalEvidenceProvider retrieval, 
         }
     }
 
-    private GroundedAnswerResult NoEvidence(GroundedAnswerRequest request, IReadOnlyList<RetrievalEvidence> evidence, double? confidence,
+    private GroundedAnswerResult NoEvidence(KnowledgeTagScope scope, IReadOnlyList<RetrievalEvidence> evidence, double? confidence,
         string contextPolicy, string inputSummaryJson)
     {
-        var failureCode = evidence.Count == 0 && request.AllowedTagIds.Count > 0 ? "scoped_zero_hits" : null;
+        var failureCode = evidence.Count == 0 && scope.EffectiveVisibleTagIds.Count > 0 ? "scoped_zero_hits" : null;
         return options.NoEvidencePolicy switch
         {
             NoEvidencePolicy.Clarification => Result(AnswerDecisionKind.Clarification, options.ClarificationText, evidence, confidence, contextPolicy, failureCode, inputSummaryJson),
@@ -102,7 +114,7 @@ public sealed class GroundedAnswerService(IRetrievalEvidenceProvider retrieval, 
         string contextPolicy, string? failureCode = null, string inputSummaryJson = "{}") => new(new(kind, text),
         new(evidence, options.ConfidenceThreshold, confidence, contextPolicy, kind.ToString(), failureCode, inputSummaryJson));
 
-    private string BuildInputSummary(GroundedAnswerRequest request, int? retrievalResultCount)
+    private string BuildInputSummary(GroundedAnswerRequest request, KnowledgeTagScope scope, int? retrievalResultCount)
     {
         var query = request.RetrievalQuery?.Query ?? request.Question;
         var ids = request.RetrievalQuery?.ContextMessageIds ?? [];
@@ -114,8 +126,9 @@ public sealed class GroundedAnswerService(IRetrievalEvidenceProvider retrieval, 
             ContextHash = Hash(string.Join("|", ids)),
             SummaryHash = string.IsNullOrEmpty(summary) ? null : Hash(summary), SummaryLength = summary?.Length ?? 0,
             PromptTemplateVersion = "grounded-v2", ModelConfigurationId = request.ModelConfigurationId,
-            RetrievalFilter = request.AllowedTagIds.Count > 0 ? "allowed-tags" : "global-public-only",
-            AllowedTagIds = request.AllowedTagIds.OrderBy(id => id).ToArray(),
+            RetrievalFilter = scope.FilterDescriptor,
+            RequestedTagIds = scope.RequestedTagIds,
+            EffectiveVisibleTagIds = scope.EffectiveVisibleTagIds,
             RetrievalResultCount = retrievalResultCount,
             options.ConfidenceThreshold, request.DegradationReason, request.SummaryFailureCode
         });

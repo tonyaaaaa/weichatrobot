@@ -200,8 +200,11 @@ public sealed class IntegrationAdminAuthenticationHandler : AuthenticationHandle
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
+        var nameClaims = Request.Headers.ContainsKey("X-Test-No-Name")
+            ? Array.Empty<Claim>()
+            : [new Claim(ClaimTypes.Name, "model-admin")];
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.Name, "model-admin"), new Claim(ClaimTypes.Role, SystemRoles.Admin)],
+            nameClaims.Append(new Claim(ClaimTypes.Role, SystemRoles.Admin)),
             Scheme.Name));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name)));
     }

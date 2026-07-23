@@ -13,6 +13,7 @@ using WechatRobot.Worker.Jobs;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Models;
+using WechatRobot.Application.Knowledge;
 
 namespace WechatRobot.IntegrationTests.Messaging;
 
@@ -160,7 +161,9 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
 
     private sealed class FakeEvidenceProvider : IRetrievalEvidenceProvider
     {
-        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token) =>
+        public Task<KnowledgeTagScope> ResolveScopeAsync(IReadOnlyList<Guid> requestedTagIds, CancellationToken token) =>
+            Task.FromResult(new KnowledgeTagScope(requestedTagIds, requestedTagIds, "tag_ids:any-of-effective-visible-tags"));
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, KnowledgeTagScope scope, int limit, CancellationToken token) =>
             Task.FromResult<IReadOnlyList<RetrievalEvidence>>([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1, .99, [], "fake", "fixed evidence")]);
     }
 

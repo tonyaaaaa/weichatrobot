@@ -379,18 +379,22 @@ public sealed class QdrantKnowledgeService(
             drift.Count == 0 ? "consistent" : "drift", drift, jobs);
     }
 
-    public async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleAsync(IReadOnlyList<float> vector, IReadOnlyList<Guid> allowedTagIds,
+    public async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleAsync(IReadOnlyList<float> vector, IReadOnlyList<Guid> requestedTagIds,
+        IVectorStore vectors, int limit, CancellationToken token)
+    {
+        var scope = await new KnowledgeTagScopeResolver(database).ResolveAsync(requestedTagIds, token);
+        return await SearchVisibleAsync(vector, scope, vectors, limit, token);
+    }
+
+    public async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleAsync(IReadOnlyList<float> vector, KnowledgeTagScope scope,
         IVectorStore vectors, int limit, CancellationToken token)
     {
         const int maximumCandidateCount = 200;
         var searchLimit = Math.Clamp(limit, 1, 50);
-        var enabledTags = await database.KnowledgeTags.AsNoTracking().Where(tag => tag.IsEnabled).ToArrayAsync(token);
-        var global = enabledTags.SingleOrDefault(tag => tag.IsGlobalPublic)?.Id;
-        var allowedSet = allowedTagIds.Distinct().Take(GuidBatchQuery.MaximumBatchSize).ToHashSet();
-        var enabledAllowed = enabledTags.Where(tag => !tag.IsGlobalPublic && allowedSet.Contains(tag.Id)).Select(tag => tag.Id).ToArray();
-        if (enabledAllowed.Length == 0 && global is null) return [];
-
-        var visibleTagIds = enabledAllowed.Concat(global is { } globalId ? [globalId] : []).ToArray();
+        if (!string.Equals(scope.FilterDescriptor, KnowledgeTagScopeResolver.EffectiveVisibleTagsFilter, StringComparison.Ordinal))
+            throw new ArgumentException("Knowledge tag scope uses an unsupported filter descriptor.", nameof(scope));
+        var visibleTagIds = scope.EffectiveVisibleTagIds.Distinct().Order().ToArray();
+        if (visibleTagIds.Length == 0) return [];
         var eligibleVersionIds = new HashSet<Guid>();
         foreach (var batch in GuidBatchQuery.CreateBatches(visibleTagIds))
         {
@@ -434,7 +438,7 @@ public sealed class QdrantKnowledgeService(
                     var requestLimit = Math.Max(1,
                         maximumCandidateCount / contracts.Length + (index < maximumCandidateCount % contracts.Length ? 1 : 0));
                     var request = new VectorSearchRequest(new VectorCollection(contract.CollectionName, contract.Dimension, ParseDistance(contract.Distance)),
-                        vector, enabledAllowed, contract.ActiveVersionIds, global, requestLimit);
+                        vector, visibleTagIds, contract.ActiveVersionIds, requestLimit);
                     candidatePages[index] = (await vectors.SearchAsync(request, token)).Take(requestLimit).ToArray();
                 }
                 finally { concurrency.Release(); }

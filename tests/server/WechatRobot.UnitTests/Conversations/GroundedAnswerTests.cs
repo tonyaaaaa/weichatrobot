@@ -1,5 +1,6 @@
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
 using System.Text.Json;
 
@@ -84,9 +85,32 @@ public sealed class GroundedAnswerTests
         Assert.Empty(result.Audit.Evidence);
         Assert.Equal(0, model.CallCount);
         using var input = JsonDocument.Parse(result.Audit.InputSummaryJson);
-        Assert.Equal("allowed-tags", input.RootElement.GetProperty("RetrievalFilter").GetString());
+        Assert.Equal("tag_ids:any-of-effective-visible-tags", input.RootElement.GetProperty("RetrievalFilter").GetString());
         Assert.Equal(0, input.RootElement.GetProperty("RetrievalResultCount").GetInt32());
-        Assert.Equal([TagId], input.RootElement.GetProperty("AllowedTagIds").EnumerateArray().Select(item => item.GetGuid()));
+        Assert.Equal([TagId], input.RootElement.GetProperty("RequestedTagIds").EnumerateArray().Select(item => item.GetGuid()));
+        Assert.Equal([TagId], input.RootElement.GetProperty("EffectiveVisibleTagIds").EnumerateArray().Select(item => item.GetGuid()));
+    }
+
+    [Fact]
+    public async Task Audit_uses_the_exact_resolved_scope_sent_to_retrieval()
+    {
+        var disabledRequested = Guid.NewGuid();
+        var globalPublic = Guid.NewGuid();
+        var scope = new KnowledgeTagScope(
+            new[] { TagId, disabledRequested }.Order().ToArray(),
+            new[] { TagId, globalPublic }.Order().ToArray(),
+            "tag_ids:any-of-effective-visible-tags");
+        var retrieval = new FakeRetrieval(scope);
+
+        var result = await Service(retrieval, new FakeChatClient("unused"))
+            .AnswerAsync(Request("scope probe") with { AllowedTagIds = [disabledRequested, TagId] }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, retrieval.ResolveScopeCallCount);
+        Assert.Same(scope, retrieval.LastScope);
+        using var input = JsonDocument.Parse(result.Audit.InputSummaryJson);
+        Assert.Equal(scope.RequestedTagIds, input.RootElement.GetProperty("RequestedTagIds").EnumerateArray().Select(item => item.GetGuid()));
+        Assert.Equal(scope.EffectiveVisibleTagIds, input.RootElement.GetProperty("EffectiveVisibleTagIds").EnumerateArray().Select(item => item.GetGuid()));
+        Assert.Equal(scope.FilterDescriptor, input.RootElement.GetProperty("RetrievalFilter").GetString());
     }
 
     [Fact]
@@ -178,11 +202,28 @@ public sealed class GroundedAnswerTests
     {
         private readonly IReadOnlyList<RetrievalEvidence>? evidence;
         private readonly Exception? exception;
+        private readonly KnowledgeTagScope? scope;
         public FakeRetrieval(params RetrievalEvidence[] evidence) => this.evidence = evidence;
         public FakeRetrieval(Exception exception) => this.exception = exception;
-        public int CallCount { get; private set; }
-        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token)
+        public FakeRetrieval(KnowledgeTagScope scope, params RetrievalEvidence[] evidence)
         {
+            this.scope = scope;
+            this.evidence = evidence;
+        }
+        public int CallCount { get; private set; }
+        public int ResolveScopeCallCount { get; private set; }
+        public KnowledgeTagScope? LastScope { get; private set; }
+        public Task<KnowledgeTagScope> ResolveScopeAsync(IReadOnlyList<Guid> requestedTagIds, CancellationToken token)
+        {
+            ResolveScopeCallCount++;
+            return Task.FromResult(scope ?? new KnowledgeTagScope(
+                requestedTagIds.Distinct().Order().ToArray(),
+                requestedTagIds.Distinct().Order().ToArray(),
+                "tag_ids:any-of-effective-visible-tags"));
+        }
+        public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, KnowledgeTagScope resolvedScope, int limit, CancellationToken token)
+        {
+            LastScope = resolvedScope;
             CallCount++;
             if (exception is not null) throw exception;
             return Task.FromResult(evidence!);

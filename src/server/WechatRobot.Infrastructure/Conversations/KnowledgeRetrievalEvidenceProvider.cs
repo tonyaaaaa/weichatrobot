@@ -10,23 +10,39 @@ namespace WechatRobot.Infrastructure.Conversations;
 public sealed class KnowledgeRetrievalEvidenceProvider(
     WechatRobotDbContext database,
     QdrantKnowledgeService knowledge,
+    IKnowledgeTagScopeResolver tagScopes,
     IEmbeddingClient embeddings,
     IVectorStore vectors) : IRetrievalEvidenceProvider
 {
-    public async Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, IReadOnlyList<Guid> allowedTagIds, int limit, CancellationToken token)
+    public async Task<KnowledgeTagScope> ResolveScopeAsync(IReadOnlyList<Guid> requestedTagIds, CancellationToken token)
+    {
+        try
+        {
+            return await tagScopes.ResolveAsync(requestedTagIds, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            throw new RetrievalUnavailableException("Knowledge tag scope resolution is unavailable.", exception);
+        }
+    }
+
+    public async Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(string question, KnowledgeTagScope scope, int limit, CancellationToken token)
+    {
+        return await RetrieveCoreAsync(question, scope, limit, token);
+    }
+
+    private async Task<IReadOnlyList<RetrievalEvidence>> RetrieveCoreAsync(string question, KnowledgeTagScope scope, int limit, CancellationToken token)
     {
         try
         {
             var configuration = await knowledge.LoadEmbeddingConfigurationAsync(token);
             var embedding = await embeddings.CreateEmbeddingsAsync(configuration, new([question]), token);
             var vector = embedding.Vectors.SingleOrDefault() ?? throw new RetrievalUnavailableException("Embedding provider returned no vector.");
-            var hits = await knowledge.SearchVisibleAsync(vector, allowedTagIds, vectors, limit, token);
+            var hits = await knowledge.SearchVisibleAsync(vector, scope, vectors, limit, token);
             if (hits.Count == 0) return [];
             var ids = hits.Select(hit => hit.ChunkId).Distinct().ToArray();
-            var enabledTags = await database.KnowledgeTags.AsNoTracking().Where(tag => tag.IsEnabled).ToArrayAsync(token);
-            var globalId = enabledTags.SingleOrDefault(tag => tag.IsGlobalPublic)?.Id;
-            var visibleTags = allowedTagIds.Intersect(enabledTags.Where(tag => tag.IsEnabled).Select(tag => tag.Id)).ToHashSet();
-            if (globalId is { } global) visibleTags.Add(global);
+            var visibleTags = scope.EffectiveVisibleTagIds.ToHashSet();
             var rows = await (from chunk in database.KnowledgeChunks.AsNoTracking().Where(chunk => ids.Contains(chunk.Id))
                               join version in database.KnowledgeDocumentVersions.AsNoTracking() on chunk.KnowledgeDocumentVersionId equals version.Id
                               join document in database.KnowledgeDocuments.AsNoTracking() on version.KnowledgeDocumentId equals document.Id

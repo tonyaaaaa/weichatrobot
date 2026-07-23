@@ -24,6 +24,8 @@ The browser suite rejects any request whose host is not `127.0.0.1` or `localhos
 
 The conversation-audit read path is a thin authorized HTTP mapper over an Application query contract implemented in Infrastructure. The implementation loads a page with a fixed maximum of seven set-based database reads and correlates sends only through `grounded-reply:{messageId}` or the handoff's exact start idempotency key; same-group time proximity is never used.
 
+Knowledge retrieval resolves one authoritative tag scope before search. The audit records sorted requested and effective tag IDs plus `tag_ids:any-of-effective-visible-tags`; the same effective list is sent to Qdrant. Disabled requested tags are removed and all enabled global-public tags are added.
+
 ## Evidence handling
 
 - Default artifacts contain only deterministic fixture IDs and fake credentials.
@@ -48,4 +50,4 @@ npm test --prefix tests/e2e
 docker compose config
 ```
 
-The real WorkTool categories are expected to report skipped in an ordinary run. Follow [worktool-real-group-acceptance.md](worktool-real-group-acceptance.md) only after the required human approvals.
+The real WorkTool categories are expected to report skipped in an ordinary run. Follow [worktool-real-group-acceptance.md](worktool-real-group-acceptance.md) only after the required human approvals. `docker compose config` proves interpolation and Compose topology only; with local secrets and port variables intentionally unset it does not prove image startup, dependency health, or production readiness.

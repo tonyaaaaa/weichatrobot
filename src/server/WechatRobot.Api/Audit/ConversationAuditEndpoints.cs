@@ -94,11 +94,19 @@ public static class ConversationAuditEndpoints
         evidence is not JsonArray array
             ? []
             : array.OfType<JsonObject>().Select(item =>
-                    item["title"]?.GetValue<string>()
-                    ?? item["documentId"]?.ToJsonString()
-                    ?? item["chunkId"]?.ToJsonString())
+                    ScalarValue(item["title"])
+                    ?? ScalarValue(item["documentId"])
+                    ?? ScalarValue(item["chunkId"]))
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Select(value => RedactionEnricher.RedactMessage(value!))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
+
+    private static string? ScalarValue(JsonNode? node)
+    {
+        if (node is not JsonValue value) return null;
+        if (value.TryGetValue<string>(out var text)) return text;
+        if (value.TryGetValue<Guid>(out var id)) return id.ToString("D");
+        return value.ToString();
+    }
 }

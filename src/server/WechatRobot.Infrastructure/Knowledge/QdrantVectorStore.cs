@@ -112,7 +112,7 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
 
     public async Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken cancellationToken)
     {
-        var tagIds = request.AllowedTagIds.Concat(request.GlobalPublicTagId is { } global ? [global] : []).Distinct().Select(id => id.ToString("D")).ToArray();
+        var tagIds = request.EffectiveVisibleTagIds.Distinct().Select(id => id.ToString("D")).ToArray();
         if (tagIds.Length == 0 || request.ActiveVersionIds.Count == 0) return [];
         using var response = await httpClient.PostAsJsonAsync($"/collections/{Uri.EscapeDataString(request.Collection.Name)}/points/search", new
         {

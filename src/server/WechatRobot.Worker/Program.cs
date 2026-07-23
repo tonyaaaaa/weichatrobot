@@ -136,6 +136,7 @@ builder.Services.AddSingleton(handoffOptions);
 builder.Services.AddSingleton<HandoffTriggerEvaluator>();
 builder.Services.AddScoped<IHandoffOrchestrator, HandoffOrchestrator>();
 builder.Services.AddScoped<IRetrievalEvidenceProvider, KnowledgeRetrievalEvidenceProvider>();
+builder.Services.AddScoped<IKnowledgeTagScopeResolver, KnowledgeTagScopeResolver>();
 builder.Services.AddScoped<GroundedAnswerService>();
 builder.Services.AddScoped<InboundMessageProcessor>();
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client =>
