@@ -59,6 +59,24 @@ public sealed class HandoffReadEndpointTests
             .Select(item => item.GetProperty("sequence").GetInt32()).ToArray());
     }
 
+    [Fact]
+    public async Task Extreme_page_values_return_bad_request_for_every_task15_list()
+    {
+        await using var factory = new ReadApiFactory();
+        using var client = factory.CreateClient();
+        var id = Guid.NewGuid();
+        var urls = new[]
+        {
+            "/api/handoffs/?page=2147483647&pageSize=100",
+            $"/api/handoffs/{id:D}/messages?page=2147483647&pageSize=100",
+            $"/api/handoffs/{id:D}/transitions?page=2147483647&pageSize=100",
+            "/api/knowledge/candidates/?page=2147483647&pageSize=100"
+        };
+        foreach (var url in urls)
+            Assert.Equal(System.Net.HttpStatusCode.BadRequest,
+                (await client.GetAsync(url, TestContext.Current.CancellationToken)).StatusCode);
+    }
+
     public sealed class ReadApiFactory : WebApplicationFactory<Program>
     {
         private static readonly ServiceProvider InMemoryProvider = new ServiceCollection().AddEntityFrameworkInMemoryDatabase().BuildServiceProvider();

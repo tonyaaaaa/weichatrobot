@@ -10,7 +10,7 @@ namespace WechatRobot.IntegrationTests.Handoffs;
 public sealed class HandoffPipelineTests
 {
     [Fact]
-    public async Task Manual_handoff_rejects_disabled_robot_with_controlled_state_error()
+    public async Task Manual_handoff_on_disabled_robot_is_durable_and_queues_a_blocked_notification()
     {
         await using var db = Database();
         var robot = new RobotConfigEntity { Name = "disabled", WorkToolRobotId = "disabled-robot", CallbackSecretHash = "hash", IsEnabled = false };
@@ -18,8 +18,12 @@ public sealed class HandoffPipelineTests
         var message = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name,
             SenderDisplayName = "客户", Text = "人工", FallbackHash = Guid.NewGuid().ToString("N") };
         db.AddRange(robot, group, message); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
-        await Assert.ThrowsAsync<HandoffStateException>(() => new HandoffService(new EfHandoffStore(db), TimeProvider.System)
-            .StartManualAsync(new(message.Id, "人工", HandoffPauseScope.Group, null, "disabled", Guid.NewGuid()), TestContext.Current.CancellationToken));
+        var actor = Guid.NewGuid();
+        var started = await new HandoffService(new EfHandoffStore(db), TimeProvider.System)
+            .StartManualAsync(new(message.Id, "人工", HandoffPauseScope.Group, null, "disabled", actor), TestContext.Current.CancellationToken);
+        Assert.Equal("WaitingHuman", started.State);
+        Assert.Equal("blocked", (await db.SendCommands.SingleAsync(TestContext.Current.CancellationToken)).Status);
+        Assert.Equal(actor, (await db.HandoffTransitions.SingleAsync(TestContext.Current.CancellationToken)).ActorUserId);
     }
 
     [Fact]
@@ -34,11 +38,14 @@ public sealed class HandoffPipelineTests
         db.AddRange(agent, robot, group, message); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var service = new HandoffService(new EfHandoffStore(db), TimeProvider.System);
 
-        var first = await service.StartManualAsync(new(message.Id, " 需要专员 ", HandoffPauseScope.Sender, agent.Id, "manual-1", Guid.NewGuid()), TestContext.Current.CancellationToken);
-        var sameKey = await service.StartManualAsync(new(message.Id, "需要专员", HandoffPauseScope.Sender, agent.Id, "manual-1", Guid.NewGuid()), TestContext.Current.CancellationToken);
-        var sameQuestion = await service.StartManualAsync(new(message.Id, "需要专员", HandoffPauseScope.Sender, agent.Id, "manual-2", Guid.NewGuid()), TestContext.Current.CancellationToken);
+        var actor = Guid.NewGuid();
+        var first = await service.StartManualAsync(new(message.Id, " 需要专员 ", HandoffPauseScope.Sender, agent.Id, "manual-1", actor), TestContext.Current.CancellationToken);
+        var sameKey = await service.StartManualAsync(new(message.Id, "需要专员", HandoffPauseScope.Sender, agent.Id, "manual-1", actor), TestContext.Current.CancellationToken);
+        var sameQuestion = await service.StartManualAsync(new(message.Id, "需要专员", HandoffPauseScope.Sender, agent.Id, "manual-2", actor), TestContext.Current.CancellationToken);
         Assert.Equal(first.Id, sameKey.Id);
         Assert.Equal(first.Id, sameQuestion.Id);
+        await Assert.ThrowsAsync<HandoffStateException>(() => service.StartManualAsync(
+            new(message.Id, "需要专员", HandoffPauseScope.Sender, agent.Id, "manual-1", Guid.NewGuid()), TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<HandoffStateException>(() => service.StartManualAsync(
             new(message.Id, "不同原因", HandoffPauseScope.Sender, agent.Id, "manual-1", Guid.NewGuid()), TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<HandoffStateException>(() => service.StartManualAsync(
@@ -52,6 +59,7 @@ public sealed class HandoffPipelineTests
         Assert.Equal("agent.zhang", payload.RootElement.GetProperty("AtList")[0].GetString());
         Assert.Equal("manual:manual-1", handoff.StartIdempotencyKey);
         Assert.Equal(64, handoff.RequestFingerprint!.Length);
+        Assert.All(await db.HandoffTransitions.ToArrayAsync(TestContext.Current.CancellationToken), transition => Assert.Equal(actor, transition.ActorUserId));
 
         var other = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name,
             SenderDisplayName = "另一客户", StableSenderId = "stable-other", Text = "人工", FallbackHash = Guid.NewGuid().ToString("N") };
@@ -84,6 +92,7 @@ public sealed class HandoffPipelineTests
         Assert.Equal(2, initialTransitions.Length);
         Assert.Equal(("AIActive", "WaitingHuman"), (initialTransitions[0].FromState, initialTransitions[0].ToState));
         Assert.Equal(("WaitingHuman", "HumanHandling"), (initialTransitions[1].FromState, initialTransitions[1].ToState));
+        Assert.All(initialTransitions, transition => Assert.Null(transition.ActorUserId));
         var send = Assert.Single(await db.SendCommands.ToArrayAsync(TestContext.Current.CancellationToken));
         Assert.Equal(key, send.IdempotencyKey);
         using var payload = JsonDocument.Parse(send.PayloadJson);

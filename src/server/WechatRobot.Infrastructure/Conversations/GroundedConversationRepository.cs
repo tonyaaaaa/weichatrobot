@@ -138,6 +138,7 @@ public sealed class GroundedConversationRepository(
 
     public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token)
     {
+        await using var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(database, request.RobotConfigId, token);
         await using var transaction = await database.Database.BeginTransactionAsync(token);
         _ = await database.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {request.GroupProfileId} FOR UPDATE")
             .AsNoTracking().SingleAsync(token);
@@ -209,12 +210,14 @@ public sealed class GroundedConversationRepository(
             InputSummaryJson = result.Audit.InputSummaryJson,
             CreatedAtUtc = now
         });
+        var sendStatus = await MySqlRobotSendCoordinator.InitialStatusAsync(database, request.RobotConfigId, token);
         database.SendCommands.Add(new SendCommandEntity
         {
             RobotConfigId = request.RobotConfigId,
             GroupProfileId = request.GroupProfileId,
             IdempotencyKey = $"grounded-reply:{request.MessageId:D}",
             PayloadJson = JsonSerializer.Serialize(new { request.WorkToolRobotId, request.GroupName, Text = result.Decision.GroupText }),
+            Status = sendStatus,
             NextAttemptAtUtc = now,
             CreatedAtUtc = now
         });

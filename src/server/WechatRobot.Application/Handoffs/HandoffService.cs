@@ -4,7 +4,8 @@ public enum HandoffPauseScope { Group, Sender }
 
 public sealed record StartHandoffCommand(Guid QuestionMessageId, Guid RobotConfigId, Guid GroupProfileId, string WorkToolRobotId,
     string GroupName, string ReasonCode, string EvidenceJson, HandoffPauseScope PauseScope, string? StableSenderId,
-    Guid? AssigneeUserId, string AssigneeTarget, string IdempotencyKey, string? RequestReason = null);
+    Guid? AssigneeUserId, string AssigneeTarget, string IdempotencyKey, string? RequestReason = null,
+    Guid? AuthenticatedActorUserId = null);
 public sealed record HandoffRecord(Guid Id, string State, Guid? AssigneeUserId, int Version);
 public sealed record ManualStartHandoffCommand(Guid QuestionMessageId, string Reason, HandoffPauseScope PauseScope, Guid? AssigneeUserId,
     string IdempotencyKey, Guid AuthenticatedActorUserId);

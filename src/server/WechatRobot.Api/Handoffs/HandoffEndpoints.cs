@@ -26,11 +26,11 @@ public static class HandoffEndpoints
 
     private static async Task<IResult> ListAsync(string? state, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
     {
-        (page, pageSize) = Page(page, pageSize);
+        if (!Pagination.TryNormalize(page, pageSize, out page, out pageSize, out var skip)) return InvalidPage();
         var query = db.HandoffCases.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(state)) query = query.Where(x => x.State == state);
         var total = await query.CountAsync(token);
-        var items = await query.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).Skip(skip).Take(pageSize)
             .Select(x => new { x.Id, x.QuestionMessageId, x.GroupProfileId, x.State, x.ReasonCode, x.PauseScope, x.StableSenderId,
                 x.AssigneeUserId, x.ResolvedByUserId, x.Version, x.CreatedAtUtc, x.UpdatedAtUtc }).ToArrayAsync(token);
         return TypedResults.Ok(new { items, total, page, pageSize });
@@ -46,27 +46,27 @@ public static class HandoffEndpoints
 
     private static async Task<IResult> MessagesAsync(Guid id, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
     {
+        if (!Pagination.TryNormalize(page, pageSize, out page, out pageSize, out var skip)) return InvalidPage();
         if (!await db.HandoffCases.AnyAsync(x => x.Id == id, token)) return TypedResults.NotFound();
-        (page, pageSize) = Page(page, pageSize);
         var query = db.HandoffMessages.AsNoTracking().Where(x => x.HandoffCaseId == id);
         var total = await query.CountAsync(token);
-        var items = await query.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).Skip(skip).Take(pageSize)
             .Select(x => new { x.Id, x.ExternalMessageId, x.SenderDisplayName, x.AuthenticatedUserId, x.AuthenticationKind, x.Text, x.CreatedAtUtc }).ToArrayAsync(token);
         return TypedResults.Ok(new { items, total, page, pageSize });
     }
 
     private static async Task<IResult> TransitionsAsync(Guid id, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
     {
+        if (!Pagination.TryNormalize(page, pageSize, out page, out pageSize, out var skip)) return InvalidPage();
         if (!await db.HandoffCases.AnyAsync(x => x.Id == id, token)) return TypedResults.NotFound();
-        (page, pageSize) = Page(page, pageSize);
         var query = db.HandoffTransitions.AsNoTracking().Where(x => x.HandoffCaseId == id);
         var total = await query.CountAsync(token);
-        var items = await query.OrderBy(x => x.Sequence).ThenBy(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderBy(x => x.Sequence).ThenBy(x => x.Id).Skip(skip).Take(pageSize)
             .Select(x => new { x.Id, x.ActorUserId, x.Sequence, x.FromState, x.ToState, x.ReasonCode, x.CreatedAtUtc }).ToArrayAsync(token);
         return TypedResults.Ok(new { items, total, page, pageSize });
     }
 
-    private static (int Page, int PageSize) Page(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize <= 0 ? 20 : pageSize, 1, 100));
+    private static IResult InvalidPage() => TypedResults.BadRequest(new { error = "Page must not exceed 1000000." });
 
     private static async Task<IResult> StartManualAsync(ManualHandoffRequest request, ClaimsPrincipal user, HandoffService service,
         UserManager<ApplicationUser> users, CancellationToken token)

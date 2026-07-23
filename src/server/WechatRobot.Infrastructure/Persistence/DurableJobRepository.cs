@@ -164,18 +164,17 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
     public async Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken)
     {
-        await using var sendGate = await MySqlRobotSendLock.AcquireAsync(database, request.RobotConfigId, cancellationToken);
+        await using var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(database, request.RobotConfigId, cancellationToken);
         await using var transaction = database.Database.IsRelational()
             ? await database.Database.BeginTransactionAsync(cancellationToken)
             : null;
-        var enabled = await database.RobotConfigs.AsNoTracking().Where(robot => robot.Id == request.RobotConfigId)
-            .Select(robot => (bool?)robot.IsEnabled).SingleOrDefaultAsync(cancellationToken) ?? throw new KeyNotFoundException("Robot was not found.");
+        var status = await MySqlRobotSendCoordinator.InitialStatusAsync(database, request.RobotConfigId, cancellationToken);
         database.SendCommands.Add(new SendCommandEntity
         {
             RobotConfigId = request.RobotConfigId,
             IdempotencyKey = request.IdempotencyKey,
             PayloadJson = JsonSerializer.Serialize(new { request.WorkToolRobotId, request.GroupName, request.Text }),
-            Status = enabled ? "pending" : "blocked",
+            Status = status,
             NextAttemptAtUtc = DateTime.UtcNow
         });
         try
@@ -266,7 +265,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task<bool> EnsureSendEnabledAsync(LeasedSendCommand command, CancellationToken cancellationToken)
     {
         if (activeSendGate is not null) throw new InvalidOperationException("A robot send gate is already held by this repository.");
-        var sendGate = await MySqlRobotSendLock.AcquireAsync(database, command.RobotConfigId, cancellationToken);
+        var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(database, command.RobotConfigId, cancellationToken);
         try
         {
             await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);

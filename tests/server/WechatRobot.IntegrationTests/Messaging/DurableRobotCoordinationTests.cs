@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Configuration;
@@ -8,7 +9,13 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using MySql.Data.MySqlClient;
 using System.Net.Http.Json;
 using WechatRobot.Application.Jobs;
+using WechatRobot.Application.Conversations;
+using WechatRobot.Application.Handoffs;
+using WechatRobot.Application.Models;
+using WechatRobot.Application.Security;
 using WechatRobot.Application.WorkTool;
+using WechatRobot.Infrastructure.Conversations;
+using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.IntegrationTests.Infrastructure;
@@ -22,6 +29,113 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
     private readonly MySqlFixture _fixture;
 
     public DurableRobotCoordinationTests(MySqlFixture fixture) => _fixture = fixture;
+
+    [Fact]
+    public async Task Disabled_robot_blocks_both_production_entry_points_and_manual_actor_is_idempotent()
+    {
+        await using var setup = CreateDatabase();
+        await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await setup.SendCommands.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        var handoff = CreateProductionSeed(enabled: false, "handoff");
+        var grounded = CreateProductionSeed(enabled: false, "grounded");
+        var actor = Guid.NewGuid();
+        setup.AddRange(handoff.Robot, handoff.Group, handoff.Message, handoff.Session,
+            grounded.Robot, grounded.Group, grounded.Message, grounded.Session,
+            new ApplicationUser { Id = actor, UserName = $"actor-{actor:N}", NormalizedUserName = $"ACTOR-{actor:N}" });
+        await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var command = new StartHandoffCommand(handoff.Message.Id, handoff.Robot.Id, handoff.Group.Id,
+            handoff.Robot.WorkToolRobotId, handoff.Group.Name, "manual_transfer", "{}", HandoffPauseScope.Group,
+            null, null, "人工客服", $"manual-{Guid.NewGuid():N}", AuthenticatedActorUserId: actor);
+        await using (var context = CreateDatabase())
+        {
+            var store = new EfHandoffStore(context);
+            var first = await store.StartAsync(command, DateTime.UtcNow, TestContext.Current.CancellationToken);
+            var replay = await store.StartAsync(command, DateTime.UtcNow, TestContext.Current.CancellationToken);
+            Assert.Equal(first.Id, replay.Id);
+        }
+        await using (var conflictContext = CreateDatabase())
+        {
+            await Assert.ThrowsAsync<HandoffStateException>(() => new EfHandoffStore(conflictContext).StartAsync(
+                command with { AuthenticatedActorUserId = Guid.NewGuid() }, DateTime.UtcNow, TestContext.Current.CancellationToken));
+        }
+
+        await using (var context = CreateDatabase())
+        {
+            await new GroundedConversationRepository(context, new ModelConfigurationService(new FakeProtector()), TimeProvider.System)
+                .PersistAnswerAndEnqueueAsync(CreateRequest(grounded), CreateAnswer(), TestContext.Current.CancellationToken);
+        }
+
+        await using var verify = CreateDatabase();
+        var commands = await verify.SendCommands.Where(value => value.RobotConfigId == handoff.Robot.Id || value.RobotConfigId == grounded.Robot.Id)
+            .ToArrayAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, commands.Length);
+        Assert.All(commands, value => Assert.Equal("blocked", value.Status));
+        var transitionActors = await verify.HandoffTransitions.Where(value => value.HandoffCaseId ==
+                verify.HandoffCases.Where(item => item.QuestionMessageId == handoff.Message.Id).Select(item => item.Id).Single())
+            .Select(value => value.ActorUserId).ToArrayAsync(TestContext.Current.CancellationToken);
+        Assert.NotEmpty(transitionActors);
+        Assert.All(transitionActors, value => Assert.Equal(actor, value));
+        var repository = new DurableJobRepository(verify);
+        Assert.Null(await repository.LeaseNextSendCommandAsync("disabled-production", DateTime.UtcNow.AddMinutes(1),
+            TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Handoff_producer_holds_robot_gate_until_enable_finishes_with_pending_command()
+    {
+        var seed = await SeedProductionEntryAsync(enabled: false, "handoff-enable");
+        var blocker = new BlockingSaveChangesInterceptor();
+        await using var factory = new RobotAdminFactory(_fixture.ConnectionString);
+        using var client = factory.CreateClient();
+        await using var producerContext = CreateDatabase(blocker);
+        var command = new StartHandoffCommand(seed.Message.Id, seed.Robot.Id, seed.Group.Id, seed.Robot.WorkToolRobotId,
+            seed.Group.Name, "manual_transfer", "{}", HandoffPauseScope.Group, null, null, "人工客服",
+            $"handoff-enable-{Guid.NewGuid():N}");
+        var producer = new EfHandoffStore(producerContext).StartAsync(command, DateTime.UtcNow, TestContext.Current.CancellationToken);
+        await blocker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var enable = client.PutAsJsonAsync($"/api/admin/worktool/robots/{seed.Robot.Id:D}",
+            new { seed.Robot.Name, seed.Robot.WorkToolRobotId, isEnabled = true }, TestContext.Current.CancellationToken);
+        await Task.Delay(250, TestContext.Current.CancellationToken);
+        Assert.False(enable.IsCompleted);
+        blocker.Release();
+        _ = await producer;
+        (await enable).EnsureSuccessStatusCode();
+
+        await using var verify = CreateDatabase();
+        Assert.True(await verify.RobotConfigs.Where(value => value.Id == seed.Robot.Id).Select(value => value.IsEnabled)
+            .SingleAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("pending", await verify.SendCommands.Where(value => value.RobotConfigId == seed.Robot.Id)
+            .Select(value => value.Status).SingleAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Grounded_producer_holds_robot_gate_until_disable_finishes_with_blocked_command()
+    {
+        var seed = await SeedProductionEntryAsync(enabled: true, "grounded-disable");
+        var blocker = new BlockingSaveChangesInterceptor();
+        await using var factory = new RobotAdminFactory(_fixture.ConnectionString);
+        using var client = factory.CreateClient();
+        await using var producerContext = CreateDatabase(blocker);
+        var producer = new GroundedConversationRepository(producerContext, new ModelConfigurationService(new FakeProtector()), TimeProvider.System)
+            .PersistAnswerAndEnqueueAsync(CreateRequest(seed), CreateAnswer(), TestContext.Current.CancellationToken);
+        await blocker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var disable = client.PutAsJsonAsync($"/api/admin/worktool/robots/{seed.Robot.Id:D}",
+            new { seed.Robot.Name, seed.Robot.WorkToolRobotId, isEnabled = false }, TestContext.Current.CancellationToken);
+        await Task.Delay(250, TestContext.Current.CancellationToken);
+        Assert.False(disable.IsCompleted);
+        blocker.Release();
+        await producer;
+        (await disable).EnsureSuccessStatusCode();
+
+        await using var verify = CreateDatabase();
+        Assert.False(await verify.RobotConfigs.Where(value => value.Id == seed.Robot.Id).Select(value => value.IsEnabled)
+            .SingleAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("blocked", await verify.SendCommands.Where(value => value.RobotConfigId == seed.Robot.Id)
+            .Select(value => value.Status).SingleAsync(TestContext.Current.CancellationToken));
+    }
 
     [Fact]
     public async Task Disabled_robot_blocks_queued_and_leased_commands_and_enable_resumes_fifo_once()
@@ -325,7 +439,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         await connection.OpenAsync(TestContext.Current.CancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT IS_USED_LOCK(@name)";
-        command.Parameters.AddWithValue("@name", MySqlRobotSendLock.NameFor(robotId));
+        command.Parameters.AddWithValue("@name", MySqlRobotSendCoordinator.NameFor(robotId));
         var result = await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
         return result is not null and not DBNull;
     }
@@ -334,7 +448,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
     {
         await using var command = connection.CreateCommand();
         command.CommandText = acquire ? "SELECT GET_LOCK(@name, 5)" : "SELECT RELEASE_LOCK(@name)";
-        command.Parameters.AddWithValue("@name", MySqlRobotSendLock.NameFor(robotId));
+        command.Parameters.AddWithValue("@name", MySqlRobotSendCoordinator.NameFor(robotId));
         _ = await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
     }
 
@@ -342,6 +456,77 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         .AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(_fixture.ConnectionString))
         .AddScoped<IDurableJobRepository, DurableJobRepository>()
         .BuildServiceProvider();
+
+    private WechatRobotDbContext CreateDatabase(params IInterceptor[] interceptors)
+    {
+        var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString);
+        if (interceptors.Length > 0) options.AddInterceptors(interceptors);
+        return new WechatRobotDbContext(options.Options);
+    }
+
+    private async Task<ProductionSeed> SeedProductionEntryAsync(bool enabled, string prefix)
+    {
+        await using var database = CreateDatabase();
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var seed = CreateProductionSeed(enabled, prefix);
+        database.AddRange(seed.Robot, seed.Group, seed.Message, seed.Session);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return seed;
+    }
+
+    private static ProductionSeed CreateProductionSeed(bool enabled, string prefix)
+    {
+        var robot = new RobotConfigEntity
+        {
+            Name = $"{prefix}-{Guid.NewGuid():N}", WorkToolRobotId = Guid.NewGuid().ToString("N"),
+            CallbackSecretHash = "hash", IsEnabled = enabled
+        };
+        var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = Guid.NewGuid().ToString("N"), Name = $"{prefix}-group" };
+        var message = new ConversationMessageEntity
+        {
+            RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name, SenderDisplayName = "客户",
+            StableSenderId = $"sender-{Guid.NewGuid():N}", Text = "需要帮助", FallbackHash = Guid.NewGuid().ToString("N"), ProcessingState = "processing"
+        };
+        var session = new ConversationSessionEntity
+        {
+            GroupProfileId = group.Id, SenderScopeKey = "group", LeaseOwner = "producer-owner",
+            LeaseExpiresAtUtc = DateTime.UtcNow.AddMinutes(5), LastActivityAtUtc = DateTime.UtcNow
+        };
+        return new(robot, group, message, session);
+    }
+
+    private static ConversationProcessingRequest CreateRequest(ProductionSeed seed) => new(seed.Message.Id, seed.Robot.Id,
+        seed.Robot.WorkToolRobotId, seed.Group.Id, seed.Group.Name, seed.Message.SenderDisplayName, seed.Message.StableSenderId,
+        new("group", false, null), seed.Message.Text, DateTime.UtcNow, [], [], null, new(false, 3, 30, 3000, false, false),
+        new("https://fake.test", "fake", "fake", TimeSpan.FromSeconds(1), 0), Guid.Empty, seed.Session.Id, "producer-owner", 0);
+
+    private static GroundedAnswerResult CreateAnswer() => new(new(AnswerDecisionKind.Answer, "已处理"),
+        new([], .7, .9, "policy", "Answer", InputSummaryJson: "{}"));
+
+    private sealed record ProductionSeed(RobotConfigEntity Robot, GroupProfileEntity Group, ConversationMessageEntity Message,
+        ConversationSessionEntity Session);
+
+    private sealed class BlockingSaveChangesInterceptor : SaveChangesInterceptor
+    {
+        private readonly TaskCompletionSource<bool> release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult(true);
+            await release.Task.WaitAsync(cancellationToken);
+            return result;
+        }
+
+        public void Release() => release.TrySetResult(true);
+    }
+
+    private sealed class FakeProtector : ISecretProtector
+    {
+        public string Protect(string plaintext) => plaintext;
+        public string Unprotect(string protectedValue) => protectedValue;
+    }
 
     private ServiceProvider CreateWorkerProvider(IWorkToolClient client) => new ServiceCollection()
         .AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(_fixture.ConnectionString))

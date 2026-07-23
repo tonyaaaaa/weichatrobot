@@ -45,5 +45,14 @@
 - `dotnet build WechatRobot.slnx --no-restore`: 0 warnings, 0 errors.
 - Full unit suite: 124/124 passed.
 - Full contract suite: 26/26 passed.
-- One complete serial integration run: 106/106 passed in 1h16m47s, including real MySQL 8.4.10, pinned Qdrant 1.18.2, callback performance, migration upgrade, cross-process send-gate interleavings, concurrency, authorization, and API-factory startup coverage.
+- One complete serial integration run after the shared-fixture hardening: 112/112 passed in 2m56s, including real MySQL 8.4.10, pinned Qdrant 1.18.2, callback performance, migration upgrade, cross-process send-gate interleavings, concurrency, authorization, API-factory startup coverage, and the two fixture-isolation regressions.
 - `git diff --check`: passed.
+
+## Shared MySQL fixture hardening
+
+- Kept the interrupted `MySqlFixture` optimization after review: one MySQL 8.4.10 Testcontainer is shared for the test process, while every xUnit class fixture creates a unique `wechatrobot_it_<guid>` database. Global integration-test parallelization remains disabled.
+- The fixture grants access only to the test-database prefix, rolls back a failed database creation, clears only the disposing fixture's connection pool before dropping that database, and deliberately leaves process-level container cleanup to Testcontainers Ryuk.
+- The disposable MySQL data directory uses Linux tmpfs. On this Windows Docker Desktop workstation this reduced a cold fixture run from 3m35s for one isolation test to 59.3s for two tests including the complete EF migration chain.
+- Isolation evidence passed 2/2: two logical fixtures share the server/port but have different connection strings/databases; data created by A is invisible to B; disposing A leaves B usable; migrating A does not create `__EFMigrationsHistory` in B.
+- A single shared-container critical run passed 14/14 in 53.9s: `MigrationTests` 2/2, `HumanAnswerReviewTests` 1/1 (real pinned Qdrant plus fake embeddings), and `DurableRobotCoordinationTests` 11/11 (MySQL named-lock and HTTP enable/disable interleavings).
+- EF `has-pending-model-changes` reported no changes. SQL generation for `20260722163615_AddHandoffRequestFingerprint` produced one transaction adding `RequestFingerprint`, `StartIdempotencyKey`, its unique index, and the migration-history row. The installed EF CLI 9.0.6 emitted a lower-than-runtime 10.0.10 warning but completed successfully.

@@ -19,11 +19,12 @@ public static class KnowledgeReviewEndpoints
 
     private static async Task<IResult> ListAsync(string? status, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
     {
-        page = Math.Max(1, page); pageSize = Math.Clamp(pageSize <= 0 ? 20 : pageSize, 1, 100);
+        if (!Pagination.TryNormalize(page, pageSize, out page, out pageSize, out var skip))
+            return TypedResults.BadRequest(new { error = "Page must not exceed 1000000." });
         var query = db.KnowledgeCandidates.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         var total = await query.CountAsync(token);
-        var items = await query.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).Skip(skip).Take(pageSize)
             .Select(x => new { x.Id, x.HandoffCaseId, x.QuestionMessageId, x.Question, x.Status, x.KnowledgeDocumentVersionId,
                 x.Version, x.CreatedAtUtc, x.UpdatedAtUtc, x.PublishedAtUtc }).ToArrayAsync(token);
         return TypedResults.Ok(new { items, total, page, pageSize });

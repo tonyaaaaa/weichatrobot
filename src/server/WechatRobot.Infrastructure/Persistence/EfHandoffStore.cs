@@ -20,8 +20,8 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
             : await db.GroupProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.RobotConfigId == message.RobotConfigId && x.IsEnabled &&
                 (x.Name == message.GroupName || x.ExternalGroupId == message.GroupName), token);
         if (group is null) throw new HandoffStateException("Source message has no enabled group mapping.");
-        var robot = await db.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == group.RobotConfigId && x.IsEnabled, token)
-            ?? throw new HandoffStateException("Source message has no enabled robot mapping.");
+        var robot = await db.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == group.RobotConfigId, token)
+            ?? throw new HandoffStateException("Source message has no robot mapping.");
         string target = "人工客服";
         if (command.AssigneeUserId is { } assignee)
         {
@@ -33,12 +33,13 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
         var reason = Normalize(command.Reason);
         return await StartAsync(new(message.Id, robot.Id, group.Id, robot.WorkToolRobotId, group.Name, "manual_transfer",
             JsonSerializer.Serialize(new { command.AuthenticatedActorUserId, Reason = reason }), command.PauseScope, stable,
-            command.AssigneeUserId, target, command.IdempotencyKey, reason), nowUtc, token);
+            command.AssigneeUserId, target, command.IdempotencyKey, reason, command.AuthenticatedActorUserId), nowUtc, token);
     }
     public async Task<HandoffRecord> StartAsync(StartHandoffCommand command, DateTime nowUtc, CancellationToken token)
     {
         if (command.PauseScope == HandoffPauseScope.Sender && string.IsNullOrWhiteSpace(command.StableSenderId)) throw new ArgumentException("Stable sender id is required.");
         if (string.IsNullOrWhiteSpace(command.IdempotencyKey) || command.IdempotencyKey.Length > 96) throw new ArgumentException("Handoff idempotency key is required and must not exceed 96 characters.");
+        await using var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(db, command.RobotConfigId, token);
         await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
         if (transaction is not null)
             _ = await db.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {command.GroupProfileId} FOR UPDATE")
@@ -62,17 +63,19 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
             PauseScope = command.PauseScope.ToString(), StableSenderId = command.StableSenderId, State = domain.State.ToString(),
             StartIdempotencyKey = command.IdempotencyKey, RequestFingerprint = fingerprint, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
         db.HandoffCases.Add(entity);
-        AddTransition(entity.Id, null, 1, "AIActive", "WaitingHuman", command.ReasonCode, $"handoff:{entity.Id:D}:create", nowUtc);
+        AddTransition(entity.Id, command.AuthenticatedActorUserId, 1, "AIActive", "WaitingHuman", command.ReasonCode, $"handoff:{entity.Id:D}:create", nowUtc);
         if (command.AssigneeUserId is { } initialAssignee)
         {
             var from = domain.State.ToString(); domain.Assign(initialAssignee, nowUtc); Apply(entity, domain); entity.Version++;
-            AddTransition(entity.Id, null, 2, from, domain.State.ToString(), "initial_assignment", $"handoff:{entity.Id:D}:initial-assign", nowUtc);
+            AddTransition(entity.Id, command.AuthenticatedActorUserId, 2, from, domain.State.ToString(), "initial_assignment", $"handoff:{entity.Id:D}:initial-assign", nowUtc);
         }
         var target = Safe(command.AssigneeTarget, 64);
         var reason = Safe(command.ReasonCode, 96);
+        var sendStatus = await MySqlRobotSendCoordinator.InitialStatusAsync(db, command.RobotConfigId, token);
         db.SendCommands.Add(new SendCommandEntity { RobotConfigId = command.RobotConfigId, GroupProfileId = command.GroupProfileId,
             IdempotencyKey = command.IdempotencyKey, PayloadJson = JsonSerializer.Serialize(new { command.WorkToolRobotId, command.GroupName,
-                Text = $"已转人工。原因：{reason}；关联：{entity.Id:N}", AtList = new[] { target } }), NextAttemptAtUtc = nowUtc, CreatedAtUtc = nowUtc });
+                Text = $"已转人工。原因：{reason}；关联：{entity.Id:N}", AtList = new[] { target } }), Status = sendStatus,
+            NextAttemptAtUtc = nowUtc, CreatedAtUtc = nowUtc });
         try
         {
             await db.SaveChangesAsync(token);
@@ -204,7 +207,7 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
     private static string RequestFingerprint(StartHandoffCommand command) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
         JsonSerializer.Serialize(new { command.QuestionMessageId, command.RobotConfigId, command.GroupProfileId,
             Reason = Normalize(command.RequestReason ?? command.ReasonCode), PauseScope = command.PauseScope.ToString(),
-            StableSenderId = command.StableSenderId?.Trim(), command.AssigneeUserId }))));
+            StableSenderId = command.StableSenderId?.Trim(), command.AssigneeUserId, command.AuthenticatedActorUserId }))));
     private void AddTransition(Guid handoffId, Guid? actor, int sequence, string from, string to, string reason, string key, DateTime now) =>
         db.HandoffTransitions.Add(new() { HandoffCaseId = handoffId, ActorUserId = actor, Sequence = sequence, FromState = from, ToState = to,
             ReasonCode = reason, IdempotencyKey = key, CreatedAtUtc = now });

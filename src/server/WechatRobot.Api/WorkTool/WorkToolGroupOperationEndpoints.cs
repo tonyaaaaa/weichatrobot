@@ -40,7 +40,7 @@ public static class WorkToolGroupOperationEndpoints
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 || string.IsNullOrWhiteSpace(request.WorkToolRobotId) || request.WorkToolRobotId.Length > 128)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["robot"] = ["Robot name and WorkTool robot ID are required."] });
 
-        await using var sendGate = await MySqlRobotSendLock.AcquireAsync(database, id, cancellationToken);
+        await using var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(database, id, cancellationToken);
         await using var transaction = database.Database.IsRelational() ? await database.Database.BeginTransactionAsync(cancellationToken) : null;
         var robot = await database.RobotConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         var wasEnabled = robot?.IsEnabled;

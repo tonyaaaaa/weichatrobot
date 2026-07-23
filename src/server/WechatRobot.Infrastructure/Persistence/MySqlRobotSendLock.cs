@@ -71,3 +71,20 @@ public sealed class MySqlRobotSendLock : IAsyncDisposable
         }
     }
 }
+
+public static class MySqlRobotSendCoordinator
+{
+    public static Task<MySqlRobotSendLock> AcquireAsync(WechatRobotDbContext database, Guid robotId,
+        CancellationToken cancellationToken) => MySqlRobotSendLock.AcquireAsync(database, robotId, cancellationToken);
+
+    public static async Task<string> InitialStatusAsync(WechatRobotDbContext database, Guid robotId,
+        CancellationToken cancellationToken)
+    {
+        var enabled = await database.RobotConfigs.AsNoTracking().Where(robot => robot.Id == robotId)
+            .Select(robot => (bool?)robot.IsEnabled).SingleOrDefaultAsync(cancellationToken)
+            ?? throw new KeyNotFoundException("Robot was not found.");
+        return enabled ? "pending" : "blocked";
+    }
+
+    public static string NameFor(Guid robotId) => MySqlRobotSendLock.NameFor(robotId);
+}
