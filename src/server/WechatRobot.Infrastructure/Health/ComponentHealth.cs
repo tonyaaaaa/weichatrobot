@@ -70,15 +70,16 @@ public sealed class QdrantHealthProbe(IHttpClientFactory clients)
     }
 }
 
-public sealed class OcrHealthProbe(IHttpClientFactory clients)
+public sealed class OcrHealthProbe(IConfiguration configuration)
     : ComponentHealthProbe("OCR", required: false)
 {
-    protected override async Task<bool> IsHealthyAsync(CancellationToken cancellationToken)
-    {
-        using var response = await clients.CreateClient(HealthServiceRegistration.OcrClient)
-            .GetAsync("health/ready", cancellationToken);
-        return response.IsSuccessStatusCode;
-    }
+    protected override Task<bool> IsHealthyAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(
+            configuration["Ocr:Provider"] == "Aliyun" &&
+            configuration["Ocr:Action"] == "RecognizeGeneral" &&
+            !string.IsNullOrWhiteSpace(configuration["Ocr:Endpoint"]) &&
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeyIdEnvironmentVariable)) &&
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeySecretEnvironmentVariable)));
 }
 
 public sealed class OssConfigurationHealthProbe(IConfiguration configuration)
@@ -152,13 +153,9 @@ public sealed class WorkerHeartbeatHealthProbe(
 public static class HealthServiceRegistration
 {
     public const string QdrantClient = "health-qdrant";
-    public const string OcrClient = "health-ocr";
 
     public static IServiceCollection AddWechatRobotHealth(this IServiceCollection services, IConfiguration configuration)
     {
-        var ocrAddress = new Uri(configuration["Ocr:BaseAddress"] ?? "http://127.0.0.1:18000/");
-        if (!OcrEndpointPolicy.IsAllowed(ocrAddress))
-            throw new InvalidOperationException("OCR health endpoint must use the same private Compose or loopback policy as Worker OCR.");
         services.AddScoped<IComponentHealthProbe, MySqlHealthProbe>();
         services.AddScoped<IComponentHealthProbe, QdrantHealthProbe>();
         services.AddScoped<IComponentHealthProbe, OcrHealthProbe>();
@@ -170,11 +167,6 @@ public static class HealthServiceRegistration
             client.Timeout = TimeSpan.FromSeconds(3);
             var key = configuration["Qdrant:ApiKey"];
             if (!string.IsNullOrWhiteSpace(key)) client.DefaultRequestHeaders.TryAddWithoutValidation("api-key", key);
-        });
-        services.AddHttpClient(OcrClient, client =>
-        {
-            client.BaseAddress = ocrAddress;
-            client.Timeout = TimeSpan.FromSeconds(3);
         });
         return services;
     }

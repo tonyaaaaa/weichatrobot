@@ -199,8 +199,6 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Docker Desktop is not available." }
             & docker compose --env-file $resolvedEnv -p wechatrobot-dev up -d --wait --wait-timeout 180 mysql qdrant
             if ($LASTEXITCODE -ne 0) { throw "Required Docker dependencies did not become healthy." }
-            & docker compose --env-file $resolvedEnv -p wechatrobot-dev up -d ocr
-            if ($LASTEXITCODE -ne 0) { throw "Optional OCR dependency could not be started." }
         }
         $env:ConnectionStrings__WechatRobot = "Server=127.0.0.1;Port=$($env:MYSQL_PORT);Database=$($env:MYSQL_DATABASE);User Id=$($env:MYSQL_USER);Password=$($env:MYSQL_PASSWORD)"
         $env:Cors__AllowedOrigins__0 = "http://127.0.0.1:$WebPort"
@@ -209,7 +207,6 @@ try {
         $env:Jwt__SigningKey = $env:JWT_SIGNING_KEY
         $env:Qdrant__BaseUrl = "http://127.0.0.1:$($env:QDRANT_HTTP_PORT)/"
         $env:Qdrant__ApiKey = $env:QDRANT_API_KEY
-        $env:Ocr__BaseAddress = "http://127.0.0.1:$($env:OCR_PORT ?? '18000')/"
         $env:Oss__AccessKeyId = $env:OSS_ACCESS_KEY_ID
         $env:Oss__AccessKeySecret = $env:OSS_ACCESS_KEY_SECRET
         $env:Oss__Bucket = $env:OSS_BUCKET

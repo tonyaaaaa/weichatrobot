@@ -33,24 +33,6 @@ services:
       retries: 20
       start_period: 10s
 
-  ocr:
-    build:
-      context: ./src/ocr-service
-      dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:${OCR_PORT:-18000}:8000"
-    environment:
-      OCR_ENGINE: paddle
-      OCR_MAX_REQUEST_BYTES: 26214400
-      OCR_MAX_IMAGE_PIXELS: 16000000
-      OCR_PAGE_TIMEOUT_SECONDS: 15
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 60s
-
 volumes:
   mysql_data:
   qdrant_storage:

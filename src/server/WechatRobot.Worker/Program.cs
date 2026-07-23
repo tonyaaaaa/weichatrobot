@@ -86,17 +86,21 @@ builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
     var apiKey = builder.Configuration["Qdrant:ApiKey"];
     if (!string.IsNullOrWhiteSpace(apiKey)) client.DefaultRequestHeaders.Add("api-key", apiKey);
 });
-var ocrClientOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrClientOptions>() ?? new OcrClientOptions();
-if (ocrClientOptions.Timeout <= TimeSpan.Zero || ocrClientOptions.MaximumResponseBytes <= 0 || !OcrEndpointPolicy.IsAllowed(ocrClientOptions.BaseAddress))
-    throw new InvalidOperationException("OCR client configuration must use a private Compose name or localhost and positive limits.");
-var ocrProcessingOptions = builder.Configuration.GetSection(OcrClientOptions.SectionName).Get<OcrProcessingOptions>() ?? new OcrProcessingOptions();
+var aliyunOcrOptions = builder.Configuration.GetSection(AliyunOcrOptions.SectionName).Get<AliyunOcrOptions>() ?? new AliyunOcrOptions();
+aliyunOcrOptions.Validate();
+var aliyunAccessKeyId = Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeyIdEnvironmentVariable);
+var aliyunAccessKeySecret = Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeySecretEnvironmentVariable);
+if (string.IsNullOrWhiteSpace(aliyunAccessKeyId) || string.IsNullOrWhiteSpace(aliyunAccessKeySecret))
+    throw new InvalidOperationException("Alibaba Cloud OCR credentials must be configured in the dedicated environment variables.");
+var ocrProcessingOptions = builder.Configuration.GetSection(AliyunOcrOptions.SectionName).Get<OcrProcessingOptions>() ?? new OcrProcessingOptions();
 if (ocrProcessingOptions.MinimumExtractedTextCharacters < 0 || ocrProcessingOptions.MaximumPages <= 0 || ocrProcessingOptions.MaximumImagePixels <= 0 ||
     ocrProcessingOptions.MaximumRenderedBytes <= 0 || ocrProcessingOptions.RenderTimeoutSeconds <= 0 || ocrProcessingOptions.PageLeaseSeconds <= 0 ||
     string.IsNullOrWhiteSpace(ocrProcessingOptions.RendererExecutablePath))
     throw new InvalidOperationException("OCR processing limits are invalid.");
-builder.Services.AddSingleton(ocrClientOptions);
+builder.Services.AddSingleton(aliyunOcrOptions);
 builder.Services.AddSingleton(ocrProcessingOptions);
-builder.Services.AddHttpClient<IOcrClient, HttpOcrClient>(client => client.BaseAddress = ocrClientOptions.BaseAddress);
+builder.Services.AddSingleton<IAliyunOcrProvider>(_ => new AlibabaSdkOcrProvider(aliyunOcrOptions, aliyunAccessKeyId, aliyunAccessKeySecret));
+builder.Services.AddSingleton<IOcrClient, AliyunOcrClient>();
 builder.Services.AddSingleton<IPdfPageRenderer>(_ =>
 {
     if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))

@@ -54,7 +54,7 @@ public sealed class ScannedPdfOcrService(
                 Reset(pdf);
                 var rendered = await WithRenderDeadline(token => renderer.RenderAsync(pdf, claimed, context), context);
                 ValidateRendered(claimed, rendered, context);
-                ReserveHttpRequest(rendered, context);
+                ReserveProviderRequest(rendered, context);
                 var results = await client.RecognizeAsync(rendered, context.Token);
                 await PersistResultsAsync(versionId, owner, claimed, results, context);
             }
@@ -126,21 +126,20 @@ public sealed class ScannedPdfOcrService(
         }
     }
 
-    private static void ReserveHttpRequest(IReadOnlyList<OcrRenderedPage> pages, DocumentProcessingContext context)
+    private static void ReserveProviderRequest(IReadOnlyList<OcrRenderedPage> pages, DocumentProcessingContext context)
     {
         long bytes = 0;
         try
         {
             foreach (var page in pages)
             {
-                var base64Characters = checked(((page.ImageBytes.LongLength + 2) / 3) * 4);
-                // Account for the temporary UTF-16 Base64 string, UTF-8 JSON payload and object overhead.
-                bytes = checked(bytes + base64Characters * 3 + 256);
+                // SDK receives the existing bounded binary page body; account for stream/request overhead.
+                bytes = checked(bytes + page.ImageBytes.LongLength + 256);
             }
         }
         catch (OverflowException exception)
         { throw new DocumentParsingException(DocumentParsingError.MemoryLimitExceeded, "OCR HTTP request memory accounting overflowed.", exception); }
-        context.Reserve(bytes, "ocr-http-request");
+        context.Reserve(bytes, "ocr-provider-request");
     }
 
     private async Task PersistResultsAsync(Guid versionId, string owner, IReadOnlyList<int> claimed, IReadOnlyList<OcrPageResult> results, DocumentProcessingContext context)
