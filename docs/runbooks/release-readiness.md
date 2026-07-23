@@ -39,10 +39,9 @@ npm ci --prefix src/web/wechatrobot-admin
 npm run test --prefix src/web/wechatrobot-admin
 npm run typecheck --prefix src/web/wechatrobot-admin
 npm run build --prefix src/web/wechatrobot-admin
-python -m pytest src/ocr-service/tests -q
 npm ci --prefix tests/e2e
 npm test --prefix tests/e2e
 docker compose config
 ```
 
-The real WorkTool categories are expected to report skipped in an ordinary run. Follow [worktool-real-group-acceptance.md](worktool-real-group-acceptance.md) only after the required human approvals.
+The real WorkTool and Alibaba Cloud OCR categories are expected to report skipped in an ordinary run. OCR requires `RUN_ALIYUN_OCR_E2E=1` plus both dedicated Alibaba Cloud OCR credential variables; never enable it in routine verification.

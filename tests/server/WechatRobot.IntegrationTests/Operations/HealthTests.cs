@@ -61,15 +61,18 @@ public sealed class HealthTests
     }
 
     [Fact]
-    public void Health_registration_rejects_public_ocr_endpoint()
+    public async Task Ocr_health_reports_only_sanitized_configuration_state()
     {
-        var services = new ServiceCollection();
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Ocr:BaseAddress"] = "https://ocr.example.test/"
+            ["Ocr:Provider"] = "Aliyun",
+            ["Ocr:Action"] = "",
+            ["Ocr:Endpoint"] = "ocr-api.cn-hangzhou.aliyuncs.com"
         }).Build();
-
-        Assert.Throws<InvalidOperationException>(() => services.AddWechatRobotHealth(configuration));
+        var probe = new OcrHealthProbe(configuration);
+        var result = await probe.CheckAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(ComponentHealthState.Failed, result.State);
+        Assert.Equal("unavailable", result.Detail);
     }
 
     [Fact]

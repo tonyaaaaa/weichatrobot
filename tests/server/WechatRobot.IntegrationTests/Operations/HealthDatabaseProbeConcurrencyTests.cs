@@ -19,7 +19,9 @@ public sealed class HealthDatabaseProbeConcurrencyTests(MySqlFixture fixture) : 
         var observer = new DatabaseContextObserver();
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Ocr:BaseAddress"] = "http://127.0.0.1:18000/",
+            ["Ocr:Provider"] = "Aliyun",
+            ["Ocr:Action"] = "RecognizeGeneral",
+            ["Ocr:Endpoint"] = "ocr-api.cn-hangzhou.aliyuncs.com",
             ["Health:WorkerStaleAfterSeconds"] = "45"
         }).Build();
         var services = new ServiceCollection()
