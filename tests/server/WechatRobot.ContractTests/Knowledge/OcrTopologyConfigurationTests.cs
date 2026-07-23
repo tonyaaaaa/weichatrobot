@@ -22,6 +22,7 @@ public sealed class OcrTopologyConfigurationTests
     [InlineData("ocr-api.cn-hangzhou.aliyuncs.com", true)]
     [InlineData("ocr-api.cn-shanghai.aliyuncs.com", true)]
     [InlineData("ocr-api.ap-southeast-1.aliyuncs.com", true)]
+    [InlineData("ocr-api.foo.bar.aliyuncs.com", false)]
     [InlineData("https://ocr-api.cn-hangzhou.aliyuncs.com", false)]
     [InlineData("user@ocr-api.cn-hangzhou.aliyuncs.com", false)]
     [InlineData("ocr-api.cn-hangzhou.aliyuncs.com/path", false)]

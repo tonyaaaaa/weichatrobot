@@ -102,6 +102,22 @@ public sealed class AliyunOcrClientTests
     }
 
     [Fact]
+    public async Task Cancellation_during_retry_delay_returns_promptly_and_prevents_next_attempt()
+    {
+        var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException("Throttling", "sanitized"));
+        var delay = new BlockingDelay();
+        var client = Create(provider, delay, new FixedJitter(0));
+        using var cancellation = new CancellationTokenSource();
+
+        var call = client.RecognizeAsync([PngPage(1)], cancellation.Token);
+        await delay.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+        Assert.Single(provider.Pages);
+    }
+
+    [Fact]
     public async Task Maps_adapter_normalized_timeout()
     {
         var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException(
@@ -209,5 +225,15 @@ public sealed class AliyunOcrClientTests
     private sealed class FixedJitter(double value) : IAliyunOcrJitter
     {
         public double NextDouble() => value;
+    }
+
+    private sealed class BlockingDelay : IAliyunOcrDelay
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            Started.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
     }
 }

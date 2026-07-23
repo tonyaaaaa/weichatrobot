@@ -252,3 +252,47 @@ PASS: 36 passed, 0 failed
 git diff --check
 PASS
 ```
+
+## Final minor review closure
+
+- Endpoint validation now requires exactly four DNS labels:
+  `ocr-api.<region>.aliyuncs.com`. The regression test rejects
+  `ocr-api.foo.bar.aliyuncs.com` while Shanghai and other single-label regional
+  overrides remain accepted.
+- A deterministic blocking-delay test cancels during retry backoff, proves the
+  recognition call propagates cancellation, and verifies the provider remains
+  at exactly one attempt.
+
+RED evidence:
+
+```text
+dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --no-restore -- --filter-class '*OcrTopologyConfigurationTests'
+FAIL: expected false for ocr-api.foo.bar.aliyuncs.com, actual true
+```
+
+The retry-delay cancellation test passed immediately because the injectable
+delay already correctly received the caller token; it adds explicit regression
+coverage for that approved behavior.
+
+Covering files:
+
+- `tests/server/WechatRobot.ContractTests/Knowledge/OcrTopologyConfigurationTests.cs`
+- `tests/server/WechatRobot.UnitTests/Knowledge/AliyunOcrClientTests.cs`
+
+No real Alibaba Cloud request was made.
+
+Fresh minor-closure verification:
+
+```text
+dotnet build WechatRobot.slnx -warnaserror
+PASS: 0 warnings, 0 errors
+
+dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --no-restore -- --filter-class '*Ocr*'
+PASS: 20 passed, 0 failed
+
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-restore -- --filter-class '*AlibabaSdkOcrProviderTests' --filter-class '*AliyunOcrClientTests'
+PASS: 37 passed, 0 failed
+
+git diff --check
+PASS
+```

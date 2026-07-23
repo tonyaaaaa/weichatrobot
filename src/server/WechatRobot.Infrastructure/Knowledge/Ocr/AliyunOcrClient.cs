@@ -24,11 +24,11 @@ public sealed class AliyunOcrOptions
             endpoint.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '.' or '-')))
             return false;
         var labels = endpoint.Split('.');
-        if (labels.Length < 4 || !labels[0].Equals("ocr-api", StringComparison.OrdinalIgnoreCase) ||
+        if (labels.Length != 4 || !labels[0].Equals("ocr-api", StringComparison.OrdinalIgnoreCase) ||
             !labels[^2].Equals("aliyuncs", StringComparison.OrdinalIgnoreCase) ||
             !labels[^1].Equals("com", StringComparison.OrdinalIgnoreCase))
             return false;
-        return labels.Skip(1).Take(labels.Length - 3).All(IsValidDnsLabel);
+        return IsValidDnsLabel(labels[1]);
     }
 
     public void Validate()
