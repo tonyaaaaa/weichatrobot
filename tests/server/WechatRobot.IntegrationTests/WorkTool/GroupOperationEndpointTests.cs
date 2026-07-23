@@ -63,18 +63,18 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         Assert.Equal(HttpStatusCode.BadRequest, crossRobot.StatusCode); Assert.Equal(0, recorder.GroupOperationCalls);
 
         var success = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation = Operation(first.Id, "UpdateAnnouncement", "secret announcement"), confirmationToken = preview }, TestContext.Current.CancellationToken);
-        success.EnsureSuccessStatusCode(); Assert.Equal(1, recorder.GroupOperationCalls);
+        Assert.Equal(HttpStatusCode.Accepted, success.StatusCode); Assert.Equal(0, recorder.GroupOperationCalls);
         using var successDocument = JsonDocument.Parse(await success.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         var successAuditId = successDocument.RootElement.GetProperty("auditId").GetGuid();
         Assert.NotEqual(Guid.Empty, successAuditId);
         var replay = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation = Operation(first.Id, "UpdateAnnouncement", "secret announcement"), confirmationToken = preview }, TestContext.Current.CancellationToken);
-        Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode); Assert.Equal(1, recorder.GroupOperationCalls);
+        Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode); Assert.Equal(0, recorder.GroupOperationCalls);
 
         var concurrentToken = await PreviewAsync(client, first.Id, "UpdateAnnouncement", "secret announcement");
         var firstAttempt = client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation = Operation(first.Id, "UpdateAnnouncement", "secret announcement"), confirmationToken = concurrentToken }, TestContext.Current.CancellationToken);
         var secondAttempt = client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation = Operation(first.Id, "UpdateAnnouncement", "secret announcement"), confirmationToken = concurrentToken }, TestContext.Current.CancellationToken);
         var attempts = await Task.WhenAll(firstAttempt, secondAttempt);
-        Assert.Equal(1, attempts.Count(response => response.StatusCode == HttpStatusCode.OK)); Assert.Equal(1, attempts.Count(response => response.StatusCode == HttpStatusCode.BadRequest)); Assert.Equal(2, recorder.GroupOperationCalls);
+        Assert.Equal(1, attempts.Count(response => response.StatusCode == HttpStatusCode.Accepted)); Assert.Equal(1, attempts.Count(response => response.StatusCode == HttpStatusCode.BadRequest)); Assert.Equal(0, recorder.GroupOperationCalls);
 
         recorder.Reset(WorkToolSendResult.Failed("provider echoed secret announcement"));
         var failingToken = await PreviewAsync(client, first.Id, "UpdateAnnouncement", "secret announcement");
@@ -82,9 +82,9 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         failed.EnsureSuccessStatusCode();
         using var verifyScope = _factory.Services.CreateScope();
         var audits = await verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().WorkToolOperationAudits.OrderBy(item => item.CreatedAtUtc).ToArrayAsync(TestContext.Current.CancellationToken);
-        Assert.Contains(audits, item => item.Id == successAuditId && item.Status == "Succeeded"
+        Assert.Contains(audits, item => item.Id == successAuditId && item.Status == "Queued"
             && item.OperatorName == "model-admin" && item.WorkToolCommandNumber == 207);
-        Assert.Contains(audits, item => item.Status == "Failed" && item.Result == "WorkTool rejected the command.");
+        Assert.Contains(audits, item => item.Status == "Queued" && item.EncryptedCommandJson != null);
         Assert.Contains(audits, item => item.Status == "Rejected");
         var auditResponse = await client.GetStringAsync("/api/admin/worktool/group-operations", TestContext.Current.CancellationToken);
         Assert.Contains("\"workToolCommandNumber\":207", auditResponse, StringComparison.Ordinal);
@@ -190,7 +190,7 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
     private static void AssertAudit(WorkToolOperationAuditEntity audit, string operation, int command, Guid robotId,
         string groupIdentifier, int memberCount, string memberIdsHash, string value)
     {
-        Assert.Equal("Succeeded", audit.Status);
+        Assert.Equal("Queued", audit.Status);
         Assert.Equal("model-admin", audit.OperatorName);
         Assert.Equal(operation, audit.Operation);
         Assert.Equal(command, audit.WorkToolCommandNumber);

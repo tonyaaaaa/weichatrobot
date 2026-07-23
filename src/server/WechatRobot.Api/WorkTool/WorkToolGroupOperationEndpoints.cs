@@ -158,7 +158,8 @@ public static class WorkToolGroupOperationEndpoints
         return Results.Ok(new PreviewResponse(sanitized, token, now.Add(ConfirmationLifetime)));
     }
 
-    private static async Task<IResult> ExecuteAsync(ExecuteOperationRequest request, ClaimsPrincipal user, WechatRobotDbContext database, GroupOperationConfirmationService confirmation, IWorkToolClient client, CancellationToken cancellationToken)
+    private static async Task<IResult> ExecuteAsync(ExecuteOperationRequest request, ClaimsPrincipal user, WechatRobotDbContext database,
+        GroupOperationConfirmationService confirmation, ISecretProtector protector, CancellationToken cancellationToken)
     {
         if (!TryBuild(request.Operation, out var operation, out var sanitized, out var error)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["operation"] = [error!] });
         if (!TryGetOperator(user, out var operatorName)) return Results.Forbid();
@@ -169,11 +170,14 @@ public static class WorkToolGroupOperationEndpoints
         var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(item => item.Id == request.Operation.RobotConfigId && item.IsEnabled, cancellationToken);
         if (robot is null) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Enabled robot was not found.")); await database.SaveChangesAsync(cancellationToken); return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] }); }
         confirmationRow!.ConsumedAtUtc = now; confirmationRow.Version++;
-        var audit = NewAudit(operatorName, operation.Kind, sanitized, "Pending", null); database.WorkToolOperationAudits.Add(audit);
+        var audit = NewAudit(operatorName, operation.Kind, sanitized, "Queued", null);
+        audit.RobotConfigId = robot.Id;
+        audit.EncryptedCommandJson = protector.Protect(JsonSerializer.Serialize(operation with { RobotConfigId = robot.Id }));
+        database.WorkToolOperationAudits.Add(audit);
         try { await database.SaveChangesAsync(cancellationToken); }
         catch (DbUpdateConcurrencyException) { database.Entry(confirmationRow).State = EntityState.Detached; database.Entry(audit).State = EntityState.Detached; database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Confirmation was already used.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token was already used." }); }
-        try { var result = await client.ExecuteGroupOperationAsync(operation with { RobotConfigId = robot.Id }, cancellationToken); audit.Status = result.Succeeded ? "Succeeded" : "Failed"; audit.Result = result.Succeeded ? null : "WorkTool rejected the command."; await database.SaveChangesAsync(cancellationToken); return Results.Ok(new CommandStatusResponse(result.Succeeded, result.Succeeded ? "Command accepted." : "WorkTool rejected the command.", audit.Id)); }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested) { audit.Status = "Failed"; audit.Result = "WorkTool request failed."; await database.SaveChangesAsync(cancellationToken); return Results.Problem("WorkTool request failed.", statusCode: 502); }
+        return Results.Accepted($"/api/admin/worktool/group-operations/{audit.Id:D}",
+            new CommandStatusResponse(true, "Command queued.", audit.Id));
     }
 
     private static bool TryBuild(GroupOperationRequest request, out WorkToolGroupOperationRequest operation, out string sanitized, out string? error)

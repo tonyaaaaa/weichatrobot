@@ -216,7 +216,12 @@ internal sealed class WorkToolOperationAuditConfiguration : IEntityTypeConfigura
         builder.Property(entity => entity.SanitizedRequestJson).HasColumnType("longtext").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.Result).HasMaxLength(1024);
+        builder.Property(entity => entity.EncryptedCommandJson).HasMaxLength(8192);
+        builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.CreatedAtUtc);
+        builder.HasIndex(entity => new { entity.Status, entity.CreatedAtUtc });
+        builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

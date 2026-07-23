@@ -146,6 +146,7 @@ builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client =>
 builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
 builder.Services.AddHostedService<DurableJobWorker>();
 builder.Services.AddHostedService<RobotSendWorker>();
+builder.Services.AddHostedService<WorkToolGroupOperationWorker>();
 builder.Services.AddHostedService<KnowledgeUploadWorker>();
 builder.Services.AddHostedService<KnowledgeParseWorker>();
 builder.Services.AddHostedService<KnowledgeIndexWorker>();

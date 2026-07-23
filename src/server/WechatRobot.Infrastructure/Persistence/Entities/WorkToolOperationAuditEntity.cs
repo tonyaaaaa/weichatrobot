@@ -9,6 +9,14 @@ public sealed class WorkToolOperationAuditEntity
     public string SanitizedRequestJson { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string? Result { get; set; }
+    public Guid? RobotConfigId { get; set; }
+    public string? EncryptedCommandJson { get; set; }
+    public int AttemptCount { get; set; }
+    public string? LeaseOwner { get; set; }
+    public DateTime? LeaseExpiresAtUtc { get; set; }
+    public DateTime? ExternalDispatchStartedAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
+    public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
