@@ -2,6 +2,8 @@
 
 日期：2026-07-21
 
+OCR 方案修订日期：2026-07-23
+
 状态：设计已逐段确认，等待书面规格复核
 
 目标环境：Windows 本机开发验证，后续部署方案另行确定
@@ -42,7 +44,7 @@
 | 前端 | Vue 3、TypeScript、Vite、Element Plus |
 | 业务数据库 | MySQL 8 |
 | 向量数据库 | Qdrant |
-| OCR | PaddleOCR，作为独立内部 HTTP 服务 |
+| OCR | 阿里云文字识别 OCR `RecognizeGeneral`，由 Worker 通过官方 .NET SDK 调用 |
 | 对象存储 | 单个阿里云 OSS 公共读 Bucket，参考 NewsAgent 接入方式 |
 | 大模型 | 对话模型和 Embedding 模型分别使用 OpenAI 兼容配置 |
 | 本机公网入口 | Cloudflare Quick Tunnel，用于 WorkTool 回调联调 |
@@ -63,7 +65,7 @@ flowchart LR
     WTAPI --> WT
     ADMIN["Vue 3 管理后台"] --> API
     API --> OSS["阿里云 OSS 公共读 Bucket"]
-    WORKER --> OCR["PaddleOCR"]
+    WORKER --> OCR["阿里云 OCR RecognizeGeneral"]
     WORKER --> OSS
 ```
 
@@ -77,7 +79,7 @@ flowchart LR
 - WorkTool 回调入口。
 - 文档上传、标签、群规则、模型配置、审计、人工客服和用户管理 API。
 - 新建外部群、修改群信息和发送测试消息等 WorkTool 指令入口。
-- 健康检查，分别暴露 MySQL、Qdrant、PaddleOCR、OSS 配置和 Worker 状态。
+- 健康检查，分别暴露 MySQL、Qdrant、阿里云 OCR 配置、OSS 配置和 Worker 状态；不得暴露 AccessKey 明文。
 
 ### 6.2 Worker
 
@@ -207,8 +209,15 @@ Vue 后台允许填写群名、联系人、群公告、群模板、知识标签�
 - Markdown 和 TXT 直接解析并标准化编码。
 - DOCX 提取标题层级、段落和表格文本。
 - PDF 先进行文本层提取，并保留页码。
-- PDF 提取文本为空或低于阈值时，逐页渲染并调用 PaddleOCR。
-- OCR 作为独立 Python HTTP 服务运行，ASP.NET Core 只依赖稳定接口。
+- PDF 提取文本为空或低于阈值时，由 Worker 逐页渲染为 PNG 或 JPEG，并通过 `IOcrClient` 调用阿里云 `RecognizeGeneral`。
+- 第一版通过阿里云官方 .NET SDK 上传页面图片二进制，不生成临时公网图片，也不自行实现 RPC 签名。
+- 单张图片必须满足阿里云限制：PNG、JPG、JPEG、BMP、GIF、TIFF 或 WebP，文件不超过 10 MB，宽高分别大于 15 且小于 8192 像素，长宽比小于 50。Worker 在调用前校验并按需缩放或压缩。
+- `AliyunOcrClient` 将 `Data.content` 和 `prism_wordsInfo` 转换为稳定的页码、顺序文本块和置信度结果。上层文档流程不得依赖阿里云原始 JSON。
+- 默认端点为 `ocr-api.cn-hangzhou.aliyuncs.com`，允许通过配置覆盖。默认且首期唯一调用的 OCR 动作为 `RecognizeGeneral`。
+- 配置键为 `Ocr:Provider=Aliyun`、`Ocr:Endpoint`、`Ocr:Action=RecognizeGeneral`、`Ocr:TimeoutSeconds=30` 和 `Ocr:MaxAttempts=3`；凭据环境变量为 `ALIBABA_CLOUD_OCR_ACCESS_KEY_ID` 与 `ALIBABA_CLOUD_OCR_ACCESS_KEY_SECRET`。
+- OCR 使用独立 RAM 用户并绑定阿里云系统策略 `AliyunOCRFullAccess`，不授予该用户 OSS 或其他云产品权限。完整 OCR 权限用于后续切换高精版、表格或结构化识别；应用不得在未显式配置时自动调用其他 OCR 动作。
+- OCR 的 `AccessKeyId` 和 `AccessKeySecret` 只从环境变量或安全配置注入，不写入数据库、日志、API 响应或 Git。
+- 记录阿里云 `RequestId`、动作、耗时、页码和脱敏错误码用于排障，不记录图片二进制、认证头或 AccessKey。
 - 各阶段记录状态：已上传、解析中、OCR 中、待分段、待向量化、可用、失败、停用。
 
 ### 9.4 分段
@@ -300,7 +309,9 @@ stateDiagram-v2
 | 模型超时 | 按策略重试；仍失败则提示系统繁忙 |
 | Qdrant 不可用 | 重试后提示系统繁忙，不使用无知识回答 |
 | OSS 上传失败 | 文档保持失败状态，可手动重试 |
-| OCR 失败 | 保存失败页和原因，允许重新 OCR |
+| OCR 限流、503 或算法超时 | 单页最多尝试 3 次，优先遵循服务端重试等待提示，否则使用带随机抖动的指数退避；耗尽后保存失败页、错误码和 RequestId，允许重新 OCR |
+| OCR 图片格式、尺寸或大小不合法 | 不重试；保存页面校验错误并提示调整源文件 |
+| OCR 鉴权、权限或欠费错误 | 不重试；标记配置故障并在系统健康状态中告警 |
 | WorkTool 发送失败 | 进入限流队列重试，最终进入死信 |
 | 无可靠知识 | 按群策略澄清或转人工 |
 | 敏感问题 | 不调用普通回答链路，直接转人工 |
@@ -356,7 +367,7 @@ stateDiagram-v2
 ## 16. 安全与隐私
 
 - Vue 后台使用 JWT 鉴权，密码采用强哈希保存，所有业务 API 在后端执行角色授权。
-- 模型 API Key、WorkTool `robotId`、回调密钥和 OSS 凭据视为敏感信息；日志、API 响应和前端页面不得返回明文。
+- 模型 API Key、WorkTool `robotId`、回调密钥、OSS 凭据和 OCR RAM AccessKey 视为敏感信息；日志、API 响应和前端页面不得返回明文。
 - 数据库内需要持久化的模型密钥使用 AES-256-GCM 加密，主密钥只从环境变量读取；主密钥缺失或长度错误时服务拒绝启动。
 - WorkTool 回调缺少标准签名能力时，使用每机器人高熵回调密钥、机器人路由标识、请求限流、严格字段校验和可选来源 IP 限制共同防护。
 - 上传文件同时检查扩展名、MIME、文件头、大小、压缩展开上限和文件哈希，防止伪造类型、压缩炸弹和重复文件。
@@ -369,7 +380,7 @@ stateDiagram-v2
 
 - ASP.NET Core API 和 Worker 在 Windows 本机后台运行。
 - Vue 3 使用 Vite 开发服务器。
-- MySQL 8、Qdrant 和 PaddleOCR 使用 Docker Compose。
+- MySQL 8 和 Qdrant 使用 Docker Compose；OCR 直接调用阿里云服务，不部署本地 OCR 容器。
 - BlueStacks 运行企业微信与 WorkTool。
 - Cloudflare Quick Tunnel 暴露回调 URL；临时地址变化后通过配置脚本更新 WorkTool。
 - 阿里云 OSS 使用独立 `wechatrobot/` 对象前缀。
@@ -391,12 +402,13 @@ stateDiagram-v2
 - MySQL 事务与 Outbox 原子性。
 - Qdrant 标签过滤、写入、删除和重新索引。
 - OSS 上传与公共 URL 生成。
-- PaddleOCR 成功、部分页失败和超时。
+- 使用录制的阿里云响应样本验证 `RecognizeGeneral` 成功、无文字、部分字段缺失、限流、超时、鉴权失败和欠费错误映射。
+- 使用可替换的 SDK 适配器验证二进制请求、取消、有限重试、RequestId 审计和原始 JSON 到 `IOcrClient` 稳定模型的转换。
 - OpenAI 兼容对话与 Embedding 合约。
 - WorkTool 回调 3 秒内确认和发送命令序列化。
 - 三角色 API 授权。
 
-外部服务测试使用可替换客户端和录制的合约样本，真实端到端测试单独运行，避免普通测试误发群消息。
+外部服务测试使用可替换客户端和录制的合约样本。真实阿里云 OCR 验证只在显式启用且凭据齐全时运行，避免普通测试产生云端调用和费用；真实群聊端到端测试同样单独运行，避免误发群消息。
 
 ### 18.3 端到端验收
 
