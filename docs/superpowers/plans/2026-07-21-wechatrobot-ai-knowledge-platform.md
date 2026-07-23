@@ -4,9 +4,9 @@
 
 **Goal:** Build and locally verify a single-tenant AI employee assistant that receives unmentioned text messages from WorkTool external groups, answers from a tag-scoped self-built knowledge base, and hands unresolved questions to human staff.
 
-**Architecture:** Use an ASP.NET Core 10 API for synchronous HTTP boundaries and an ASP.NET Core Worker for durable asynchronous work. Store business state and durable jobs in MySQL, vectors and retrieval filter payloads in Qdrant, source files in one public-read Alibaba OSS bucket, and OCR behind a private FastAPI/PaddleOCR service. A Vue 3 administration SPA manages all configuration and operational workflows. External providers are hidden behind application interfaces so contract tests can run without sending real group messages.
+**Architecture:** Use an ASP.NET Core 10 API for synchronous HTTP boundaries and an ASP.NET Core Worker for durable asynchronous work. Store business state and durable jobs in MySQL, vectors and retrieval filter payloads in Qdrant, and source files in one public-read Alibaba OSS bucket. The Worker renders scanned PDF pages and calls Alibaba Cloud OCR `RecognizeGeneral` through the official .NET SDK behind `IOcrClient`. A Vue 3 administration SPA manages all configuration and operational workflows. External providers are hidden behind application interfaces so contract tests can run without sending real group messages or making paid OCR calls.
 
-**Tech Stack:** .NET 10, ASP.NET Core Minimal APIs, ASP.NET Core Identity, EF Core 10 with MySql.EntityFrameworkCore 10.0.7, xUnit v3, Testcontainers, Vue 3.5, TypeScript 7, Vite 8, Element Plus 2.14, Pinia 4, Vitest 4, Playwright 1.61, MySQL 8.4, Qdrant 1.18, Qdrant.Client 1.18.1, Aliyun OSS SDK 2.14.1, Python 3.11, FastAPI 0.139, PaddleOCR 3.7, Docker Compose.
+**Tech Stack:** .NET 10, ASP.NET Core Minimal APIs, ASP.NET Core Identity, EF Core 10 with MySql.EntityFrameworkCore 10.0.7, xUnit v3, Testcontainers, Vue 3.5, TypeScript 7, Vite 8, Element Plus 2.14, Pinia 4, Vitest 4, Playwright 1.61, MySQL 8.4, Qdrant 1.18, Qdrant.Client 1.18.1, Aliyun OSS SDK 2.14.1, AlibabaCloud.SDK.Ocr-api20210707 3.1.3, Docker Compose.
 
 ## Global Constraints
 
@@ -21,6 +21,9 @@
 - Keep the accepted public-read OSS warning visible in document administration. Tags restrict robot retrieval, not possession of a public object URL.
 - Keep the schema single-tenant. Do not add tenant selection, tenant claims, tenant billing, or tenant-scoped routing in this MVP.
 - Real WorkTool operations are opt-in tests protected by RUN_WORKTOOL_E2E=1. Normal test runs must not create groups or send messages.
+- Real Alibaba Cloud OCR operations are opt-in tests protected by RUN_ALIYUN_OCR_E2E=1. Normal test runs must not call paid OCR APIs.
+- Use `RecognizeGeneral` at `ocr-api.cn-hangzhou.aliyuncs.com` by default. Read OCR credentials only from `ALIBABA_CLOUD_OCR_ACCESS_KEY_ID` and `ALIBABA_CLOUD_OCR_ACCESS_KEY_SECRET`.
+- The dedicated OCR RAM user has `AliyunOCRFullAccess` and no OSS or unrelated cloud-product permission. Application configuration must not select another OCR action implicitly.
 - Do not copy MaxKB GPL source. Implement the approved behavior behind IKnowledgeService and keep a future provider boundary.
 - After each task, run the focused tests, run git diff --check, inspect git status, and commit only the files named by that task.
 
@@ -44,7 +47,6 @@ src/server/
   WechatRobot.Api/
   WechatRobot.Worker/
 src/web/wechatrobot-admin/
-src/ocr-service/
 tests/server/
   WechatRobot.UnitTests/
   WechatRobot.IntegrationTests/
@@ -115,21 +117,33 @@ public interface IObjectStorage
 }
 ```
 
-The OCR service request and response contract is:
+The Application-facing OCR contract contains no Alibaba Cloud SDK type:
 
-```text
-POST /v1/ocr/pages
-Content-Type: multipart/form-data
-fields: document_id, page_number, image
-```
+```csharp
+public sealed record OcrPageRequest(
+    Guid DocumentId,
+    int PageNumber,
+    Stream Image,
+    string ContentType,
+    long Length,
+    int Width,
+    int Height);
 
-```json
+public sealed record OcrTextBlock(string Text, decimal Confidence, int Order);
+
+public sealed record OcrPageError(string Code, string Message, bool Retryable);
+
+public sealed record OcrPageResult(
+    int PageNumber,
+    IReadOnlyList<OcrTextBlock> Blocks,
+    string? RequestId,
+    OcrPageError? Error);
+
+public interface IOcrClient
 {
-  "pageNumber": 1,
-  "blocks": [
-    { "text": "recognized text", "confidence": 0.98, "order": 0 }
-  ],
-  "error": null
+    Task<OcrPageResult> RecognizePageAsync(
+        OcrPageRequest request,
+        CancellationToken cancellationToken);
 }
 ```
 
@@ -204,9 +218,9 @@ public sealed class ProjectReferenceTests
 - [ ] Run dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj and confirm it fails because the solution/projects do not exist yet.
 - [ ] Scaffold the five projects and three test projects with dotnet new, add project references in the approved direction, and add all projects to WechatRobot.slnx.
 - [ ] Pin SDK 10.0.301 in global.json with rollForward set to latestFeature.
-- [ ] Centralize package versions in Directory.Packages.props, including Microsoft.EntityFrameworkCore 10.0.10, Microsoft.AspNetCore.Identity.EntityFrameworkCore 10.0.10, MySql.EntityFrameworkCore 10.0.7, Qdrant.Client 1.18.1, Aliyun.OSS.SDK.NetCore 2.14.1, DocumentFormat.OpenXml 3.5.1, UglyToad.PdfPig 1.7.0-custom-5, xunit.v3 3.2.2, Microsoft.AspNetCore.Mvc.Testing 10.0.10, and Testcontainers.MySql 4.13.0.
+- [ ] Centralize package versions in Directory.Packages.props, including Microsoft.EntityFrameworkCore 10.0.10, Microsoft.AspNetCore.Identity.EntityFrameworkCore 10.0.10, MySql.EntityFrameworkCore 10.0.7, Qdrant.Client 1.18.1, Aliyun.OSS.SDK.NetCore 2.14.1, AlibabaCloud.SDK.Ocr-api20210707 3.1.3, DocumentFormat.OpenXml 3.5.1, UglyToad.PdfPig 1.7.0-custom-5, xunit.v3 3.2.2, Microsoft.AspNetCore.Mvc.Testing 10.0.10, and Testcontainers.MySql 4.13.0.
 - [ ] Configure docker-compose.yml with mysql:8.4.10 and qdrant/qdrant:v1.18.2, named volumes, health checks, localhost-only ports, and values sourced from .env.
-- [ ] Put safe example values only in .env.example. Ignore .env, .superpowers/, bin, obj, node_modules, dist, coverage, Playwright artifacts, Python caches, .venv, local logs, and user secrets.
+- [ ] Put safe example values only in .env.example, including blank `ALIBABA_CLOUD_OCR_ACCESS_KEY_ID`, blank `ALIBABA_CLOUD_OCR_ACCESS_KEY_SECRET`, `Ocr__Provider=Aliyun`, `Ocr__Endpoint=ocr-api.cn-hangzhou.aliyuncs.com`, `Ocr__Action=RecognizeGeneral`, `Ocr__TimeoutSeconds=30`, and `Ocr__MaxAttempts=3`. Ignore .env, .superpowers/, bin, obj, node_modules, dist, coverage, Playwright artifacts, local logs, and user secrets.
 - [ ] Run docker compose config, dotnet restore WechatRobot.slnx, dotnet build WechatRobot.slnx -warnaserror, and the architecture test; expect all to pass.
 - [ ] Commit:
 
@@ -587,39 +601,52 @@ git add src/server tests
 git commit -m "feat: parse and preview knowledge chunks"
 ```
 
-### Task 12: Add the bounded PaddleOCR service and scanned-PDF fallback
+### Task 12: Add Alibaba Cloud OCR and scanned-PDF fallback
 
 **Files:**
 
-- Create: src/ocr-service/pyproject.toml
-- Create: src/ocr-service/app/main.py
-- Create: src/ocr-service/app/models.py
-- Create: src/ocr-service/app/ocr_engine.py
-- Create: src/ocr-service/tests/test_api.py
-- Create: src/ocr-service/Dockerfile
-- Modify: docker-compose.yml
 - Create: src/server/WechatRobot.Application/Ocr/IOcrClient.cs
-- Create: src/server/WechatRobot.Infrastructure/Ocr/PaddleOcrClient.cs
+- Create: src/server/WechatRobot.Application/Ocr/OcrPageRequest.cs
+- Create: src/server/WechatRobot.Application/Ocr/OcrPageResult.cs
+- Create: src/server/WechatRobot.Application/Ocr/OcrPageError.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/AliyunOcrOptions.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/IAliyunOcrSdk.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/AliyunOcrSdkResult.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/AliyunOcrSdk.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/AliyunOcrClient.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/AliyunOcrResponseParser.cs
+- Create: src/server/WechatRobot.Infrastructure/Ocr/OcrServiceCollectionExtensions.cs
 - Create: src/server/WechatRobot.Infrastructure/Knowledge/Parsing/PdfOcrFallback.cs
-- Create: tests/server/WechatRobot.ContractTests/Ocr/PaddleOcrContractTests.cs
+- Create: tests/server/WechatRobot.ContractTests/Ocr/AliyunOcrResponseSamples.cs
+- Create: tests/server/WechatRobot.ContractTests/Ocr/AliyunOcrResponseParserTests.cs
+- Create: tests/server/WechatRobot.UnitTests/Ocr/AliyunOcrClientTests.cs
+- Create: tests/server/WechatRobot.IntegrationTests/Ocr/RealAliyunOcrAcceptanceTests.cs
+- Modify: src/server/WechatRobot.Worker/Program.cs
+- Modify: src/server/WechatRobot.Worker/appsettings.json
+- Modify: .env.example
+- Modify: Directory.Packages.props
 
 **Interfaces:**
 
-- Consumes bounded page images over private HTTP.
-- Produces ordered text blocks, confidence values, page number, and partial-page error details.
+- Consumes a bounded page image through `IOcrClient.RecognizePageAsync(OcrPageRequest, CancellationToken)`.
+- `IAliyunOcrSdk.RecognizeGeneralAsync(Stream, CancellationToken)` returns `AliyunOcrSdkResult(StatusCode, Code, Message, RequestId, Data, RetryAfter)` and is the only Infrastructure seam that exposes the provider call to tests.
+- Produces ordered `OcrTextBlock` values, page number, Alibaba Cloud `RequestId`, and typed page error details without leaking SDK types into Application.
 
-- [ ] Write failing pytest cases for health, successful recognition through a fake engine, input size rejection, timeout mapping, and per-page failure.
-- [ ] Write a failing .NET contract test for the OCR JSON schema and timeout/cancellation behavior.
-- [ ] Implement FastAPI endpoints GET /health and POST /v1/ocr/pages. Keep PaddleOCR behind an injected adapter so tests do not download models.
-- [ ] Render PDF pages only after text extraction falls below the configured threshold. Enforce maximum pages, pixels, bytes, render time, and OCR time.
-- [ ] Persist page-level status so failed pages can be retried without rerunning successful pages.
-- [ ] Add the OCR container and health dependency to Docker Compose without exposing the service outside localhost/private Compose networking.
-- [ ] Run python -m pytest src/ocr-service/tests -q, the .NET contract tests, and docker compose config.
+- [ ] Write `AliyunOcrResponseParserTests` first with recorded `Data` JSON containing `content` and ordered `prism_wordsInfo`; assert text, `prob / 100m` confidence, and source order. Add cases for empty content and missing optional word data. Run the focused tests and confirm failure because `AliyunOcrResponseParser` does not exist.
+- [ ] Implement the minimal parser with `System.Text.Json`; reject malformed provider JSON as `OcrPageError.ProviderResponseInvalid` and never expose raw JSON in the error text. Run the focused contract tests and confirm they pass.
+- [ ] Write `AliyunOcrClientTests` first against a fake `IAliyunOcrSdk`. Assert rejection before provider invocation for unsupported content type, length over 10 MB, dimensions outside 16..8191, and aspect ratio >= 50. Assert exactly three total attempts for throttling, HTTP 503, and algorithm timeout, and one attempt for authentication, permission, billing, and invalid-image failures. Use an injected delay seam so tests do not sleep. Confirm the tests fail because the client is absent.
+- [ ] Implement `AliyunOcrOptions` with exact defaults `Provider=Aliyun`, `Endpoint=ocr-api.cn-hangzhou.aliyuncs.com`, `Action=RecognizeGeneral`, `TimeoutSeconds=30`, and `MaxAttempts=3`. Validate startup configuration and read credentials only from `ALIBABA_CLOUD_OCR_ACCESS_KEY_ID` and `ALIBABA_CLOUD_OCR_ACCESS_KEY_SECRET`.
+- [ ] Implement `AliyunOcrSdk` with `AlibabaCloud.SDK.Ocr-api20210707` 3.1.3. Build the SDK client for the configured endpoint, create `RecognizeGeneralRequest` with the page stream body, pass cancellation/timeout through the supported runtime options, and return only status, code, message, request ID, and `Data` to `AliyunOcrClient`.
+- [ ] Implement `AliyunOcrClient` retry classification. Respect a provider retry delay when available; otherwise use jittered exponential delays. Log action, duration, page number, sanitized code, attempt, and RequestId, but never credentials, authorization headers, image bytes, or raw provider JSON.
+- [ ] Render PDF pages only after extracted text falls below the configured threshold. Produce a supported PNG or JPEG and pass its exact width, height, and byte length in `OcrPageRequest`; lower render resolution or JPEG quality until it satisfies the provider limits before calling OCR. Enforce page/pixel/byte/render/recognition limits and persist page-level status so failed pages retry without rerunning successful pages.
+- [ ] Add `OcrServiceCollectionExtensions`, Worker registration, safe non-secret configuration, and authenticated readiness output that reports only `configured`, endpoint host, action, and last sanitized failure.
+- [ ] Add `RealAliyunOcrAcceptanceTests` that skips unless `RUN_ALIYUN_OCR_E2E=1` and both OCR credential variables are present. Submit one small fixture, assert non-empty text and RequestId, and do not print the response body.
+- [ ] Run `dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --filter FullyQualifiedName~Ocr`, `dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --filter FullyQualifiedName~Ocr`, and the integration test without the opt-in variable; expect contract/unit tests to pass and the real test to skip.
 - [ ] Commit:
 
 ```powershell
-git add src/ocr-service src/server docker-compose.yml tests/server
-git commit -m "feat: add scanned PDF OCR pipeline"
+git add Directory.Packages.props .env.example src/server tests/server
+git commit -m "feat: add Alibaba Cloud OCR pipeline"
 ```
 
 ### Task 13: Index approved chunks in Qdrant with tag filters and atomic versions
@@ -797,10 +824,10 @@ git commit -m "feat: complete knowledge and operations admin"
 - Produces repeatable local startup/shutdown and callback URL update commands on Windows.
 
 - [ ] Write failing health tests for healthy, degraded optional dependency, failed required dependency, and stale Worker heartbeat.
-- [ ] Write failing log-redaction tests covering API keys, callback tokens, robot IDs, OSS secrets, Authorization headers, and encrypted ciphertext.
+- [ ] Write failing log-redaction tests covering API keys, callback tokens, robot IDs, OSS secrets, OCR AccessKeys, Authorization headers, provider response JSON, and encrypted ciphertext.
 - [ ] Implement /health/live and authenticated /api/admin/health/ready. Public liveness must reveal no provider names or configuration.
 - [ ] Add separate rate limits for login, callback, upload, WorkTool commands, and ordinary APIs.
-- [ ] Add startup validation for master key, MySQL, allowed CORS origins, upload limits, send limit <= 60, and required encryption configuration.
+- [ ] Add startup validation for master key, MySQL, allowed CORS origins, upload limits, send limit <= 60, OCR provider/action/endpoint/timeout/attempt limits, presence of both OCR credential variables outside the test environment, and required encryption configuration.
 - [ ] Make start-dev.ps1 validate Docker, start dependencies, apply migrations, launch API/Worker/Vite with PID/log files, and print health URLs. Make stop-dev.ps1 stop only processes recorded by this repository.
 - [ ] Make update-worktool-callback.ps1 accept the current Cloudflare tunnel URL and update the configured robot only after displaying the final callback URL and receiving explicit confirmation.
 - [ ] Run security/health tests and exercise start/stop twice to prove idempotency.
@@ -825,12 +852,13 @@ git commit -m "chore: add secure local operations"
 
 **Interfaces:**
 
-- Consumes a locally running stack, safe test documents, and optionally the real 技术部 group.
+- Consumes a locally running stack, safe test documents, optionally one real Alibaba Cloud OCR call, and optionally the real 技术部 group.
 - Produces reproducible evidence for all eleven end-to-end acceptance conditions in the approved design.
 
 - [ ] Add Playwright 1.61.1 and write failing browser tests for login/roles, robot settings, group rules preview, document upload/chunk approval/indexing, audit evidence, handoff queue, and human-answer approval.
 - [ ] Use API-seeded test data and fake external providers for default E2E. Assert that no real WorkTool base URL is contacted.
 - [ ] Add a real test category that skips unless RUN_WORKTOOL_E2E=1 and all required secrets/group identifiers are present.
+- [ ] Keep the real OCR category separately gated by RUN_ALIYUN_OCR_E2E=1 and the two OCR credential variables. Never enable it merely because WorkTool E2E is enabled.
 - [ ] For the real 技术部 run, record UTC timestamps and audit IDs for: no-at reply, duplicate callback, allowed/disallowed tags, no visible source, explicit transfer, employee notification, AI pause, human resolution, approval, and later semantic retrieval.
 - [ ] Add a separate confirmed test for type 206 group creation and type 207 modification; do not run it as part of the ordinary 技术部 reply test.
 - [ ] Document manual steps that cannot be automated: inviting the bot to an existing group, confirming Enterprise WeChat permissions, observing account risk controls, and verifying the external participants.
@@ -842,7 +870,6 @@ npm ci --prefix src/web/wechatrobot-admin
 npm run test --prefix src/web/wechatrobot-admin
 npm run typecheck --prefix src/web/wechatrobot-admin
 npm run build --prefix src/web/wechatrobot-admin
-python -m pytest src/ocr-service/tests -q
 npm ci --prefix tests/e2e
 npm test --prefix tests/e2e
 docker compose config
@@ -861,8 +888,8 @@ git commit -m "test: add end-to-end acceptance coverage"
 - [ ] Run git status --short and separate any unrelated user files from project changes.
 - [ ] Run git diff --check.
 - [ ] Run dotnet clean WechatRobot.slnx followed by dotnet build WechatRobot.slnx -warnaserror.
-- [ ] Run all server, Vue, OCR, Playwright, and Docker Compose verification commands from Task 18.
-- [ ] Start the stack from scripts/start-dev.ps1 and verify API liveness, authenticated readiness, Worker heartbeat, Vue root, MySQL, Qdrant, and OCR health.
+- [ ] Run all server, Vue, Playwright, and Docker Compose verification commands from Task 18; confirm the real OCR test remains skipped unless explicitly enabled.
+- [ ] Start the stack from scripts/start-dev.ps1 and verify API liveness, authenticated readiness, Worker heartbeat, Vue root, MySQL, Qdrant, and sanitized Alibaba Cloud OCR configuration health.
 - [ ] Verify the database contains no plaintext secrets and application logs contain none of the configured test secret values.
 - [ ] Execute the approved real 技术部 checklist and attach only sanitized audit IDs/timestamps to docs/runbooks/release-readiness.md.
 - [ ] Verify every page named in the design is reachable by the intended role and denied to unintended roles at the API.
@@ -876,5 +903,5 @@ git commit -m "test: add end-to-end acceptance coverage"
 - Recommended execution order is strictly Task 1 through Task 18 because later contracts consume earlier persistence and provider boundaries.
 - Each checkpoint is a stop-and-review gate. Do not start the next wave while its focused tests or smoke test are failing.
 - If a provider contract differs from the recorded WorkTool samples, update the contract test and link the authoritative WorkTool documentation in the commit; do not silently loosen DTO validation.
-- If MySql.EntityFrameworkCore, Qdrant, PaddleOCR, or frontend package versions change during implementation, verify the current official compatibility matrix before upgrading and update Directory.Packages.props/package lock files in a dedicated commit.
+- If MySql.EntityFrameworkCore, Qdrant, AlibabaCloud.SDK.Ocr-api20210707, or frontend package versions change during implementation, verify the current official compatibility information before upgrading and update Directory.Packages.props/package lock files in a dedicated commit.
 - Production Windows Server topology, high availability, private OSS conversion, and MaxKB provider implementation remain outside this plan.
