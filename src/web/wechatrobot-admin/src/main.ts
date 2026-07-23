@@ -1,7 +1,17 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
-import ElementPlus from 'element-plus';
-import 'element-plus/dist/index.css';
+import 'element-plus/es/components/alert/style/css';
+import 'element-plus/es/components/button/style/css';
+import 'element-plus/es/components/config-provider/style/css';
+import 'element-plus/es/components/empty/style/css';
+import 'element-plus/es/components/form/style/css';
+import 'element-plus/es/components/input/style/css';
+import 'element-plus/es/components/pagination/style/css';
+import 'element-plus/es/components/progress/style/css';
+import 'element-plus/es/components/select/style/css';
+import 'element-plus/es/components/skeleton/style/css';
+import 'element-plus/es/components/table/style/css';
+import 'element-plus/es/components/tag/style/css';
 import './styles.css';
 import { configureUnauthorizedHandler } from './api/http';
 import { router } from './router';
@@ -17,5 +27,4 @@ configureUnauthorizedHandler(createUnauthorizedHandler(
 ));
 await useAuthStore(pinia).hydrate();
 app.use(router);
-app.use(ElementPlus);
 app.mount('#app');
