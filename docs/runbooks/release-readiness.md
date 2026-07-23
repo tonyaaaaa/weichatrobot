@@ -15,12 +15,14 @@ The browser suite rejects any request whose host is not `127.0.0.1` or `localhos
 | Existing-group invitation and configuration | Runbook requires manual invitation and permission confirmation | Pending explicit approval |
 | New external group and contacts | Separately gated command 206/207 test | Pending separate explicit approval |
 | No-at answer using allowed knowledge/context | Sanitized recorded callback preserves `atMe=false`; server pipeline tests cover processing | Real target pending |
-| No source in group; full authorized audit evidence | Authenticated audit API and browser display retrieval, model summary, send, handoff, and candidate evidence; signed URLs and secrets are removed | Real target pending |
+| No source in group; full authorized audit evidence | Authenticated paged audit API and browser display retrieval, input summary, exact send, handoff transitions, and candidate evidence; signed URLs and secrets are removed, and only the audit page exposes sources | Real target pending |
 | Duplicate callback | Existing integration coverage plus real evidence key | Real target pending |
 | Rate limit, retry, dead letter | Existing server suites and operations acceptance | Real observation pending |
 | Transfer, employee notification, AI pause | API-seeded handoff reason, assignment, resolution, and transitions | Notification/real pause pending |
 | Human answer approval and later retrieval | Browser resolves handoff and approves resulting candidate | Later real semantic retrieval pending |
 | Three-role authorization | Admin, KnowledgeOperator, and HumanAgent direct-route and controlled API allow/deny matrices are asserted; server policy tests cover audit/robot endpoints | Final production page matrix remains outside Task 18 |
+
+The conversation-audit read path is a thin authorized HTTP mapper over an Application query contract implemented in Infrastructure. The implementation loads a page with a fixed maximum of seven set-based database reads and correlates sends only through `grounded-reply:{messageId}` or the handoff's exact start idempotency key; same-group time proximity is never used.
 
 ## Evidence handling
 

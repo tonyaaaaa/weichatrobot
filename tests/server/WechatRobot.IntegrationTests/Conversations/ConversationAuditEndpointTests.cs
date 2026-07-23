@@ -118,7 +118,7 @@ public sealed class ConversationAuditApiFactory : WebApplicationFactory<Program>
             ConfidenceThreshold = .7, ConfidenceValue = .9, ContextPolicy = "group", CreatedAtUtc = at.AddSeconds(1),
             EvidenceJson = """[{"documentId":"d1","chunkId":"c1","title":"安全手册","url":"https://oss.test/doc?Signature=raw-signature","apiKey":"provider-secret"}]""",
             InputSummaryJson = """{"modelConfigurationId":"m1","authorization":"Bearer provider-secret"}""" };
-        var send = new SendCommandEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, IdempotencyKey = "send-audit",
+        var send = new SendCommandEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, IdempotencyKey = $"grounded-reply:{inbound.Id:D}",
             PayloadJson = """{"Text":"请使用安全重置页面。","WorkToolRobotId":"secret-robot-id"}""", Status = "completed", AttemptCount = 1,
             SentAtUtc = at.AddSeconds(2), CompletedAtUtc = at.AddSeconds(2), CreatedAtUtc = at.AddSeconds(1) };
         var handoff = new HandoffCaseEntity { QuestionMessageId = inbound.Id, RobotConfigId = robot.Id, GroupProfileId = group.Id,

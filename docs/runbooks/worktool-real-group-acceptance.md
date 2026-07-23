@@ -24,7 +24,7 @@ $env:WORKTOOL_E2E_ROBOT_ID = '<secret>'
 $env:WORKTOOL_E2E_CALLBACK_SECRET = '<secret>'
 $env:WORKTOOL_E2E_TARGET_GROUP = '技术部'
 $env:WORKTOOL_E2E_TARGET_CONFIRMED = '技术部'
-$env:WORKTOOL_E2E_EVIDENCE_JSON = '{"fromUtc":"<UTC ISO-8601>","toUtc":"<UTC ISO-8601>","noAtMessageId":"<external message id>","duplicateMessageId":"<external message id posted twice>","allowedTagMessageId":"<external message id>","disallowedTagMessageId":"<external message id>","transferMessageId":"<external message id>","laterSemanticMessageId":"<external message id>","allowedTagId":"<expected enabled tag UUID>"}'
+$env:WORKTOOL_E2E_EVIDENCE_JSON = '{"fromUtc":"<UTC ISO-8601>","toUtc":"<UTC ISO-8601>","noAtMessageId":"<external message id>","duplicateMessageId":"<external message id posted twice>","allowedTagMessageId":"<external message id>","disallowedTagMessageId":"<external message id>","transferMessageId":"<external message id>","laterSemanticMessageId":"<external message id>","allowedTagId":"<expected enabled tag UUID>","disallowedTagId":"<forbidden tag UUID>","forbiddenDocumentId":"<active document UUID>","forbiddenVersionId":"<active version UUID>","forbiddenChunkId":"<approved chunk UUID>","disallowedProbeQuestion":"<exact non-sensitive probe question>","disallowedExpectedDecision":"InsufficientEvidence"}'
 ```
 
 Then run only the ordinary category:
@@ -39,7 +39,7 @@ Manually exercise the following actions during the UTC window and record their W
 
 - a group question without `@` receives one completed reply; its durable callback payload must record `WasMentioned=false`;
 - post the duplicate callback/message twice; the verifier requires exactly one inbound message;
-- allowed and disallowed tag scopes behave differently;
+- allowed and disallowed tag scopes behave differently. Before the run, create one unique, approved, active probe chunk whose `Question` exactly equals `disallowedProbeQuestion`, bind it only to `disallowedTagId`, and confirm that `技术部` is not bound to that tag. The production audit honestly records `scoped_zero_hits`, the applied allowed-tag filter, the allowed tag IDs, and zero visible results; it does not claim that every zero-result query was caused by tag scope. The real verifier establishes that causal conclusion only by combining those audit facts with the explicitly configured document/version/chunk/tag/question metadata, exact callback text, completed processing and send, and the expected non-answer decision;
 - the group reply contains no visible source citation while authorized audit evidence does;
 - an explicit transfer request notifies the employee and pauses AI;
 - the human resolves the case and AI is restored only at the intended step;
@@ -72,4 +72,4 @@ $env:WORKTOOL_GROUP_MUTATION_TARGET_CONFIRMED = '<approved-disposable-group>'
 dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-trait 'Category=RealWorkToolGroupMutation'
 ```
 
-This test calls the audited backend preview/execute flow for command 206 and then command 207, then independently queries `worktool_operation_audit` for successful 206/207 records created after the test began. It never prints the bearer token, provider response, URL, robot ID, member IDs, or command payload. Never set this gate merely to make a skipped test run. Clear every `WORKTOOL_GROUP_MUTATION_*` value immediately afterward.
+This test calls the audited backend preview/execute flow for command 206 and then command 207. Each execute response returns its newly created audit ID; the test queries only those two IDs and requires the exact command number, successful status, robot configuration, and sanitized group identifier for each operation. Concurrent unrelated 206/207 rows cannot satisfy the check. It never prints the bearer token, provider response, URL, robot ID, member IDs, or command payload. Never set this gate merely to make a skipped test run. Clear every `WORKTOOL_GROUP_MUTATION_*` value immediately afterward.

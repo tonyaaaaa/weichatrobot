@@ -1,45 +1,18 @@
-import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { extname, join, normalize, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyRequest } from './request-classifier.mjs';
+import { requiredRoles, userFromRequest, users } from './server-auth.mjs';
+import { auditPage, createInitialState, groupConfiguration, ids, page } from './server-fixtures.mjs';
+import { serveStatic } from './server-static.mjs';
 
 const root = resolve(fileURLToPath(new URL('../../src/web/wechatrobot-admin/dist', import.meta.url)));
 const port = 4178;
-const ids = {
-  document: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-  version: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-  chunk: 'cccccccc-cccc-cccc-cccc-cccccccccccc'
-};
-
 let state;
 function resetState() {
-  state = {
-    documentIndexed: false,
-    approvedChunks: 0,
-    externalProviderCalls: 0,
-    workToolRequests: 0,
-    ruleKinds: { include: [], exclude: [] },
-    handoffState: 'WaitingHuman',
-    handoffVersion: 1,
-    candidateStatus: 'pending',
-    finalAnswer: '由人工确认的安全答案。',
-    robot: { id: 'robot-e2e', name: 'E2E 机器人', isEnabled: true, sendRateLimitPerMinute: 50, updatedAtUtc: '2026-07-23T00:00:00Z' },
-    model: {
-      id: 'model-e2e', name: 'e2e-chat', provider: 'fake-local', configurationType: 'chat',
-      baseUrl: 'http://127.0.0.1:4178/__fake/chat', model: 'safe-chat-v1',
-      timeoutSeconds: 5, maxRetries: 0, isEnabled: true, isDefault: true,
-      hasApiKey: true, lastFour: '1234'
-    }
-  };
+  state = createInitialState();
 }
 resetState();
-
-const users = {
-  'admin@e2e.local': { password: 'Safe-E2E-Admin-1!', roles: ['Admin'], displayName: 'E2E 管理员' },
-  'knowledge@e2e.local': { password: 'Safe-E2E-Knowledge-1!', roles: ['KnowledgeOperator'], displayName: 'E2E 知识运营' },
-  'human@e2e.local': { password: 'Safe-E2E-Human-1!', roles: ['HumanAgent'], displayName: 'E2E 人工客服' }
-};
 
 function sendJson(response, status, value) {
   const body = JSON.stringify(value);
@@ -55,41 +28,6 @@ async function readJson(request) {
   return request.headers['content-type']?.includes('application/json') ? JSON.parse(text) : {};
 }
 
-function userFromRequest(request) {
-  const token = request.headers.authorization?.replace(/^Bearer /, '');
-  const email = token?.replace(/^e2e-token:/, '');
-  return email ? users[email] : undefined;
-}
-
-function requiredRoles(pathname) {
-  if (pathname.startsWith('/api/admin/') || pathname.startsWith('/api/groups/') || pathname === '/api/group-rules/preview') return ['Admin'];
-  if (pathname.startsWith('/api/knowledge/') || pathname.startsWith('/api/audit/')) return ['Admin', 'KnowledgeOperator'];
-  if (pathname.startsWith('/api/handoffs/')) return ['Admin', 'HumanAgent'];
-  return [];
-}
-
-function page(items) {
-  return { items, total: items.length, page: 1, pageSize: 20 };
-}
-
-function groupConfiguration() {
-  return {
-    id: 'group-e2e', name: '技术部',
-    rules: {
-      include: [{ id: 'rule-include', pattern: '^技术部', patternKind: 'regex', ignoreCase: true }],
-      exclude: [{ id: 'rule-exclude', pattern: '禁用', patternKind: 'contains', ignoreCase: true }]
-    },
-    boundTagIds: ['11111111-1111-1111-1111-111111111111'],
-    allowedTagIds: ['11111111-1111-1111-1111-111111111111'],
-    availableTags: [{ id: '11111111-1111-1111-1111-111111111111', name: '安全测试', isGlobalPublic: false, isEnabled: true, isBound: true }],
-    tagVisibility: 'any-bound-tag-or-global-public',
-    context: {
-      configured: {},
-      effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true }
-    },
-    clearedContextSessions: 0
-  };
-}
 
 async function handleApi(request, response, url) {
   const classification = classifyRequest(url.pathname);
@@ -163,18 +101,7 @@ async function handleApi(request, response, url) {
   }
 
   if (url.pathname === '/api/audit/conversations' && request.method === 'GET') {
-    return sendJson(response, 200, {
-      items: [{
-        id: 'audit-e2e', groupProfileId: 'group-e2e', workToolMessageId: 'recorded-e2e-message',
-        question: '如何重置密码？', answer: '请使用安全重置页面。', decision: 'Answer',
-        createdAtUtc: '2026-07-23T00:00:00Z', sources: ['安全手册'],
-        evidence: [{ documentId: 'safe-document', chunkId: 'safe-chunk', title: '安全手册' }],
-        inputSummary: { promptTemplateVersion: 'grounded-v2' },
-        send: { status: 'completed', attemptCount: 1 },
-        handoff: null, knowledgeCandidate: null
-      }],
-      total: 1, page: 1, pageSize: 20
-    });
+    return sendJson(response, 200, auditPage(state, Number(url.searchParams.get('page') ?? 1), Number(url.searchParams.get('pageSize') ?? 20)));
   }
 
   if (url.pathname === '/api/knowledge/documents' && request.method === 'POST') {
@@ -243,16 +170,6 @@ async function handleApi(request, response, url) {
   return sendJson(response, 404, { error: `No E2E route for ${request.method} ${url.pathname}` });
 }
 
-function serveStatic(response, pathname) {
-  const requested = pathname === '/' ? '/index.html' : pathname;
-  const relative = normalize(requested).replace(/^([/\\])+/, '');
-  let path = join(root, relative);
-  if (!path.startsWith(root) || !existsSync(path) || statSync(path).isDirectory()) path = join(root, 'index.html');
-  const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-  response.writeHead(200, { 'content-type': types[extname(path)] ?? 'application/octet-stream' });
-  createReadStream(path).pipe(response);
-}
-
 createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host}`);
@@ -265,7 +182,7 @@ createServer(async (request, response) => {
     });
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/wework/') || url.pathname.startsWith('/v1/')
       || url.pathname.startsWith('/__fake/')) return await handleApi(request, response, url);
-    return serveStatic(response, url.pathname);
+    return serveStatic(root, response, url.pathname);
   } catch (error) {
     return sendJson(response, 500, { error: error instanceof Error ? error.message : 'unknown error' });
   }

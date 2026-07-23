@@ -130,10 +130,19 @@ test('knowledge operator uploads, approves chunks, queues indexing, and reads sa
   await page.locator('#index-tag-ids').fill('11111111-1111-1111-1111-111111111111');
   await page.getByTestId('queue-index').click();
   await expect(page.getByText('索引任务已排队。')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '检索来源' })).toHaveCount(0);
 
   await page.getByRole('link', { name: '会话审计' }).click();
   await expect(page.getByText('安全手册', { exact: true })).toBeVisible();
   await expect(page.getByText('请使用安全重置页面。')).toBeVisible();
+  await expect(page.getByText('grounded-v2')).toBeVisible();
+  await expect(page.getByText('completed')).toBeVisible();
+  await expect(page.getByText('Resolved')).toBeVisible();
+  await expect(page.getByText('AIActive → WaitingHuman')).toBeVisible();
+  await expect(page.getByText('approved_pending_index')).toBeVisible();
+  await page.locator('.el-pagination .btn-next').click();
+  await expect(page.getByText('第二页审计问题')).toBeVisible();
+  await expect(page.getByText('安全手册', { exact: true })).toHaveCount(0);
   const evidence = await page.request.get('/__e2e/evidence');
   expect(await evidence.json()).toMatchObject({
     documentIndexed: true,

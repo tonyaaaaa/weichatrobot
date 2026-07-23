@@ -62,6 +62,9 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
 
         var success = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation = Operation(first.Id, "UpdateAnnouncement", "secret announcement"), confirmationToken = preview }, TestContext.Current.CancellationToken);
         success.EnsureSuccessStatusCode(); Assert.Equal(1, recorder.GroupOperationCalls);
+        using var successDocument = JsonDocument.Parse(await success.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var successAuditId = successDocument.RootElement.GetProperty("auditId").GetGuid();
+        Assert.NotEqual(Guid.Empty, successAuditId);
         var replay = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation = Operation(first.Id, "UpdateAnnouncement", "secret announcement"), confirmationToken = preview }, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode); Assert.Equal(1, recorder.GroupOperationCalls);
 
@@ -77,6 +80,8 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         failed.EnsureSuccessStatusCode();
         using var verifyScope = _factory.Services.CreateScope();
         var audits = await verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().WorkToolOperationAudits.OrderBy(item => item.CreatedAtUtc).ToArrayAsync(TestContext.Current.CancellationToken);
+        Assert.Contains(audits, item => item.Id == successAuditId && item.Status == "Succeeded"
+            && item.OperatorName == "model-admin" && item.WorkToolCommandNumber == 207);
         Assert.Contains(audits, item => item.Status == "Failed" && item.Result == "WorkTool rejected the command.");
         Assert.Contains(audits, item => item.Status == "Rejected");
         var auditResponse = await client.GetStringAsync("/api/admin/worktool/group-operations", TestContext.Current.CancellationToken);

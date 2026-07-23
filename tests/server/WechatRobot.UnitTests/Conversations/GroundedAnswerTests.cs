@@ -72,6 +72,24 @@ public sealed class GroundedAnswerTests
     }
 
     [Fact]
+    public async Task No_visible_hits_under_an_allowed_tag_filter_records_honest_scoped_zero_hits()
+    {
+        var model = new FakeChatClient("must not be used");
+
+        var result = await Service(new FakeRetrieval(), model)
+            .AnswerAsync(Request("仅禁用标签可回答的问题"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(AnswerDecisionKind.InsufficientEvidence, result.Decision.Kind);
+        Assert.Equal("scoped_zero_hits", result.Audit.FailureCode);
+        Assert.Empty(result.Audit.Evidence);
+        Assert.Equal(0, model.CallCount);
+        using var input = JsonDocument.Parse(result.Audit.InputSummaryJson);
+        Assert.Equal("allowed-tags", input.RootElement.GetProperty("RetrievalFilter").GetString());
+        Assert.Equal(0, input.RootElement.GetProperty("RetrievalResultCount").GetInt32());
+        Assert.Equal([TagId], input.RootElement.GetProperty("AllowedTagIds").EnumerateArray().Select(item => item.GetGuid()));
+    }
+
+    [Fact]
     public async Task Provider_timeout_and_qdrant_failure_are_system_failures_not_insufficient_evidence()
     {
         var timeout = await Service(new FakeRetrieval(Evidence(.9, "strong")), new FakeChatClient(new TimeoutException()))

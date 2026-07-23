@@ -131,7 +131,7 @@ public static class WorkToolGroupOperationEndpoints
         var audit = NewAudit(operatorName, operation.Kind, sanitized, "Pending", null); database.WorkToolOperationAudits.Add(audit);
         try { await database.SaveChangesAsync(cancellationToken); }
         catch (DbUpdateConcurrencyException) { database.Entry(confirmationRow).State = EntityState.Detached; database.Entry(audit).State = EntityState.Detached; database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Confirmation was already used.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token was already used." }); }
-        try { var result = await client.ExecuteGroupOperationAsync(operation with { WorkToolRobotId = robot.WorkToolRobotId }, cancellationToken); audit.Status = result.Succeeded ? "Succeeded" : "Failed"; audit.Result = result.Succeeded ? null : "WorkTool rejected the command."; await database.SaveChangesAsync(cancellationToken); return Results.Ok(new CommandStatusResponse(result.Succeeded, result.Succeeded ? "Command accepted." : "WorkTool rejected the command.")); }
+        try { var result = await client.ExecuteGroupOperationAsync(operation with { WorkToolRobotId = robot.WorkToolRobotId }, cancellationToken); audit.Status = result.Succeeded ? "Succeeded" : "Failed"; audit.Result = result.Succeeded ? null : "WorkTool rejected the command."; await database.SaveChangesAsync(cancellationToken); return Results.Ok(new CommandStatusResponse(result.Succeeded, result.Succeeded ? "Command accepted." : "WorkTool rejected the command.", audit.Id)); }
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { audit.Status = "Failed"; audit.Result = "WorkTool request failed."; await database.SaveChangesAsync(cancellationToken); return Results.Problem("WorkTool request failed.", statusCode: 502); }
     }
 
@@ -160,7 +160,7 @@ public static class WorkToolGroupOperationEndpoints
     public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberIds, string? Value) { public IReadOnlyList<string> MemberIds { get; init; } = MemberIds ?? []; }
     public sealed record ExecuteOperationRequest(GroupOperationRequest Operation, string ConfirmationToken);
     public sealed record PreviewResponse(string SanitizedRequest, string ConfirmationToken, DateTime ExpiresAtUtc);
-    public sealed record CommandStatusResponse(bool Succeeded, string Message);
+    public sealed record CommandStatusResponse(bool Succeeded, string Message, Guid? AuditId = null);
     public sealed record AuditResponse(Guid Id, string Operation, int WorkToolCommandNumber, string Status, string? Result, DateTime CreatedAtUtc, string SanitizedRequest);
     public sealed record AuditScopeResponse(string Scope);
 }

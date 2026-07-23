@@ -251,15 +251,37 @@ describe('Task 16 operational pages', () => {
     const api = {
       capability: vi.fn().mockResolvedValue({
         available: true,
-        items: [{ id: 'a1', question: 'Q', answer: 'A', sources: ['产品手册#3'], evidence: { score: 0.91, apiKey: 'sk-secret', authorization: 'Bearer hidden' }, createdAtUtc: '2026-07-22T00:00:00Z' }]
+        items: [{
+          id: 'a1', question: 'Q', answer: 'A', sources: ['产品手册#3'],
+          evidence: { score: 0.91, apiKey: 'sk-secret', authorization: 'Bearer hidden' },
+          inputSummary: { promptTemplateVersion: 'grounded-v2' },
+          send: { status: 'completed', attemptCount: 1 },
+          handoff: {
+            state: 'Resolved', reasonCode: 'explicit_transfer',
+            transitions: [{ sequence: 1, fromState: 'AIActive', toState: 'WaitingHuman', reasonCode: 'explicit_transfer' }]
+          },
+          knowledgeCandidate: { status: 'approved_pending_index' },
+          createdAtUtc: '2026-07-22T00:00:00Z'
+        }],
+        total: 21, page: 1, pageSize: 20
       })
     };
     const wrapper = mount(ConversationAuditView, { props: { api } });
     await flushPromises();
     expect(wrapper.text()).toContain('产品手册#3');
     expect(wrapper.text()).toContain('0.91');
+    expect(wrapper.text()).toContain('grounded-v2');
+    expect(wrapper.text()).toContain('completed');
+    expect(wrapper.text()).toContain('Resolved');
+    expect(wrapper.text()).toContain('AIActive');
+    expect(wrapper.text()).toContain('approved_pending_index');
     expect(wrapper.text()).not.toContain('sk-secret');
     expect(wrapper.text()).not.toContain('Bearer hidden');
+    const pagination = wrapper.findComponent({ name: 'ElPagination' });
+    expect(pagination.exists()).toBe(true);
+    pagination.vm.$emit('current-change', 2);
+    await flushPromises();
+    expect(api.capability).toHaveBeenLastCalledWith(2, 20);
   });
 
   it('redacts secret-shaped values from review and handoff evidence', async () => {

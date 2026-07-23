@@ -10,7 +10,12 @@ public static class RealAcceptanceEvidenceVerifier
         Require(!snapshot.NoAtWasMentioned && snapshot.NoAtReplyCompleted, "no-at-reply-mismatch");
         Require(snapshot.DuplicateInboundCount == 1, "duplicate-callback-mismatch");
         Require(snapshot.AllowedTagEvidenceMatched, "allowed-tags-mismatch");
-        Require(snapshot.DisallowedTagEvidenceMatched, "disallowed-tags-mismatch");
+        Require(snapshot.DisallowedGroupExcludesTag, "disallowed-group-tag-mismatch");
+        Require(snapshot.ForbiddenProbeDocumentMatched, "forbidden-probe-document-mismatch");
+        Require(snapshot.DisallowedProbeCallbackMatched, "disallowed-probe-callback-mismatch");
+        Require(snapshot.DisallowedProbeProcessingCompleted, "disallowed-probe-processing-mismatch");
+        Require(snapshot.DisallowedRetrievalFilterMatched, "disallowed-retrieval-filter-mismatch");
+        Require(snapshot.DisallowedOutcomeMatched, "disallowed-outcome-mismatch");
         Require(snapshot.NoVisibleSourceMatched, "visible-source-mismatch");
         Require(snapshot.ExplicitTransferMatched, "explicit-transfer-mismatch");
         Require(snapshot.EmployeeNotificationCompleted, "notification-missing");
@@ -41,7 +46,12 @@ public sealed record RealAcceptanceEvidenceSnapshot(
     bool NoAtReplyCompleted,
     int DuplicateInboundCount,
     bool AllowedTagEvidenceMatched,
-    bool DisallowedTagEvidenceMatched,
+    bool DisallowedGroupExcludesTag,
+    bool ForbiddenProbeDocumentMatched,
+    bool DisallowedProbeCallbackMatched,
+    bool DisallowedProbeProcessingCompleted,
+    bool DisallowedRetrievalFilterMatched,
+    bool DisallowedOutcomeMatched,
     bool NoVisibleSourceMatched,
     bool ExplicitTransferMatched,
     bool EmployeeNotificationCompleted,

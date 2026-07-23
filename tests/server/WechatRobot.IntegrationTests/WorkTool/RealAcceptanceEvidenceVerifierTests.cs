@@ -17,6 +17,12 @@ public sealed class RealAcceptanceEvidenceVerifierTests
     [Theory]
     [InlineData("identity-mismatch")]
     [InlineData("duplicate-callback-mismatch")]
+    [InlineData("disallowed-group-tag-mismatch")]
+    [InlineData("forbidden-probe-document-mismatch")]
+    [InlineData("disallowed-probe-callback-mismatch")]
+    [InlineData("disallowed-probe-processing-mismatch")]
+    [InlineData("disallowed-retrieval-filter-mismatch")]
+    [InlineData("disallowed-outcome-mismatch")]
     [InlineData("notification-missing")]
     [InlineData("semantic-retrieval-mismatch")]
     public void Missing_or_mismatched_backend_state_fails_with_stable_sanitized_code(string code)
@@ -25,6 +31,12 @@ public sealed class RealAcceptanceEvidenceVerifierTests
         {
             IdentityMatched = code != "identity-mismatch",
             DuplicateInboundCount = code == "duplicate-callback-mismatch" ? 2 : 1,
+            DisallowedGroupExcludesTag = code != "disallowed-group-tag-mismatch",
+            ForbiddenProbeDocumentMatched = code != "forbidden-probe-document-mismatch",
+            DisallowedProbeCallbackMatched = code != "disallowed-probe-callback-mismatch",
+            DisallowedProbeProcessingCompleted = code != "disallowed-probe-processing-mismatch",
+            DisallowedRetrievalFilterMatched = code != "disallowed-retrieval-filter-mismatch",
+            DisallowedOutcomeMatched = code != "disallowed-outcome-mismatch",
             EmployeeNotificationCompleted = code != "notification-missing",
             LaterSemanticRetrievalMatched = code != "semantic-retrieval-mismatch"
         };
@@ -41,7 +53,8 @@ public sealed class RealAcceptanceEvidenceVerifierTests
         var from = new DateTime(2026, 7, 23, 0, 0, 0, DateTimeKind.Utc);
         var ids = Enumerable.Range(1, 11).Select(_ => Guid.NewGuid()).ToArray();
         return new(
-            from, from.AddHours(1), true, true, false, true, 1, true, true, true,
+            from, from.AddHours(1), true, true, false, true, 1, true,
+            true, true, true, true, true, true, true,
             true, true, true, true, true, true,
             ids.Select((id, index) => new RealAcceptanceEvidence($"condition-{index}", id, from.AddMinutes(index + 1))).ToArray());
     }

@@ -28,6 +28,7 @@ using WechatRobot.Application.Messaging;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.Security;
 using WechatRobot.Application.WorkTool;
+using WechatRobot.Application.Audit;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Conversations;
 using WechatRobot.Infrastructure.Knowledge;
@@ -65,6 +66,7 @@ builder.Services.AddScoped<IHandoffStore, EfHandoffStore>();
 builder.Services.AddScoped<HandoffService>();
 builder.Services.AddScoped<IKnowledgeCandidateStore, EfKnowledgeCandidateStore>();
 builder.Services.AddScoped<KnowledgeCandidateService>();
+builder.Services.AddScoped<IConversationAuditQuery, ConversationAuditQuery>();
 builder.Services.AddOptions<DocumentUploadOptions>()
     .BindConfiguration(DocumentUploadOptions.SectionName)
     .Validate(options => options.MaximumBytes is > 0 and <= int.MaxValue && options.MaximumArchiveEntries > 0 && options.MaximumExpandedArchiveBytes > 0 && options.MaximumArchiveExpansionRatio > 0, "Document upload limits are invalid.")

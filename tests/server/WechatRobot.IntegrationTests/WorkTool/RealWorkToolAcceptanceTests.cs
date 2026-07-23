@@ -48,28 +48,29 @@ public sealed class RealWorkToolAcceptanceTests
 
         try
         {
-            var started = DateTime.UtcNow;
             using var api = new HttpClient { BaseAddress = settings!.ApiBaseUrl };
             api.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.BearerToken);
-            await ExecuteAuditedOperationAsync(api, new
+            var createAuditId = await ExecuteAuditedOperationAsync(api, new
             {
                 robotConfigId = settings.RobotConfigId, kind = "Create", groupIdentifier = settings.NewGroupName,
                 memberIds = settings.MemberIds, value = settings.Announcement
             }, TestContext.Current.CancellationToken);
-            await ExecuteAuditedOperationAsync(api, new
+            var renameAuditId = await ExecuteAuditedOperationAsync(api, new
             {
                 robotConfigId = settings.RobotConfigId, kind = "Rename", groupIdentifier = settings.NewGroupName,
                 memberIds = Array.Empty<string>(), value = settings.RenamedGroupName
             }, TestContext.Current.CancellationToken);
 
             await using var db = Database(settings.ConnectionString);
+            var expectedIds = new[] { createAuditId, renameAuditId };
             var audits = await db.WorkToolOperationAudits.AsNoTracking()
-                .Where(item => item.CreatedAtUtc >= started && item.Status == "Succeeded"
-                    && (item.WorkToolCommandNumber == 206 || item.WorkToolCommandNumber == 207))
-                .OrderBy(item => item.CreatedAtUtc).ToArrayAsync(TestContext.Current.CancellationToken);
-            if (!audits.Any(item => item.WorkToolCommandNumber == 206) || !audits.Any(item => item.WorkToolCommandNumber == 207))
-                throw new RealAcceptanceVerificationException("group-mutation-audit-missing");
-            foreach (var audit in audits.Where(item => item.WorkToolCommandNumber is 206 or 207))
+                .Where(item => expectedIds.Contains(item.Id)).OrderBy(item => item.CreatedAtUtc)
+                .ToArrayAsync(TestContext.Current.CancellationToken);
+            if (audits.Length != 2
+                || !ExactOperation(audits, createAuditId, 206, settings.RobotConfigId, settings.NewGroupName)
+                || !ExactOperation(audits, renameAuditId, 207, settings.RobotConfigId, settings.NewGroupName))
+                throw new RealAcceptanceVerificationException("group-mutation-exact-audit-mismatch");
+            foreach (var audit in audits)
                 TestContext.Current.TestOutputHelper?.WriteLine("group-mutation utc={0:O} auditId={1:D} command={2}", audit.CreatedAtUtc, audit.Id, audit.WorkToolCommandNumber);
         }
         catch (RealAcceptanceVerificationException exception)
@@ -82,7 +83,7 @@ public sealed class RealWorkToolAcceptanceTests
         }
     }
 
-    private static async Task ExecuteAuditedOperationAsync(HttpClient api, object operation, CancellationToken token)
+    private static async Task<Guid> ExecuteAuditedOperationAsync(HttpClient api, object operation, CancellationToken token)
     {
         using var preview = await api.PostAsJsonAsync("/api/admin/worktool/group-operations/preview", operation, token);
         if (!preview.IsSuccessStatusCode) throw new RealAcceptanceVerificationException("group-mutation-preview-failed");
@@ -91,6 +92,11 @@ public sealed class RealWorkToolAcceptanceTests
         if (string.IsNullOrWhiteSpace(confirmationToken)) throw new RealAcceptanceVerificationException("group-mutation-confirmation-missing");
         using var execute = await api.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new { operation, confirmationToken }, token);
         if (!execute.IsSuccessStatusCode) throw new RealAcceptanceVerificationException("group-mutation-execute-failed");
+        using var executeJson = JsonDocument.Parse(await execute.Content.ReadAsStringAsync(token));
+        if (!executeJson.RootElement.TryGetProperty("auditId", out var auditIdElement)
+            || !auditIdElement.TryGetGuid(out var auditId) || auditId == Guid.Empty)
+            throw new RealAcceptanceVerificationException("group-mutation-audit-id-missing");
+        return auditId;
     }
 
     private static async Task<RealAcceptanceEvidenceSnapshot> LoadSnapshotAsync(
@@ -116,24 +122,39 @@ public sealed class RealWorkToolAcceptanceTests
         var noAtWasMentioned = noAtJob is null || WasMentioned(noAtJob.PayloadJson);
         var noAtAudit = noAt is null ? null : await AuditAsync(db, noAt.Id, token);
         var noAtAnswer = noAt is null ? null : await AnswerAsync(db, noAt.Id, token);
-        var noAtSends = await db.SendCommands.AsNoTracking().Where(item => item.RobotConfigId == robot.Id && item.GroupProfileId == group.Id
-                && item.CreatedAtUtc >= manifest.FromUtc && item.CreatedAtUtc <= manifest.ToUtc && item.Status == "completed")
-            .OrderBy(item => item.CreatedAtUtc).ToArrayAsync(token);
-        var noAtSend = noAtAnswer is null ? null : noAtSends.FirstOrDefault(item => SendMatches(item.PayloadJson, group.Name, noAtAnswer.Text));
+        var noAtSend = noAt is null ? null : await db.SendCommands.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.IdempotencyKey == $"grounded-reply:{noAt.Id:D}", token);
         var duplicateCount = await db.ConversationMessages.AsNoTracking().CountAsync(item =>
             item.RobotConfigId == robot.Id && item.WorkToolMessageId == manifest.DuplicateMessageId, token);
         var allowedAudit = allowed is null ? null : await AuditAsync(db, allowed.Id, token);
         var disallowedAudit = disallowed is null ? null : await AuditAsync(db, disallowed.Id, token);
+        var groupTags = await db.GroupProfileTags.AsNoTracking().Where(item => item.GroupProfileId == group.Id)
+            .Select(item => item.KnowledgeTagId).OrderBy(item => item).ToArrayAsync(token);
+        var forbiddenProbe = await (
+            from chunk in db.KnowledgeChunks.AsNoTracking()
+            join version in db.KnowledgeDocumentVersions.AsNoTracking() on chunk.KnowledgeDocumentVersionId equals version.Id
+            join document in db.KnowledgeDocuments.AsNoTracking() on version.KnowledgeDocumentId equals document.Id
+            join binding in db.KnowledgeChunkTags.AsNoTracking() on chunk.Id equals binding.KnowledgeChunkId
+            where document.Id == manifest.ForbiddenDocumentId
+                && version.Id == manifest.ForbiddenVersionId
+                && chunk.Id == manifest.ForbiddenChunkId
+                && binding.KnowledgeTagId == manifest.DisallowedTagId
+                && chunk.Question == manifest.DisallowedProbeQuestion
+                && chunk.Status == "approved"
+                && version.Status == "active" && version.IsPublished
+                && document.Status == "active" && !document.IsDeleteRequested
+                && document.ActiveVersionId == version.Id
+            select new { document.Id, VersionId = version.Id, ChunkId = chunk.Id, binding.KnowledgeTagId })
+            .SingleOrDefaultAsync(token);
+        var disallowedSend = disallowed is null ? null : await db.SendCommands.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.IdempotencyKey == $"grounded-reply:{disallowed.Id:D}", token);
         var allowedAnswer = allowed is null ? null : await AnswerAsync(db, allowed.Id, token);
         var transferHandoff = transfer is null ? null : await db.HandoffCases.AsNoTracking()
             .SingleOrDefaultAsync(item => item.QuestionMessageId == transfer.Id && item.ReasonCode == "explicit_transfer", token);
         var transitions = transferHandoff is null ? [] : await db.HandoffTransitions.AsNoTracking()
             .Where(item => item.HandoffCaseId == transferHandoff.Id).OrderBy(item => item.Sequence).ToArrayAsync(token);
-        var notificationCandidates = transferHandoff is null ? [] : await db.SendCommands.AsNoTracking()
-            .Where(item => item.RobotConfigId == robot.Id && item.GroupProfileId == group.Id
-                && item.CreatedAtUtc >= transferHandoff.CreatedAtUtc && item.CreatedAtUtc <= manifest.ToUtc)
-            .OrderBy(item => item.CreatedAtUtc).ToArrayAsync(token);
-        var notification = transferHandoff is null ? null : notificationCandidates.FirstOrDefault(item => NotificationMatches(item.PayloadJson, transferHandoff.Id));
+        var notification = transferHandoff?.StartIdempotencyKey is not { Length: > 0 } handoffSendKey ? null
+            : await db.SendCommands.AsNoTracking().SingleOrDefaultAsync(item => item.IdempotencyKey == handoffSendKey, token);
         var candidate = transferHandoff is null ? null : await db.KnowledgeCandidates.AsNoTracking()
             .SingleOrDefaultAsync(item => item.HandoffCaseId == transferHandoff.Id, token);
         var review = candidate is null ? null : await db.KnowledgeReviews.AsNoTracking()
@@ -159,10 +180,17 @@ public sealed class RealWorkToolAcceptanceTests
         };
 
         return new(manifest.FromUtc, manifest.ToUtc, true, callbackSecretMatched, noAtWasMentioned,
-            noAtAudit is not null && noAtAnswer is not null && noAtSend is not null,
+            noAtAudit is not null && noAtAnswer is not null && noAtSend is not null && noAtSend.Status == "completed",
             duplicateCount,
             HasEvidence(allowedAudit) && EvidenceContainsTag(allowedAudit!.EvidenceJson, manifest.AllowedTagId),
-            disallowedAudit is not null && !HasEvidence(disallowedAudit) && disallowedAudit.Decision != "Answer",
+            !groupTags.Contains(manifest.DisallowedTagId),
+            forbiddenProbe is not null,
+            disallowed is not null && disallowed.Text == manifest.DisallowedProbeQuestion,
+            disallowed is not null && disallowed.ProcessingState == "completed"
+                && disallowedSend is not null && disallowedSend.Status == "completed",
+            disallowedAudit is not null && TagScopeFilterMatches(disallowedAudit, groupTags, manifest),
+            disallowedAudit is not null && disallowedAudit.Decision == manifest.DisallowedExpectedDecision
+                && disallowedAudit.FailureCode == "scoped_zero_hits" && !HasEvidence(disallowedAudit),
             allowedAnswer is not null && allowedAudit is not null && !ContainsVisibleSource(allowedAnswer.Text, allowedAudit.EvidenceJson),
             transferHandoff is not null,
             notification is not null && notification.Status == "completed" && HasMention(notification.PayloadJson),
@@ -175,7 +203,9 @@ public sealed class RealWorkToolAcceptanceTests
     }
 
     private static RealAcceptanceEvidenceSnapshot EmptySnapshot(RealEvidenceManifest manifest, bool identity, bool secret) =>
-        new(manifest.FromUtc, manifest.ToUtc, identity, secret, true, false, 0, false, false, false, false, false, false, false, false, false, []);
+        new(manifest.FromUtc, manifest.ToUtc, identity, secret, true, false, 0, false,
+            false, false, false, false, false, false,
+            false, false, false, false, false, false, false, []);
 
     private static async Task<ConversationMessageEntity?> MessageAsync(WechatRobotDbContext db, Guid robotId, Guid groupId, string externalId,
         RealEvidenceManifest manifest, CancellationToken token) =>
@@ -190,6 +220,19 @@ public sealed class RealWorkToolAcceptanceTests
     private static bool HasEvidence(RetrievalAuditEntity? audit) => audit is not null && JsonDocument.Parse(audit.EvidenceJson).RootElement.GetArrayLength() > 0;
     private static bool EvidenceContainsTag(string json, Guid tagId) => json.Contains(tagId.ToString("D"), StringComparison.OrdinalIgnoreCase);
     private static bool EvidenceContainsVersion(string json, Guid versionId) => json.Contains(versionId.ToString("D"), StringComparison.OrdinalIgnoreCase);
+    private static bool TagScopeFilterMatches(RetrievalAuditEntity audit, IReadOnlyList<Guid> groupTags, RealEvidenceManifest manifest)
+    {
+        if (audit.FailureCode != "scoped_zero_hits" || HasEvidence(audit)) return false;
+        using var input = JsonDocument.Parse(audit.InputSummaryJson);
+        var root = input.RootElement;
+        if (!root.TryGetProperty("RetrievalFilter", out var filter) || filter.GetString() != "allowed-tags"
+            || !root.TryGetProperty("RetrievalResultCount", out var count) || count.GetInt32() != 0
+            || !root.TryGetProperty("AllowedTagIds", out var allowed) || allowed.ValueKind != JsonValueKind.Array)
+            return false;
+        var auditedTags = allowed.EnumerateArray().Select(item => item.GetGuid()).OrderBy(item => item).ToArray();
+        return auditedTags.SequenceEqual(groupTags.OrderBy(item => item))
+            && !auditedTags.Contains(manifest.DisallowedTagId);
+    }
     private static bool ContainsVisibleSource(string text, string evidenceJson)
     {
         if (text.Contains("来源", StringComparison.OrdinalIgnoreCase) || text.Contains("source", StringComparison.OrdinalIgnoreCase)) return true;
@@ -206,15 +249,16 @@ public sealed class RealWorkToolAcceptanceTests
         using var json = JsonDocument.Parse(payload);
         return json.RootElement.TryGetProperty("AtList", out var list) && list.ValueKind == JsonValueKind.Array && list.GetArrayLength() > 0;
     }
-    private static bool SendMatches(string payload, string groupName, string answer)
+    private static bool ExactOperation(IReadOnlyList<WorkToolOperationAuditEntity> audits, Guid auditId, int command,
+        Guid robotConfigId, string groupIdentifier)
     {
-        using var json = JsonDocument.Parse(payload);
-        var root = json.RootElement;
-        return root.TryGetProperty("GroupName", out var group) && group.GetString() == groupName
-            && root.TryGetProperty("Text", out var text) && text.GetString() == answer;
+        var audit = audits.SingleOrDefault(item => item.Id == auditId);
+        if (audit is null || audit.Status != "Succeeded" || audit.WorkToolCommandNumber != command) return false;
+        using var request = JsonDocument.Parse(audit.SanitizedRequestJson);
+        var root = request.RootElement;
+        return root.TryGetProperty("robotConfigId", out var robot) && robot.GetGuid() == robotConfigId
+            && root.TryGetProperty("groupIdentifier", out var group) && group.GetString() == groupIdentifier;
     }
-    private static bool NotificationMatches(string payload, Guid handoffId) =>
-        payload.Contains(handoffId.ToString("N"), StringComparison.OrdinalIgnoreCase) && HasMention(payload);
     private static bool WasMentioned(string payload)
     {
         using var json = JsonDocument.Parse(payload);
@@ -250,7 +294,8 @@ public sealed class RealWorkToolAcceptanceTests
             if (connection is null || robot is null || secret is null || target != "技术部" || confirmed != target || manifestJson is null) return null;
             try
             {
-                var manifest = JsonSerializer.Deserialize<RealEvidenceManifest>(manifestJson);
+                var manifest = JsonSerializer.Deserialize<RealEvidenceManifest>(manifestJson,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
                 return manifest is null || !manifest.IsComplete ? null : new(connection, robot, secret, target, manifest);
             }
             catch (JsonException) { return null; }
@@ -260,11 +305,16 @@ public sealed class RealWorkToolAcceptanceTests
     private sealed record RealEvidenceManifest(
         DateTime FromUtc, DateTime ToUtc, string NoAtMessageId, string DuplicateMessageId,
         string AllowedTagMessageId, string DisallowedTagMessageId, string TransferMessageId,
-        string LaterSemanticMessageId, Guid AllowedTagId)
+        string LaterSemanticMessageId, Guid AllowedTagId, Guid DisallowedTagId,
+        Guid ForbiddenDocumentId, Guid ForbiddenVersionId, Guid ForbiddenChunkId,
+        string DisallowedProbeQuestion, string DisallowedExpectedDecision)
     {
         public bool IsComplete => FromUtc.Kind == DateTimeKind.Utc && ToUtc.Kind == DateTimeKind.Utc && FromUtc < ToUtc
-            && AllowedTagId != Guid.Empty && new[] { NoAtMessageId, DuplicateMessageId, AllowedTagMessageId, DisallowedTagMessageId,
-                TransferMessageId, LaterSemanticMessageId }.All(value => !string.IsNullOrWhiteSpace(value));
+            && AllowedTagId != Guid.Empty && DisallowedTagId != Guid.Empty && ForbiddenDocumentId != Guid.Empty
+            && ForbiddenVersionId != Guid.Empty && ForbiddenChunkId != Guid.Empty
+            && new[] { NoAtMessageId, DuplicateMessageId, AllowedTagMessageId, DisallowedTagMessageId,
+                TransferMessageId, LaterSemanticMessageId, DisallowedProbeQuestion, DisallowedExpectedDecision }
+                .All(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private sealed record MutationSettings(

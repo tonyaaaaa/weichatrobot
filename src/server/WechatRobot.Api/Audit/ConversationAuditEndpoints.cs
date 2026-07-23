@@ -1,8 +1,7 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
+using WechatRobot.Application.Audit;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Logging;
-using WechatRobot.Infrastructure.Persistence;
 
 namespace WechatRobot.Api.Audit;
 
@@ -21,73 +20,46 @@ public static class ConversationAuditEndpoints
         DateTime? toUtc,
         int? page,
         int? pageSize,
-        WechatRobotDbContext db,
+        IConversationAuditQuery query,
         CancellationToken token)
     {
-        if (!Pagination.TryNormalize(page ?? 0, pageSize ?? 0, out var normalizedPage, out var normalizedPageSize, out var skip))
+        if (!Pagination.TryNormalize(page ?? 0, pageSize ?? 0, out var normalizedPage, out var normalizedPageSize, out _))
             return TypedResults.BadRequest(new { error = "Page must not exceed 1000000." });
         if (fromUtc is not null && toUtc is not null && fromUtc >= toUtc)
             return TypedResults.BadRequest(new { error = "Audit UTC window is invalid." });
 
-        var query = db.RetrievalAudits.AsNoTracking();
-        if (groupId is { } id) query = query.Where(item => item.GroupProfileId == id);
-        if (fromUtc is { } from) query = query.Where(item => item.CreatedAtUtc >= from);
-        if (toUtc is { } to) query = query.Where(item => item.CreatedAtUtc < to);
-        var total = await query.CountAsync(token);
-        var audits = await query.OrderByDescending(item => item.CreatedAtUtc).ThenByDescending(item => item.Id)
-            .Skip(skip).Take(normalizedPageSize).ToArrayAsync(token);
-        var items = new List<object>(audits.Length);
-
-        foreach (var audit in audits)
+        var result = await query.ListAsync(new(groupId, fromUtc, toUtc, normalizedPage, normalizedPageSize), token);
+        var items = result.Items.Select(item =>
         {
-            var question = await db.ConversationMessages.AsNoTracking().SingleAsync(item => item.Id == audit.ConversationMessageId, token);
-            var answer = await db.ConversationMessages.AsNoTracking()
-                .Where(item => item.InReplyToMessageId == question.Id && item.Direction == "outbound")
-                .OrderByDescending(item => item.CreatedAtUtc).FirstOrDefaultAsync(token);
-            var send = await db.SendCommands.AsNoTracking()
-                .Where(item => item.GroupProfileId == audit.GroupProfileId && item.CreatedAtUtc >= audit.CreatedAtUtc.AddMinutes(-1))
-                .OrderBy(item => item.CreatedAtUtc).FirstOrDefaultAsync(token);
-            var handoff = await db.HandoffCases.AsNoTracking().SingleOrDefaultAsync(item => item.QuestionMessageId == question.Id, token);
-            var transitions = handoff is null
-                ? []
-                : await db.HandoffTransitions.AsNoTracking().Where(item => item.HandoffCaseId == handoff.Id)
-                    .OrderBy(item => item.Sequence).Select(item => new { item.Sequence, item.FromState, item.ToState, item.ReasonCode, item.CreatedAtUtc }).ToArrayAsync(token);
-            var candidate = handoff is null
-                ? null
-                : await db.KnowledgeCandidates.AsNoTracking().SingleOrDefaultAsync(item => item.HandoffCaseId == handoff.Id, token);
-            var evidence = SafeJson(audit.EvidenceJson);
-            items.Add(new
+            var evidence = SafeJson(item.EvidenceJson);
+            return new
             {
-                audit.Id,
-                audit.GroupProfileId,
-                question.WorkToolMessageId,
-                question = question.Text,
-                answer = answer?.Text,
-                audit.Decision,
-                audit.ConfidenceThreshold,
-                audit.ConfidenceValue,
-                audit.ContextPolicy,
-                audit.FailureCode,
+                item.Id,
+                item.GroupProfileId,
+                item.WorkToolMessageId,
+                item.Question,
+                item.Answer,
+                item.Decision,
+                item.ConfidenceThreshold,
+                item.ConfidenceValue,
+                item.ContextPolicy,
+                item.FailureCode,
                 sources = Sources(evidence),
                 evidence,
-                inputSummary = SafeJson(audit.InputSummaryJson),
-                send = send is null ? null : new { send.Status, send.AttemptCount, send.SentAtUtc, send.CompletedAtUtc },
-                handoff = handoff is null ? null : new
+                inputSummary = SafeJson(item.InputSummaryJson),
+                send = item.Send,
+                handoff = item.Handoff is null ? null : new
                 {
-                    handoff.State, handoff.ReasonCode, handoff.PauseScope,
-                    evidence = SafeJson(handoff.EvidenceJson), handoff.CreatedAtUtc, handoff.UpdatedAtUtc,
-                    transitions
+                    item.Handoff.State, item.Handoff.ReasonCode, item.Handoff.PauseScope,
+                    evidence = SafeJson(item.Handoff.EvidenceJson), item.Handoff.CreatedAtUtc, item.Handoff.UpdatedAtUtc,
+                    item.Handoff.Transitions
                 },
-                knowledgeCandidate = candidate is null ? null : new
-                {
-                    candidate.Status, candidate.KnowledgeDocumentVersionId, candidate.PublishedAtUtc,
-                    candidate.CreatedAtUtc, candidate.UpdatedAtUtc
-                },
-                audit.CreatedAtUtc
-            });
-        }
+                item.KnowledgeCandidate,
+                item.CreatedAtUtc
+            };
+        }).ToArray();
 
-        return TypedResults.Ok(new { items, total, page = normalizedPage, pageSize = normalizedPageSize });
+        return TypedResults.Ok(new { items, result.Total, result.Page, result.PageSize });
     }
 
     private static JsonNode? SafeJson(string json)
