@@ -136,6 +136,9 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
 
     private sealed class FakeConversationRepository(WechatRobotDbContext database, IDurableJobRepository jobs) : IGroundedConversationRepository
     {
+        public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, bool wasMentioned, CancellationToken token) =>
+            Task.FromResult(new InboundPolicyDecision(messageId, InboundPolicyDecisionKind.Proceed, null, null, "{}"));
+        public Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token) => Task.CompletedTask;
         public async Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token)
         {
             var message = await database.ConversationMessages.SingleAsync(item => item.Id == messageId, token);
@@ -154,6 +157,7 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
             _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.GroupName, result.Decision.GroupText,
                 $"grounded-reply:{request.MessageId:D}"), token);
+        public Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) => Task.CompletedTask;
         public Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
         public Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
         public Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();

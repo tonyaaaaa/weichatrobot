@@ -64,4 +64,27 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
         Assert.Equal(30, migrated.TimeoutSeconds);
         Assert.Equal(0, migrated.MaxRetries);
     }
+
+    [Fact]
+    public async Task Existing_group_receives_safe_group_handoff_policy_and_zero_configuration_version()
+    {
+        var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString).Options;
+        await using var context = new WechatRobotDbContext(options);
+        await context.Database.MigrateAsync("20260723044912_AddWorkerHeartbeat", TestContext.Current.CancellationToken);
+        var robotId = Guid.NewGuid();
+        var groupId = Guid.NewGuid();
+        var timestamp = DateTime.UtcNow;
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO robot_config (Id, Name, WorkToolRobotId, CallbackSecretHash, IsEnabled, CreatedAtUtc, UpdatedAtUtc)
+            VALUES ({robotId}, {"migration-policy-robot"}, {Guid.NewGuid().ToString("N")}, {"hash"}, {true}, {timestamp}, {timestamp});
+            INSERT INTO group_profile (Id, RobotConfigId, ExternalGroupId, Name, IsEnabled, CreatedAtUtc, UpdatedAtUtc)
+            VALUES ({groupId}, {robotId}, {Guid.NewGuid().ToString("N")}, {"migration-policy-group"}, {true}, {timestamp}, {timestamp});
+            """, TestContext.Current.CancellationToken);
+
+        await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
+
+        var group = await context.GroupProfiles.AsNoTracking().SingleAsync(item => item.Id == groupId, TestContext.Current.CancellationToken);
+        Assert.Equal("Group", group.HandoffPausePolicy);
+        Assert.Equal(0, group.ConfigurationVersion);
+    }
 }

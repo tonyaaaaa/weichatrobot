@@ -17,6 +17,46 @@ namespace WechatRobot.IntegrationTests.Groups;
 public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassFixture<MySqlFixture>
 {
     [Fact]
+    public async Task Handoff_pause_policy_is_persisted_with_optimistic_concurrency()
+    {
+        await using var factory = new MySqlGroupApiFactory(fixture.ConnectionString);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var suffix = Guid.NewGuid().ToString("N");
+        var robot = new RobotConfigEntity { Name = $"policy-{suffix}", WorkToolRobotId = $"policy-{suffix}", CallbackSecretHash = "hash" };
+        var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = suffix, Name = $"policy-{suffix}" };
+        database.AddRange(robot, group);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        using var client = factory.CreateClient();
+
+        var saved = await client.PutAsJsonAsync($"/api/groups/{group.Id}/configuration", new
+        {
+            includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = Array.Empty<Guid>(),
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null },
+            clearContext = false, handoffPausePolicy = "Sender", expectedConfigurationVersion = 0
+        }, TestContext.Current.CancellationToken);
+
+        saved.EnsureSuccessStatusCode();
+        var body = await saved.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.Equal("Sender", body.GetProperty("handoffPausePolicy").GetString());
+        Assert.Equal(1, body.GetProperty("configurationVersion").GetInt32());
+
+        var stale = await client.PutAsJsonAsync($"/api/groups/{group.Id}/configuration", new
+        {
+            includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = Array.Empty<Guid>(),
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null },
+            clearContext = false, handoffPausePolicy = "Group", expectedConfigurationVersion = 0
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(System.Net.HttpStatusCode.Conflict, stale.StatusCode);
+        database.ChangeTracker.Clear();
+        var persisted = await database.GroupProfiles.AsNoTracking().SingleAsync(item => item.Id == group.Id, TestContext.Current.CancellationToken);
+        Assert.Equal("Sender", persisted.HandoffPausePolicy);
+        Assert.Equal(1, persisted.ConfigurationVersion);
+    }
+
+    [Fact]
     public async Task Configuration_binds_multiple_tags_on_mysql()
     {
         await using var factory = new MySqlGroupApiFactory(fixture.ConnectionString);
@@ -89,8 +129,9 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
         Assert.Empty((await repository.LoadForProcessingAsync(groupNew.Id, TestContext.Current.CancellationToken)).History);
 
-        group.ContextSenderIsolated = true;
-        database.GroupProfiles.Update(group);
+        database.ChangeTracker.Clear();
+        var currentGroup = await database.GroupProfiles.SingleAsync(item => item.Id == group.Id, TestContext.Current.CancellationToken);
+        currentGroup.ContextSenderIsolated = true;
         var senderNew = Message(robot.Id, group, null, "sender new", null, DateTime.UtcNow, stableId: "stable-user-1");
         database.ConversationMessages.Add(senderNew);
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);

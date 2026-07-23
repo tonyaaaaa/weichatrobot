@@ -1,5 +1,6 @@
 using System.Text.Json;
 using WechatRobot.Application.Conversations;
+using WechatRobot.Application.Groups;
 
 namespace WechatRobot.Application.Handoffs;
 
@@ -27,9 +28,19 @@ public sealed class HandoffOrchestrator(HandoffService handoffs, IHandoffStore s
         var trigger = triggers.Evaluate(request.Question, result.Decision.Kind, failures);
         if (trigger is null) return false;
         Guid? assignee = options.DefaultAssigneeUserId == Guid.Empty ? null : options.DefaultAssigneeUserId;
+        var requestedSenderPause = request.HandoffPausePolicy == HandoffPausePolicy.Sender;
+        var degradedToGroup = requestedSenderPause && string.IsNullOrWhiteSpace(request.StableSenderId);
+        var pauseScope = requestedSenderPause && !degradedToGroup ? HandoffPauseScope.Sender : HandoffPauseScope.Group;
+        var stableSenderId = pauseScope == HandoffPauseScope.Sender ? request.StableSenderId : null;
         await handoffs.StartAsync(new(request.MessageId, request.RobotConfigId, request.GroupProfileId, request.WorkToolRobotId, request.GroupName,
-            trigger.ReasonCode, JsonSerializer.Serialize(new { result.Audit.Evidence, result.Audit.FailureCode, result.Audit.ConfidenceValue }),
-            HandoffPauseScope.Group, null, assignee, options.DefaultAssigneeTarget, $"handoff:{request.MessageId:D}"), token);
+            trigger.ReasonCode, JsonSerializer.Serialize(new
+            {
+                result.Audit.Evidence,
+                result.Audit.FailureCode,
+                result.Audit.ConfidenceValue,
+                pauseScopeDegradation = degradedToGroup ? "stable_sender_id_unavailable_group_pause" : null
+            }),
+            pauseScope, stableSenderId, assignee, options.DefaultAssigneeTarget, $"handoff:{request.MessageId:D}"), token);
         return true;
     }
 }

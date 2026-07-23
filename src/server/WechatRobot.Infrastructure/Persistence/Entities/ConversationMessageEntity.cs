@@ -8,6 +8,9 @@ public sealed class ConversationMessageEntity
     public Guid? ConversationSessionId { get; set; }
     public long? SessionSequence { get; set; }
     public string ProcessingState { get; set; } = "completed";
+    public string? TerminalDecision { get; set; }
+    public string? TerminalReason { get; set; }
+    public string? TerminalEvidenceJson { get; set; }
     public string Direction { get; set; } = "inbound";
     public string Role { get; set; } = "user";
     public Guid? InReplyToMessageId { get; set; }

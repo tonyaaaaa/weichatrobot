@@ -108,6 +108,9 @@ public sealed class InboundMessageProcessorTests
         public GroundedAnswerResult? Result { get; private set; }
         public GroundedAnswerResult? HandoffResult { get; private set; }
         public int RenewCount { get; private set; }
+        public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, bool wasMentioned, CancellationToken token) =>
+            Task.FromResult(new InboundPolicyDecision(messageId, InboundPolicyDecisionKind.Proceed, Request.GroupProfileId, null, "{}"));
+        public Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token) => Task.CompletedTask;
         public Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token) => Task.FromResult(Request);
         public Task<ConversationProcessingRequest> LeaseForProcessingAsync(Guid messageId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) => Task.FromResult(Request with { SessionLeaseOwner = leaseOwner });
         public Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) { RenewCount++; return Task.FromResult(true); }

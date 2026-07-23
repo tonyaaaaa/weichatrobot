@@ -13,6 +13,8 @@ public sealed class GroupProfileEntity
     public int? ContextTokenCap { get; set; }
     public bool? ContextSummaryEnabled { get; set; }
     public bool? ContextIncludeBotHistory { get; set; }
+    public string HandoffPausePolicy { get; set; } = "Group";
+    public int ConfigurationVersion { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

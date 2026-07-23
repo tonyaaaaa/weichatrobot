@@ -30,6 +30,9 @@ internal sealed class GroupProfileConfiguration : IEntityTypeConfiguration<Group
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.ExternalGroupId).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Name).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.HandoffPausePolicy).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
+        builder.Property(entity => entity.ConfigurationVersion).HasDefaultValue(0).IsConcurrencyToken();
+        builder.ToTable(table => table.HasCheckConstraint("CK_group_profile_handoff_pause_policy", "`HandoffPausePolicy` IN ('Group','Sender')"));
         builder.HasIndex(entity => new { entity.RobotConfigId, entity.ExternalGroupId }).IsUnique();
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
     }
@@ -80,6 +83,9 @@ internal sealed class ConversationMessageConfiguration : IEntityTypeConfiguratio
         builder.Property(entity => entity.Direction).HasMaxLength(16).HasDefaultValue("inbound").IsRequired();
         builder.Property(entity => entity.Role).HasMaxLength(16).HasDefaultValue("user").IsRequired();
         builder.Property(entity => entity.ProcessingState).HasMaxLength(32).HasDefaultValue("completed").IsRequired();
+        builder.Property(entity => entity.TerminalDecision).HasMaxLength(32);
+        builder.Property(entity => entity.TerminalReason).HasMaxLength(64);
+        builder.Property(entity => entity.TerminalEvidenceJson).HasColumnType("json");
         builder.Property(entity => entity.FallbackHash).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.GroupName).HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.SenderDisplayName).HasMaxLength(128).IsRequired();

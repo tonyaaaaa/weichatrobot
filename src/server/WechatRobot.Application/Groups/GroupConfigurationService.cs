@@ -3,6 +3,8 @@ using WechatRobot.Domain.Knowledge;
 
 namespace WechatRobot.Application.Groups;
 
+public enum HandoffPausePolicy { Group, Sender }
+
 public sealed class GroupConfigurationService
 {
     public const int DefaultHistoryTurns = 6;

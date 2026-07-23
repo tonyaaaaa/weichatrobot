@@ -41,7 +41,7 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(
                 new(robot.Id, $"rag-message-{Guid.NewGuid():N}", $"rag-fallback-{Guid.NewGuid():N}", DateTime.UtcNow,
-                    "Support", "alice", "How long is the warranty?", DateTime.UtcNow), TestContext.Current.CancellationToken);
+                    "Support", "alice", "How long is the warranty?", DateTime.UtcNow, null, true), TestContext.Current.CancellationToken);
             robotId = robot.Id;
             groupId = group.Id;
             otherGroupId = other.Id;
@@ -72,7 +72,7 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         Assert.True(await repository.ClearGroupContextAsync(groupId, clearedAt, TestContext.Current.CancellationToken) > 0);
         await verify.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(
             new(robotId, $"after-clear-{Guid.NewGuid():N}", $"after-clear-fallback-{Guid.NewGuid():N}", clearedAt.AddSeconds(1),
-                "Support", "alice", "new question", clearedAt.AddSeconds(1)), TestContext.Current.CancellationToken);
+                "Support", "alice", "new question", clearedAt.AddSeconds(1), null, true), TestContext.Current.CancellationToken);
         var latest = await database.ConversationMessages.Where(item => item.RobotConfigId == robotId && item.Text == "new question")
             .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
         var afterClear = await repository.LoadForProcessingAsync(latest, TestContext.Current.CancellationToken);
@@ -122,7 +122,7 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
             var workToolMessageId = $"idle-message-{Guid.NewGuid():N}";
             Assert.Equal(InboundMessageIngestResult.Accepted, await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(
                 new(robot.Id, workToolMessageId, $"idle-fallback-{Guid.NewGuid():N}", DateTime.UtcNow,
-                    group.Name, "Alice", "current question", DateTime.UtcNow), TestContext.Current.CancellationToken));
+                    group.Name, "Alice", "current question", DateTime.UtcNow, null, true), TestContext.Current.CancellationToken));
             sessionId = session.Id;
             newMessageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == workToolMessageId)
                 .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);

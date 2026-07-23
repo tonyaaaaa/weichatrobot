@@ -52,6 +52,15 @@ public static class GroupEndpoints
         }
 
         var context = ToContext(request.Context);
+        if (request.HandoffPausePolicy is not null &&
+            !Enum.TryParse<HandoffPausePolicy>(request.HandoffPausePolicy, true, out _))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["handoffPausePolicy"] = ["Handoff pause policy must be group or sender."] });
+        }
+        if (request.HandoffPausePolicy is not null && request.ExpectedConfigurationVersion is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["expectedConfigurationVersion"] = ["A configuration version is required when changing handoff pause policy."] });
+        }
         var validation = service.Validate(context, include, exclude);
         if (!validation.IsValid)
         {
@@ -60,6 +69,8 @@ public static class GroupEndpoints
 
         var group = await database.GroupProfiles.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (group is null) return Results.NotFound();
+        if (request.ExpectedConfigurationVersion is { } expectedVersion && expectedVersion != group.ConfigurationVersion)
+            return Results.Conflict(new { error = "group-configuration-conflict", currentVersion = group.ConfigurationVersion });
 
         if (selectedTagIds.Length > 0)
         {
@@ -78,8 +89,15 @@ public static class GroupEndpoints
         database.GroupProfileTags.AddRange(selectedTagIds.Select(tagId => new GroupProfileTagEntity { GroupProfileId = id, KnowledgeTagId = tagId }));
 
         ApplyContext(group, context);
+        if (request.HandoffPausePolicy is not null)
+            group.HandoffPausePolicy = Enum.Parse<HandoffPausePolicy>(request.HandoffPausePolicy, true).ToString();
+        group.ConfigurationVersion++;
         group.UpdatedAtUtc = DateTime.UtcNow;
-        await database.SaveChangesAsync(cancellationToken);
+        try { await database.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { error = "group-configuration-conflict" });
+        }
         var clearedSessions = request.ClearContext
             ? await conversations.ClearGroupContextAsync(id, DateTime.UtcNow, cancellationToken)
             : 0;
@@ -142,7 +160,9 @@ public static class GroupEndpoints
                 .Select(tag => new KnowledgeTagResponse(tag.Id, tag.Name, tag.IsGlobalPublic, tag.IsEnabled, boundTagIds.Contains(tag.Id))).ToArray(),
             AnyBoundTagOrGlobalPublic,
             new GroupContextResponse(configured, service.GetEffectiveContext(configured)),
-            clearedSessions);
+            clearedSessions,
+            group.HandoffPausePolicy,
+            group.ConfigurationVersion);
     }
 
     private static GroupContextOverrides ToConfiguredContext(GroupProfileEntity group) => new(group.ContextSenderIsolated, group.ContextHistoryTurns,
@@ -186,7 +206,8 @@ public static class GroupEndpoints
     private static RuleResponse ToLegacyExcludeResponse(GroupRuleEntity rule) => new(rule.Id, rule.ExcludePattern!, ((GroupRulePatternKind)rule.ExcludePatternKind).ToString().ToLowerInvariant(), rule.IgnoreCase);
 
     public sealed record UpdateGroupConfigurationRequest(IReadOnlyList<RuleRequest>? IncludeRules, IReadOnlyList<RuleRequest>? ExcludeRules,
-        IReadOnlyList<Guid>? BoundTagIds, ContextOverridesRequest? Context, bool ClearContext)
+        IReadOnlyList<Guid>? BoundTagIds, ContextOverridesRequest? Context, bool ClearContext,
+        string? HandoffPausePolicy = null, int? ExpectedConfigurationVersion = null)
     {
         public IReadOnlyList<RuleRequest> IncludeRules { get; init; } = IncludeRules ?? [];
         public IReadOnlyList<RuleRequest> ExcludeRules { get; init; } = ExcludeRules ?? [];
@@ -202,7 +223,8 @@ public static class GroupEndpoints
     public sealed record RuleRequest(string Pattern, string PatternKind, bool IgnoreCase = true);
     public sealed record ContextOverridesRequest(bool? SenderIsolated, int? HistoryTurns, int? IdleTimeoutMinutes, int? TokenCap, bool? SummaryEnabled, bool? IncludeBotHistory);
     public sealed record GroupConfigurationResponse(Guid Id, string Name, GroupRulesResponse Rules, IReadOnlyList<Guid> BoundTagIds, IReadOnlyList<Guid> AllowedTagIds,
-        IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context, int ClearedContextSessions);
+        IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context, int ClearedContextSessions,
+        string HandoffPausePolicy, int ConfigurationVersion);
     public sealed record GroupRulesResponse(IReadOnlyList<RuleResponse> Include, IReadOnlyList<RuleResponse> Exclude);
     public sealed record RuleResponse(Guid Id, string Pattern, string PatternKind, bool IgnoreCase);
     public sealed record KnowledgeTagResponse(Guid Id, string Name, bool IsGlobalPublic, bool IsEnabled, bool IsBound);
