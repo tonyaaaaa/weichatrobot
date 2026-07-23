@@ -65,6 +65,27 @@ public sealed class AliyunOcrClientTests
     }
 
     [Fact]
+    public async Task Retries_normalized_http_503_exactly_three_times()
+    {
+        var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException(
+            "ServiceError", "sanitized", "request", statusCode: 503));
+        await Assert.ThrowsAsync<OcrClientException>(() =>
+            Create(provider).RecognizeAsync([PngPage(1)], TestContext.Current.CancellationToken));
+        Assert.Equal(3, provider.Pages.Count);
+    }
+
+    [Fact]
+    public async Task Maps_adapter_normalized_timeout()
+    {
+        var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException(
+            "ProviderError", "sanitized", isTimeout: true));
+        var exception = await Assert.ThrowsAsync<OcrClientException>(() =>
+            Create(provider).RecognizeAsync([PngPage(1)], TestContext.Current.CancellationToken));
+        Assert.Equal(OcrClientError.Timeout, exception.Error);
+        Assert.Single(provider.Pages);
+    }
+
+    [Fact]
     public async Task Preserves_caller_cancellation_and_maps_provider_timeout()
     {
         using var caller = new CancellationTokenSource();

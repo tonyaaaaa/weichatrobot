@@ -90,7 +90,7 @@ var aliyunOcrOptions = builder.Configuration.GetSection(AliyunOcrOptions.Section
 if (aliyunOcrOptions.Provider != "Aliyun" || aliyunOcrOptions.Action != "RecognizeGeneral" ||
     aliyunOcrOptions.Endpoint != "ocr-api.cn-hangzhou.aliyuncs.com" || aliyunOcrOptions.Timeout != TimeSpan.FromSeconds(30) ||
     aliyunOcrOptions.MaximumAttempts != 3)
-    throw new InvalidOperationException("OCR provider configuration must use Aliyun RecognizeGeneral, a valid endpoint, 30-second timeout, and 3 attempts.");
+    throw new InvalidOperationException("OCR provider configuration must use Aliyun RecognizeGeneral, endpoint ocr-api.cn-hangzhou.aliyuncs.com, a 30-second timeout, and 3 attempts.");
 var aliyunAccessKeyId = Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeyIdEnvironmentVariable);
 var aliyunAccessKeySecret = Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeySecretEnvironmentVariable);
 if (string.IsNullOrWhiteSpace(aliyunAccessKeyId) || string.IsNullOrWhiteSpace(aliyunAccessKeySecret))

@@ -133,3 +133,55 @@ real-provider skips.
 The pre-existing full integration suite has repeatable suite-level
 state/isolation failures described above, although both failing tests pass in
 isolation and all OCR-focused integration coverage passes.
+
+## Review fix follow-up
+
+Commit follow-up addresses every Important review item and the RequestId
+normalization item:
+
+- `AlibabaSdkOcrProvider` now copies the bounded request into an SDK-owned
+  stream. Caller cancellation still returns immediately via `WaitAsync`, while
+  the owned stream is disposed only after the non-cancellable SDK 3.1.3 task
+  finishes. The SDK operation unavoidably continues in the background because
+  this SDK version exposes no cancellation token; this is now explicit and no
+  disposed request stream is exposed to it.
+- SDK exceptions now normalize `Code`, numeric `StatusCode`, timeout semantics,
+  and `RequestId` from direct properties, `DataResult`, or exception data.
+  Normalized HTTP 503 participates in the three-attempt retry policy.
+- Runtime/SDK timeouts map through the adapter to the existing client timeout
+  semantics. `AlgorithmTimeOut` remains a three-attempt provider retry and
+  maps to timeout only after exhaustion.
+- The startup validation error now names the exact required OCR endpoint.
+
+Covering files:
+
+- `tests/server/WechatRobot.UnitTests/Knowledge/AlibabaSdkOcrProviderTests.cs`
+  covers in-flight cancellation/owned-stream lifetime, status 503 and
+  RequestId normalization, runtime/SDK timeout normalization, and client
+  behavior through the real adapter seam.
+- `tests/server/WechatRobot.UnitTests/Knowledge/AliyunOcrClientTests.cs` covers
+  normalized-status retry and normalized-timeout mapping at the client
+  contract.
+- `tests/server/WechatRobot.ContractTests/Knowledge/OcrClientContractTests.cs`
+  continues to cover response parsing.
+
+Review-fix RED:
+
+```text
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-restore -- --filter-class '*AlibabaSdkOcrProviderTests' --filter-class '*AliyunOcrClientTests'
+CS0246: IAlibabaOcrSdkInvoker could not be found
+CS0246: AlibabaSdkRawResponse could not be found
+Build failed, exit code 1
+```
+
+Review-fix GREEN:
+
+```text
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-restore -- --filter-class '*AlibabaSdkOcrProviderTests' --filter-class '*AliyunOcrClientTests'
+PASS: 25 passed, 0 failed
+
+dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --no-restore -- --filter-class '*Ocr*'
+PASS: 9 passed, 0 failed
+```
+
+No Alibaba Cloud request was made during the review fixes or verification.

@@ -20,11 +20,19 @@ public sealed class AliyunOcrOptions
 
 public sealed record AliyunOcrProviderResult(string? Data, string? RequestId);
 
-public sealed class AliyunOcrProviderException(string code, string message, string? requestId = null, Exception? inner = null)
+public sealed class AliyunOcrProviderException(
+    string code,
+    string message,
+    string? requestId = null,
+    Exception? inner = null,
+    int? statusCode = null,
+    bool isTimeout = false)
     : Exception(message, inner)
 {
     public string Code { get; } = code;
     public string? RequestId { get; } = requestId;
+    public int? StatusCode { get; } = statusCode;
+    public bool IsTimeout { get; } = isTimeout;
 }
 
 public interface IAliyunOcrProvider
@@ -118,7 +126,9 @@ public sealed class AliyunOcrClient(IAliyunOcrProvider provider, AliyunOcrOption
             catch (AliyunOcrProviderException exception)
             {
                 LogFailure(page.PageNumber, attempt, stopwatch.ElapsedMilliseconds, exception.Code, exception.RequestId);
-                if (IsRetryable(exception.Code) && attempt < options.MaximumAttempts) continue;
+                if (exception.IsTimeout)
+                    throw new OcrClientException(OcrClientError.Timeout, "Alibaba Cloud OCR request timed out.", exception);
+                if (IsRetryable(exception) && attempt < options.MaximumAttempts) continue;
                 if (exception.Code.Contains("AlgorithmTimeOut", StringComparison.OrdinalIgnoreCase))
                     throw new OcrClientException(OcrClientError.Timeout, "Alibaba Cloud OCR algorithm timed out.", exception);
                 throw new OcrClientException(OcrClientError.Unavailable, "Alibaba Cloud OCR provider request failed.", exception);
@@ -130,6 +140,10 @@ public sealed class AliyunOcrClient(IAliyunOcrProvider provider, AliyunOcrOption
     private void LogFailure(int page, int attempt, long duration, string code, string? requestId) =>
         logger.LogWarning("OCR action {Action} failed in {DurationMs}ms for page {Page} attempt {Attempt}; provider code {ProviderCode}; RequestId {RequestId}",
             options.Action, duration, page, attempt, code, requestId);
+
+    private static bool IsRetryable(AliyunOcrProviderException exception) =>
+        exception.StatusCode == 503 ||
+        IsRetryable(exception.Code);
 
     private static bool IsRetryable(string code) =>
         code.Contains("Throttl", StringComparison.OrdinalIgnoreCase) ||
