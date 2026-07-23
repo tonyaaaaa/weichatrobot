@@ -11,6 +11,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
+using WechatRobot.Application.Security;
+using WechatRobot.Infrastructure.Security;
 using WechatRobot.IntegrationTests.Infrastructure;
 
 namespace WechatRobot.IntegrationTests.WorkTool;
@@ -22,13 +24,50 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
     public CallbackIngestionTests(MySqlFixture fixture) => _fixture = fixture;
 
     [Fact]
+    public async Task Legacy_robot_id_backfill_encrypts_removes_plaintext_and_is_idempotent()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var marker = $"legacy-robot-{Guid.NewGuid():N}";
+        Guid robotId;
+        await using (var seedScope = factory.Services.CreateAsyncScope())
+        {
+            var database = seedScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var robot = new RobotConfigEntity
+            {
+                Name = marker,
+                WorkToolRobotId = marker,
+                CallbackSecretHash = "test"
+            };
+            database.RobotConfigs.Add(robot);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+            robotId = robot.Id;
+        }
+
+        await using (var migrateScope = factory.Services.CreateAsyncScope())
+        {
+            var migrator = migrateScope.ServiceProvider.GetRequiredService<RobotCredentialBackfillService>();
+            await migrator.BackfillAsync(TestContext.Current.CancellationToken);
+            await migrator.BackfillAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var verifyScope = factory.Services.CreateAsyncScope();
+        var verifyDatabase = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var stored = await verifyDatabase.RobotConfigs.AsNoTracking().SingleAsync(robot => robot.Id == robotId, TestContext.Current.CancellationToken);
+        var protector = verifyScope.ServiceProvider.GetRequiredService<ISecretProtector>();
+        Assert.Equal(marker, protector.Unprotect(stored.EncryptedWorkToolRobotId!));
+        Assert.DoesNotContain(marker, stored.WorkToolRobotId, StringComparison.Ordinal);
+        Assert.NotEqual(marker, stored.CallbackRouteCode);
+        Assert.Equal(48, stored.CallbackRouteCode!.Length);
+    }
+
+    [Fact]
     public async Task Valid_callback_returns_accepted_in_under_500ms_and_persists_one_message_and_job()
     {
         await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
         var robot = await SeedRobotAsync(factory, "callback-valid", "callback-secret");
         using var client = factory.CreateClient();
         var stopwatch = Stopwatch.StartNew();
-        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", ValidPayload("message-valid"), TestContext.Current.CancellationToken);
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", ValidPayload("message-valid"), TestContext.Current.CancellationToken);
         stopwatch.Stop();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -51,7 +90,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         var robot = await SeedRobotAsync(factory, "callback-token", "callback-secret");
         using var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=wrong", ValidPayload("message-invalid-token"), TestContext.Current.CancellationToken);
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=wrong", ValidPayload("message-invalid-token"), TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         await AssertNoInboundDataAsync(factory, robot.Id);
@@ -68,7 +107,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         payload[field] = value;
         using var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         await AssertNoInboundDataAsync(factory, robot.Id);
@@ -82,8 +121,8 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         using var client = factory.CreateClient();
         var payload = ValidPayload("message-duplicate");
 
-        var first = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
-        var second = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+        var first = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+        var second = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken);
 
         Assert.Equal("{\"code\":0,\"message\":\"accepted\"}", await first.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         Assert.Equal("{\"code\":0,\"message\":\"accepted\"}", await second.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
@@ -103,8 +142,8 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         using var firstClient = factory.CreateClient();
         using var secondClient = factory.CreateClient();
         var responses = await Task.WhenAll(
-            firstClient.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken),
-            secondClient.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken));
+            firstClient.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken),
+            secondClient.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken));
 
         foreach (var response in responses)
         {
@@ -127,7 +166,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         interceptor.DelayOnSave = true;
         using var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", ValidPayload("message-timeout"), TestContext.Current.CancellationToken);
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", ValidPayload("message-timeout"), TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.DoesNotContain("timeout", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), StringComparison.OrdinalIgnoreCase);
@@ -143,7 +182,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         payload["receivedName"] = new string('a', 129);
         using var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.DoesNotContain("received", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), StringComparison.OrdinalIgnoreCase);
@@ -158,7 +197,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         var payload = ValidPayload(string.Empty);
         using var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", payload, TestContext.Current.CancellationToken);
+        var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         await using var scope = factory.Services.CreateAsyncScope();
@@ -200,7 +239,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
 
         try
         {
-            var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.WorkToolRobotId}?token=callback-secret", ValidPayload("message-rollback"), TestContext.Current.CancellationToken);
+            var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", ValidPayload("message-rollback"), TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
             await AssertNoInboundDataAsync(factory, robot.Id);
         }
@@ -227,10 +266,13 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var protector = scope.ServiceProvider.GetRequiredService<ISecretProtector>();
         var robot = new RobotConfigEntity
         {
             Name = robotCode,
             WorkToolRobotId = robotCode,
+            EncryptedWorkToolRobotId = protector.Protect(robotCode),
+            CallbackRouteCode = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant(),
             CallbackSecretHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(callbackSecret)))
         };
         database.RobotConfigs.Add(robot);

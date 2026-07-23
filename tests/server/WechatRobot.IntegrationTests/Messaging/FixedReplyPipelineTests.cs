@@ -127,12 +127,18 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         .AddSingleton(new GroundedAnswerOptions(.5, 8, "insufficient", "failure", "handoff"))
         .AddScoped<GroundedAnswerService>()
         .AddScoped<InboundMessageProcessor>()
-        .AddSingleton<IWorkToolClient>(_ => new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }))
+        .AddSingleton<IWorkToolClient>(_ => new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }, new FixedCredentials()))
         .AddSingleton(TimeProvider.System)
         .AddOptions<FixedReplyOptions>()
         .Configure(options => options.Text = "fixed reply")
         .Services
         .BuildServiceProvider();
+
+    private sealed class FixedCredentials : IWorkToolCredentialResolver
+    {
+        public Task<string> ResolveRobotIdAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
+            Task.FromResult("robot-fixed");
+    }
 
     private sealed class FakeConversationRepository(WechatRobotDbContext database, IDurableJobRepository jobs) : IGroundedConversationRepository
     {

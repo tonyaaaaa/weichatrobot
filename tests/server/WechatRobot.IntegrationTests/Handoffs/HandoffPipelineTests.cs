@@ -54,7 +54,8 @@ public sealed class HandoffPipelineTests
         var handoff = await db.HandoffCases.SingleAsync(TestContext.Current.CancellationToken);
         Assert.Equal("stable-customer", handoff.StableSenderId);
         using var payload = JsonDocument.Parse((await db.SendCommands.SingleAsync(TestContext.Current.CancellationToken)).PayloadJson);
-        Assert.Equal("server-robot", payload.RootElement.GetProperty("WorkToolRobotId").GetString());
+        Assert.False(payload.RootElement.TryGetProperty("WorkToolRobotId", out _));
+        Assert.DoesNotContain("server-robot", payload.RootElement.GetRawText(), StringComparison.Ordinal);
         Assert.Equal("技术部", payload.RootElement.GetProperty("GroupName").GetString());
         Assert.Equal("agent.zhang", payload.RootElement.GetProperty("AtList")[0].GetString());
         Assert.Equal("manual:manual-1", handoff.StartIdempotencyKey);

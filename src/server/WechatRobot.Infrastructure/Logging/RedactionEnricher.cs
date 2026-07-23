@@ -96,6 +96,7 @@ public static partial class RedactionEnricher
 
     private static string RedactTextFallback(string text)
     {
+        text = CallbackPathRegex().Replace(text, "${prefix}" + Mask);
         var redacted = HttpUrlRegex().Replace(text, match => RedactSignedUrl(match.Value));
         redacted = JsonStringSecretRegex().Replace(redacted, "${prefix}" + Mask + "${suffix}");
         redacted = AuthorizationRegex().Replace(redacted, "${prefix}" + Mask);
@@ -148,4 +149,7 @@ public static partial class RedactionEnricher
 
     [GeneratedRegex(@"https?://[^\s""'<>]+", RegexOptions.IgnoreCase)]
     private static partial Regex HttpUrlRegex();
+
+    [GeneratedRegex(@"(?<prefix>/api/worktool/callback/)[^/?\s""'<>]+", RegexOptions.IgnoreCase)]
+    private static partial Regex CallbackPathRegex();
 }

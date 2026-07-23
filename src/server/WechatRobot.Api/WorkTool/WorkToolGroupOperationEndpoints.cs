@@ -8,6 +8,7 @@ using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.Api.Security;
+using WechatRobot.Application.Security;
 
 namespace WechatRobot.Api.WorkTool;
 
@@ -35,10 +36,11 @@ public static class WorkToolGroupOperationEndpoints
     private static async Task<IResult> ListRobotsAsync(WechatRobotDbContext database, CancellationToken cancellationToken)
     {
         var robots = await database.RobotConfigs.AsNoTracking().OrderBy(robot => robot.Name).ToArrayAsync(cancellationToken);
-        return Results.Ok(robots.Select(robot => new RobotResponse(robot.Id, robot.Name, MaskRobotId(robot.WorkToolRobotId), robot.IsEnabled)));
+        return Results.Ok(robots.Select(robot => new RobotResponse(robot.Id, robot.Name, "configured", robot.IsEnabled)));
     }
 
-    private static async Task<IResult> UpsertRobotAsync(Guid id, UpdateRobotRequest request, WechatRobotDbContext database, CancellationToken cancellationToken)
+    private static async Task<IResult> UpsertRobotAsync(Guid id, UpdateRobotRequest request, WechatRobotDbContext database,
+        ISecretProtector protector, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 || string.IsNullOrWhiteSpace(request.WorkToolRobotId) || request.WorkToolRobotId.Length > 128)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["robot"] = ["Robot name and WorkTool robot ID are required."] });
@@ -49,10 +51,19 @@ public static class WorkToolGroupOperationEndpoints
         var wasEnabled = robot?.IsEnabled;
         if (robot is null)
         {
-            robot = new RobotConfigEntity { Id = id, CallbackSecretHash = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)) };
+            robot = new RobotConfigEntity
+            {
+                Id = id,
+                WorkToolRobotId = $"migrated-{Guid.NewGuid():N}",
+                CallbackRouteCode = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant(),
+                CallbackSecretHash = Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
+            };
             database.RobotConfigs.Add(robot);
         }
-        robot.Name = request.Name.Trim(); robot.WorkToolRobotId = request.WorkToolRobotId.Trim(); robot.IsEnabled = request.IsEnabled;
+        robot.Name = request.Name.Trim();
+        robot.EncryptedWorkToolRobotId = protector.Protect(request.WorkToolRobotId.Trim());
+        robot.CallbackRouteCode ??= Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+        robot.IsEnabled = request.IsEnabled;
         robot.UpdatedAtUtc = DateTime.UtcNow;
         await database.SaveChangesAsync(cancellationToken);
         if (wasEnabled == true && !request.IsEnabled)
@@ -75,7 +86,7 @@ public static class WorkToolGroupOperationEndpoints
                     .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
         }
         if (transaction is not null) await transaction.CommitAsync(cancellationToken);
-        return Results.Ok(new RobotResponse(robot.Id, robot.Name, MaskRobotId(robot.WorkToolRobotId), robot.IsEnabled));
+        return Results.Ok(new RobotResponse(robot.Id, robot.Name, "configured", robot.IsEnabled));
     }
 
     private static async Task<IResult> TestRobotConnectionAsync(Guid id, WechatRobotDbContext database, IWorkToolClient client, CancellationToken cancellationToken)
@@ -84,7 +95,7 @@ public static class WorkToolGroupOperationEndpoints
         if (robot is null) return Results.NotFound();
         try
         {
-            var result = await client.TestConnectionAsync(robot.WorkToolRobotId, cancellationToken);
+            var result = await client.TestConnectionAsync(robot.Id, cancellationToken);
             return result.Succeeded ? Results.Ok(new CommandStatusResponse(true, "Connection test succeeded.")) : Results.Problem("WorkTool connection test failed.", statusCode: 502);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { return Results.Problem("WorkTool connection test failed.", statusCode: 502); }
@@ -131,7 +142,7 @@ public static class WorkToolGroupOperationEndpoints
         var audit = NewAudit(operatorName, operation.Kind, sanitized, "Pending", null); database.WorkToolOperationAudits.Add(audit);
         try { await database.SaveChangesAsync(cancellationToken); }
         catch (DbUpdateConcurrencyException) { database.Entry(confirmationRow).State = EntityState.Detached; database.Entry(audit).State = EntityState.Detached; database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Confirmation was already used.")); await database.SaveChangesAsync(cancellationToken); return Results.BadRequest(new { error = "Confirmation token was already used." }); }
-        try { var result = await client.ExecuteGroupOperationAsync(operation with { WorkToolRobotId = robot.WorkToolRobotId }, cancellationToken); audit.Status = result.Succeeded ? "Succeeded" : "Failed"; audit.Result = result.Succeeded ? null : "WorkTool rejected the command."; await database.SaveChangesAsync(cancellationToken); return Results.Ok(new CommandStatusResponse(result.Succeeded, result.Succeeded ? "Command accepted." : "WorkTool rejected the command.", audit.Id)); }
+        try { var result = await client.ExecuteGroupOperationAsync(operation with { RobotConfigId = robot.Id }, cancellationToken); audit.Status = result.Succeeded ? "Succeeded" : "Failed"; audit.Result = result.Succeeded ? null : "WorkTool rejected the command."; await database.SaveChangesAsync(cancellationToken); return Results.Ok(new CommandStatusResponse(result.Succeeded, result.Succeeded ? "Command accepted." : "WorkTool rejected the command.", audit.Id)); }
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { audit.Status = "Failed"; audit.Result = "WorkTool request failed."; await database.SaveChangesAsync(cancellationToken); return Results.Problem("WorkTool request failed.", statusCode: 502); }
     }
 
@@ -142,7 +153,7 @@ public static class WorkToolGroupOperationEndpoints
         if (kind == WorkToolGroupOperationKind.Create && request.MemberIds.Count == 0) { error = "New groups require at least one member."; return false; }
         if (kind is WorkToolGroupOperationKind.AddMembers or WorkToolGroupOperationKind.RemoveMembers && request.MemberIds.Count == 0) { error = "Member changes require at least one member."; return false; }
         if (kind is WorkToolGroupOperationKind.Rename or WorkToolGroupOperationKind.UpdateAnnouncement && string.IsNullOrWhiteSpace(request.Value)) { error = "This operation requires a value."; return false; }
-        operation = new WorkToolGroupOperationRequest(string.Empty, kind, request.GroupIdentifier.Trim(), request.MemberIds.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
+        operation = new WorkToolGroupOperationRequest(request.RobotConfigId, kind, request.GroupIdentifier.Trim(), request.MemberIds.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
         sanitized = JsonSerializer.Serialize(new { robotConfigId = request.RobotConfigId, kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberIds.Count, memberIdsHash = Hash(string.Join("\n", operation.MemberIds)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
         return true;
     }
@@ -162,8 +173,6 @@ public static class WorkToolGroupOperationEndpoints
     }
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static string? SafeResult(string? value) => string.IsNullOrWhiteSpace(value) ? value : value.Length > 512 ? value[..512] : value;
-    private static string MaskRobotId(string value) => value.Length <= 4 ? "****" : $"***{value[^4..]}";
-
     public sealed record UpdateRobotRequest(string Name, string WorkToolRobotId, bool IsEnabled);
     public sealed record RobotResponse(Guid Id, string Name, string RobotReference, bool IsEnabled);
     public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string ExternalGroupId, string Name, bool ManualInvitationCompleted);

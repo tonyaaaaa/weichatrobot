@@ -73,7 +73,7 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
         var reason = Safe(command.ReasonCode, 96);
         var sendStatus = await MySqlRobotSendCoordinator.InitialStatusAsync(db, command.RobotConfigId, token);
         db.SendCommands.Add(new SendCommandEntity { RobotConfigId = command.RobotConfigId, GroupProfileId = command.GroupProfileId,
-            IdempotencyKey = command.IdempotencyKey, PayloadJson = JsonSerializer.Serialize(new { command.WorkToolRobotId, command.GroupName,
+            IdempotencyKey = command.IdempotencyKey, PayloadJson = JsonSerializer.Serialize(new { command.GroupName,
                 Text = $"已转人工。原因：{reason}；关联：{entity.Id:N}", AtList = new[] { target } }), Status = sendStatus,
             NextAttemptAtUtc = nowUtc, CreatedAtUtc = nowUtc });
         try

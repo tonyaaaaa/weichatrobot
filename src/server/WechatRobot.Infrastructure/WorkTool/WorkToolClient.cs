@@ -4,12 +4,12 @@ using WechatRobot.Application.WorkTool;
 
 namespace WechatRobot.Infrastructure.WorkTool;
 
-public sealed class WorkToolClient(HttpClient httpClient) : IWorkToolClient
+public sealed class WorkToolClient(HttpClient httpClient, IWorkToolCredentialResolver credentials) : IWorkToolClient
 {
     public async Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken)
     {
         using var response = await httpClient.PostAsJsonAsync(
-            $"wework/sendRawMessage?robotId={Uri.EscapeDataString(request.WorkToolRobotId)}",
+            $"wework/sendRawMessage?robotId={Uri.EscapeDataString(await credentials.ResolveRobotIdAsync(request.RobotConfigId, cancellationToken))}",
             new
             {
                 socketType = 2,
@@ -50,7 +50,7 @@ public sealed class WorkToolClient(HttpClient httpClient) : IWorkToolClient
         }
     }
 
-    public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken)
+    public async Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken)
     {
         object command = request.Kind == WorkToolGroupOperationKind.Create
             ? new { type = 206, groupName = request.GroupIdentifier, selectList = request.MemberIds, groupAnnouncement = request.Value }
@@ -65,11 +65,12 @@ public sealed class WorkToolClient(HttpClient httpClient) : IWorkToolClient
                 removeList = request.Kind == WorkToolGroupOperationKind.RemoveMembers ? request.MemberIds : Array.Empty<string>()
             };
 
-        return SendCommandAsync(request.WorkToolRobotId, command, cancellationToken);
+        return await SendCommandAsync(await credentials.ResolveRobotIdAsync(request.RobotConfigId, cancellationToken), command, cancellationToken);
     }
 
-    public async Task<WorkToolSendResult> TestConnectionAsync(string workToolRobotId, CancellationToken cancellationToken)
+    public async Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken)
     {
+        var workToolRobotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
         using var response = await httpClient.GetAsync($"wework/robot?robotId={Uri.EscapeDataString(workToolRobotId)}", cancellationToken);
         return await ParseResultAsync(response, cancellationToken);
     }

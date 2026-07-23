@@ -13,9 +13,9 @@ public sealed class GroupOperationsContractTests
     public async Task Create_external_group_maps_to_command_206()
     {
         using var handler = new CapturingHandler("{\"code\":0,\"message\":\"ok\"}");
-        var sut = new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") });
+        var sut = new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }, new FixedCredentials());
 
-        var result = await sut.ExecuteGroupOperationAsync(new WorkToolGroupOperationRequest("robot-7", WorkToolGroupOperationKind.Create, "技术部", ["customer-1", "employee-1"], "欢迎来到技术部"), TestContext.Current.CancellationToken);
+        var result = await sut.ExecuteGroupOperationAsync(new WorkToolGroupOperationRequest(Guid.NewGuid(), WorkToolGroupOperationKind.Create, "技术部", ["customer-1", "employee-1"], "欢迎来到技术部"), TestContext.Current.CancellationToken);
 
         Assert.True(result.Succeeded);
         Assert.Equal("/wework/sendRawMessage?robotId=robot-7", handler.RequestUri!.PathAndQuery);
@@ -31,9 +31,9 @@ public sealed class GroupOperationsContractTests
     public async Task Existing_group_operations_map_to_documented_command_207(WorkToolGroupOperationKind kind, string expected)
     {
         using var handler = new CapturingHandler("{\"code\":0}");
-        var sut = new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") });
+        var sut = new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }, new FixedCredentials());
 
-        var result = await sut.ExecuteGroupOperationAsync(new WorkToolGroupOperationRequest("robot-7", kind, "group-name", ["member-1"], "new value"), TestContext.Current.CancellationToken);
+        var result = await sut.ExecuteGroupOperationAsync(new WorkToolGroupOperationRequest(Guid.NewGuid(), kind, "group-name", ["member-1"], "new value"), TestContext.Current.CancellationToken);
 
         Assert.True(result.Succeeded);
         Assert.Equal(JsonNode.Parse(expected)!.ToJsonString(), JsonNode.Parse(handler.Body)!.ToJsonString());
@@ -49,5 +49,11 @@ public sealed class GroupOperationsContractTests
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
+    }
+
+    private sealed class FixedCredentials : IWorkToolCredentialResolver
+    {
+        public Task<string> ResolveRobotIdAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
+            Task.FromResult("robot-7");
     }
 }

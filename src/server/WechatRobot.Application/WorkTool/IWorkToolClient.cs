@@ -1,13 +1,18 @@
 namespace WechatRobot.Application.WorkTool;
 
+public interface IWorkToolCredentialResolver
+{
+    Task<string> ResolveRobotIdAsync(Guid robotConfigId, CancellationToken cancellationToken);
+}
+
 public interface IWorkToolClient
 {
     Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken);
     Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken);
-    Task<WorkToolSendResult> TestConnectionAsync(string workToolRobotId, CancellationToken cancellationToken);
+    Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken);
 }
 
-public sealed record WorkToolSendRequest(string WorkToolRobotId, string GroupName, string Text, string IdempotencyKey,
+public sealed record WorkToolSendRequest(Guid RobotConfigId, string GroupName, string Text, string IdempotencyKey,
     IReadOnlyList<string>? AtList = null);
 
 public sealed record WorkToolSendResult(bool Succeeded, string? FailureReason)
@@ -19,7 +24,7 @@ public sealed record WorkToolSendResult(bool Succeeded, string? FailureReason)
 public enum WorkToolGroupOperationKind { Create, AddMembers, RemoveMembers, Rename, UpdateAnnouncement }
 
 public sealed record WorkToolGroupOperationRequest(
-    string WorkToolRobotId,
+    Guid RobotConfigId,
     WorkToolGroupOperationKind Kind,
     string GroupIdentifier,
     IReadOnlyList<string> MemberIds,

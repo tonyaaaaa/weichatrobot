@@ -341,7 +341,7 @@ public sealed class GroundedConversationRepository(
             RobotConfigId = request.RobotConfigId,
             GroupProfileId = request.GroupProfileId,
             IdempotencyKey = $"grounded-reply:{request.MessageId:D}",
-            PayloadJson = JsonSerializer.Serialize(new { request.WorkToolRobotId, request.GroupName, Text = result.Decision.GroupText }),
+            PayloadJson = JsonSerializer.Serialize(new { request.GroupName, Text = result.Decision.GroupText }),
             Status = sendStatus,
             NextAttemptAtUtc = now,
             CreatedAtUtc = now

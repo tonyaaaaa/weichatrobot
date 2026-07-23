@@ -57,6 +57,7 @@ if (allowedOrigins.Length == 0 || allowedOrigins.Any(string.IsNullOrWhiteSpace))
 builder.Services.AddDbContextFactory<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
 var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
+builder.Services.AddScoped<RobotCredentialBackfillService>();
 builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
@@ -139,6 +140,7 @@ builder.Services.AddWechatRobotHealth(builder.Configuration);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"));
+builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
     {
@@ -203,6 +205,7 @@ if (builder.Configuration.GetValue<bool>("Database:ApplyMigrationsOnStartup"))
     if (db.Database.IsRelational())
     {
         await db.Database.MigrateAsync();
+        await scope.ServiceProvider.GetRequiredService<RobotCredentialBackfillService>().BackfillAsync();
     }
     else
     {

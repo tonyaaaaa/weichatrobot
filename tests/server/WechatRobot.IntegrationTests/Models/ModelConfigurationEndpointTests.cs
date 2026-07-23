@@ -186,7 +186,7 @@ public sealed class RecordingWorkToolClient : IWorkToolClient
     public int GroupOperationCalls { get; private set; }
     public WorkToolSendResult NextGroupOperationResult { get; set; } = WorkToolSendResult.Success();
     public Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
-    public Task<WorkToolSendResult> TestConnectionAsync(string workToolRobotId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+    public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
     public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) { GroupOperationCalls++; return Task.FromResult(NextGroupOperationResult); }
     public void Reset(WorkToolSendResult? next = null) { GroupOperationCalls = 0; NextGroupOperationResult = next ?? WorkToolSendResult.Success(); }
 }

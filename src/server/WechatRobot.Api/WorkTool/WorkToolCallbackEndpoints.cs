@@ -41,7 +41,7 @@ public static class WorkToolCallbackEndpoints
 
         try
         {
-            var robot = await database.RobotConfigs.SingleOrDefaultAsync(config => config.WorkToolRobotId == robotCode && config.IsEnabled, ingestionToken);
+            var robot = await database.RobotConfigs.SingleOrDefaultAsync(config => config.CallbackRouteCode == robotCode && config.IsEnabled, ingestionToken);
             if (robot is null || !SecretMatches(token, robot.CallbackSecretHash))
             {
                 logger.LogWarning("WorkTool callback rejected: authentication failed.");
@@ -54,7 +54,7 @@ public static class WorkToolCallbackEndpoints
                 return Results.BadRequest();
             }
 
-            await inboundMessages.IngestAsync(robot.Id, robot.WorkToolRobotId, callback, ingestionToken);
+            await inboundMessages.IngestAsync(robot.Id, robotCode, callback, ingestionToken);
         }
         catch (OperationCanceledException) when (ingestionDeadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {

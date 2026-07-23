@@ -12,7 +12,6 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task<InboundMessageIngestResult> IngestInboundMessageAsync(InboundMessageIngestRequest request, CancellationToken cancellationToken)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var robot = await database.RobotConfigs.SingleAsync(config => config.Id == request.RobotConfigId, cancellationToken);
         var message = new ConversationMessageEntity
         {
             RobotConfigId = request.RobotConfigId,
@@ -35,7 +34,6 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             {
                 messageId = message.Id,
                 request.RobotConfigId,
-                workToolRobotId = robot.WorkToolRobotId,
                 request.GroupName,
                 request.SenderDisplayName,
                 request.StableSenderId,
@@ -174,7 +172,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         {
             RobotConfigId = request.RobotConfigId,
             IdempotencyKey = request.IdempotencyKey,
-            PayloadJson = JsonSerializer.Serialize(new { request.WorkToolRobotId, request.GroupName, request.Text }),
+            PayloadJson = JsonSerializer.Serialize(new { request.GroupName, request.Text }),
             Status = status,
             NextAttemptAtUtc = DateTime.UtcNow
         });
@@ -259,7 +257,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         await transaction.CommitAsync(cancellationToken);
         var leased = await database.SendCommands.AsNoTracking().SingleAsync(command => command.Id == candidate.Id, cancellationToken);
         var payload = JsonSerializer.Deserialize<SendPayload>(leased.PayloadJson) ?? throw new InvalidOperationException("Send command payload is invalid.");
-        return new LeasedSendCommand(leased.Id, leased.RobotConfigId, payload.WorkToolRobotId, payload.GroupName, payload.Text, leased.IdempotencyKey,
+        return new LeasedSendCommand(leased.Id, leased.RobotConfigId, string.Empty, payload.GroupName, payload.Text, leased.IdempotencyKey,
             robotState.SendRateLimitPerMinute, leased.AttemptCount, leaseOwner, payload.AtList);
     }
 
@@ -416,7 +414,6 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
     private sealed class SendPayload
     {
-        public string WorkToolRobotId { get; init; } = string.Empty;
         public string GroupName { get; init; } = string.Empty;
         public string Text { get; init; } = string.Empty;
         public string[]? AtList { get; init; }

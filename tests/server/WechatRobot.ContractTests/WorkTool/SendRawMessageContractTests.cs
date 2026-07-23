@@ -13,9 +13,9 @@ public sealed class SendRawMessageContractTests
     {
         var handler = new RecordingHandler(HttpStatusCode.OK, "{\"code\":0,\"message\":\"accepted\",\"data\":\"command-1\"}");
         using var client = new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") };
-        var sut = new WorkToolClient(client);
+        var sut = new WorkToolClient(client, new FixedCredentials());
 
-        var result = await sut.SendTextAsync(new WorkToolSendRequest("robot-7", "Support Group", "fixed reply", "idem-1", ["张工"]), TestContext.Current.CancellationToken);
+        var result = await sut.SendTextAsync(new WorkToolSendRequest(Guid.NewGuid(), "Support Group", "fixed reply", "idem-1", ["张工"]), TestContext.Current.CancellationToken);
 
         Assert.True(result.Succeeded);
         Assert.Equal("POST", handler.Method);
@@ -33,9 +33,9 @@ public sealed class SendRawMessageContractTests
     public async Task SendTextAsync_maps_nonzero_worktool_code_to_failure()
     {
         using var client = new HttpClient(new RecordingHandler(HttpStatusCode.OK, "{\"code\":1001,\"message\":\"rejected\"}")) { BaseAddress = new Uri("https://fake.worktool.test/") };
-        var sut = new WorkToolClient(client);
+        var sut = new WorkToolClient(client, new FixedCredentials());
 
-        var result = await sut.SendTextAsync(new WorkToolSendRequest("robot-7", "Support Group", "fixed reply", "idem-1"), TestContext.Current.CancellationToken);
+        var result = await sut.SendTextAsync(new WorkToolSendRequest(Guid.NewGuid(), "Support Group", "fixed reply", "idem-1"), TestContext.Current.CancellationToken);
 
         Assert.False(result.Succeeded);
         Assert.Equal("rejected", result.FailureReason);
@@ -54,5 +54,11 @@ public sealed class SendRawMessageContractTests
             Body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(statusCode) { Content = new StringContent(responseBody, Encoding.UTF8, "application/json") };
         }
+    }
+
+    private sealed class FixedCredentials : IWorkToolCredentialResolver
+    {
+        public Task<string> ResolveRobotIdAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
+            Task.FromResult("robot-7");
     }
 }

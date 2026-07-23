@@ -5,6 +5,8 @@ public sealed class RobotConfigEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = string.Empty;
     public string WorkToolRobotId { get; set; } = string.Empty;
+    public string? EncryptedWorkToolRobotId { get; set; }
+    public string? CallbackRouteCode { get; set; }
     public string CallbackSecretHash { get; set; } = string.Empty;
     public bool IsEnabled { get; set; } = true;
     public int SendRateLimitPerMinute { get; set; } = 50;

@@ -32,7 +32,7 @@ public sealed class RobotSendWorker(IServiceScopeFactory scopeFactory, TimeProvi
             WorkToolSendResult result;
             try
             {
-                result = await client.SendTextAsync(new WorkToolSendRequest(command.WorkToolRobotId, command.GroupName, command.Text,
+                result = await client.SendTextAsync(new WorkToolSendRequest(command.RobotConfigId, command.GroupName, command.Text,
                     command.IdempotencyKey, command.AtList), cancellationToken);
             }
             finally

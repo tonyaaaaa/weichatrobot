@@ -6,6 +6,34 @@ namespace WechatRobot.UnitTests.Security;
 
 public sealed class LogRedactionTests
 {
+    [Fact]
+    public void Callback_route_segment_is_redacted_from_request_paths()
+    {
+        var marker = "opaque-callback-route-marker";
+
+        var redacted = RedactionEnricher.RedactValue(
+            "RequestPath",
+            $"/api/worktool/callback/{marker}");
+
+        Assert.DoesNotContain(marker, redacted, StringComparison.Ordinal);
+        Assert.Contains(RedactionEnricher.Mask, redacted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Real_logger_redacts_callback_route_from_request_path_property()
+    {
+        using var output = new StringWriter();
+        using var provider = new RedactingConsoleLoggerProvider(output);
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        var marker = "configured-route-marker";
+
+        factory.CreateLogger("request-path-test")
+            .LogInformation("request {RequestPath}", $"/api/worktool/callback/{marker}");
+
+        Assert.DoesNotContain(marker, output.ToString(), StringComparison.Ordinal);
+        Assert.Contains(RedactionEnricher.Mask, output.ToString(), StringComparison.Ordinal);
+    }
+
     public static TheoryData<string, string> SensitiveValues => new()
     {
         { "apiKey=sk-test-secret", "sk-test-secret" },

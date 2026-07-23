@@ -143,6 +143,7 @@ builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/");
 });
+builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
 builder.Services.AddHostedService<DurableJobWorker>();
 builder.Services.AddHostedService<RobotSendWorker>();
 builder.Services.AddHostedService<KnowledgeUploadWorker>();

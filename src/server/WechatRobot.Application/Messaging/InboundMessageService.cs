@@ -10,11 +10,11 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
 {
     private static readonly Regex Whitespace = new("\\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    public async Task<InboundMessageIngestResult> IngestAsync(Guid robotConfigId, string robotCode, WorkToolCallbackDto callback, CancellationToken cancellationToken)
+    public async Task<InboundMessageIngestResult> IngestAsync(Guid robotConfigId, string robotDeduplicationScope, WorkToolCallbackDto callback, CancellationToken cancellationToken)
     {
         var receivedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
         var deduplication = CreateDeduplicationKey(
-            robotCode,
+            robotDeduplicationScope,
             callback.MessageId,
             callback.GroupName!,
             callback.ReceivedName!,
