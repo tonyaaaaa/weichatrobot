@@ -10,6 +10,25 @@ namespace WechatRobot.ContractTests.WorkTool;
 public sealed class GroupOperationsContractTests
 {
     [Fact]
+    public async Task Bind_callback_maps_robot_query_type_and_callback_url()
+    {
+        using var handler = new CapturingHandler("{\"code\":0,\"message\":\"ok\",\"data\":null}");
+        var sut = new WorkToolClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://api.worktool.test/") },
+            new FixedCredentials());
+
+        var result = await sut.BindCallbackAsync(
+            Guid.NewGuid(), 1, new Uri("https://robot.example.test/api/worktool/config-callback/opaque"),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("/robot/robotInfo/callBack/bind?robotId=robot-7", handler.RequestUri!.PathAndQuery);
+        Assert.Equal(
+            JsonNode.Parse("""{"type":1,"callBackUrl":"https://robot.example.test/api/worktool/config-callback/opaque"}""")!.ToJsonString(),
+            JsonNode.Parse(handler.Body)!.ToJsonString());
+    }
+
+    [Fact]
     public async Task Create_external_group_maps_to_command_206()
     {
         using var handler = new CapturingHandler("{\"code\":0,\"message\":\"ok\"}");

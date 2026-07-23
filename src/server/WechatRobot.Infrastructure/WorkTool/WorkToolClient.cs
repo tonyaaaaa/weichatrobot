@@ -29,7 +29,7 @@ public sealed class WorkToolClient(HttpClient httpClient, IWorkToolCredentialRes
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return WorkToolSendResult.Failed($"HTTP {(int)response.StatusCode}");
+            return WorkToolSendResult.Failed($"HTTP {(int)response.StatusCode}", deliveryMayHaveOccurred: true);
         }
 
         try
@@ -46,7 +46,7 @@ public sealed class WorkToolClient(HttpClient httpClient, IWorkToolCredentialRes
         }
         catch (JsonException)
         {
-            return WorkToolSendResult.Failed("WorkTool returned an invalid response.");
+            return WorkToolSendResult.Failed("WorkTool returned an invalid response.", deliveryMayHaveOccurred: true);
         }
     }
 
@@ -75,6 +75,16 @@ public sealed class WorkToolClient(HttpClient httpClient, IWorkToolCredentialRes
         return await ParseResultAsync(response, cancellationToken);
     }
 
+    public async Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken)
+    {
+        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"robot/robotInfo/callBack/bind?robotId={Uri.EscapeDataString(robotId)}",
+            new { type, callBackUrl = callbackUrl.AbsoluteUri },
+            cancellationToken);
+        return await ParseResultAsync(response, cancellationToken);
+    }
+
     private async Task<WorkToolSendResult> SendCommandAsync(string robotId, object command, CancellationToken cancellationToken)
     {
         using var response = await httpClient.PostAsJsonAsync(
@@ -88,7 +98,7 @@ public sealed class WorkToolClient(HttpClient httpClient, IWorkToolCredentialRes
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return WorkToolSendResult.Failed($"HTTP {(int)response.StatusCode}");
+            return WorkToolSendResult.Failed($"HTTP {(int)response.StatusCode}", deliveryMayHaveOccurred: true);
         }
 
         try
@@ -105,7 +115,7 @@ public sealed class WorkToolClient(HttpClient httpClient, IWorkToolCredentialRes
         }
         catch (JsonException)
         {
-            return WorkToolSendResult.Failed("WorkTool returned an invalid response.");
+            return WorkToolSendResult.Failed("WorkTool returned an invalid response.", deliveryMayHaveOccurred: true);
         }
     }
 }

@@ -16,4 +16,6 @@ public sealed class SendCommandEntity
     public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? SentAtUtc { get; set; }
+    public DateTime? ExternalDispatchStartedAtUtc { get; set; }
+    public string? ReconciliationReason { get; set; }
 }

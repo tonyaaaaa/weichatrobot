@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using WechatRobot.Application.Messaging;
@@ -15,7 +16,26 @@ public static class WorkToolCallbackEndpoints
         endpoints.MapPost("/api/worktool/callback/{robotCode}", HandleAsync)
             .AllowAnonymous()
             .RequireRateLimiting(WorkToolCallbackRateLimitPolicy.Name);
+        endpoints.MapPost("/api/worktool/config-callback/{robotCode}", HandleConfigurationCallbackAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting(WorkToolCallbackRateLimitPolicy.Name);
         return endpoints;
+    }
+
+    private static async Task<IResult> HandleConfigurationCallbackAsync(
+        string robotCode,
+        JsonElement payload,
+        WechatRobotDbContext database,
+        CancellationToken cancellationToken)
+    {
+        if (!WorkToolCallbackDto.IsIdentifierWithinLimit(robotCode) ||
+            payload.ValueKind is not JsonValueKind.Object)
+            return Results.BadRequest();
+        var exists = await database.RobotConfigs.AsNoTracking()
+            .AnyAsync(robot => robot.CallbackRouteCode == robotCode && robot.IsEnabled, cancellationToken);
+        return exists
+            ? Results.Json(new WorkToolCallbackAcceptedResponse())
+            : Results.Unauthorized();
     }
 
     private static async Task<IResult> HandleAsync(

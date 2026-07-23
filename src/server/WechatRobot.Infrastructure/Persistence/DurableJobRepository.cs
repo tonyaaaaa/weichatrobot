@@ -192,6 +192,26 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
     public async Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
     {
+        var expiredExternal = await database.SendCommands.AsNoTracking()
+            .Where(command => command.Status == "externalInFlight" && command.LeaseExpiresAtUtc <= nowUtc)
+            .Select(command => new { command.Id, command.RobotConfigId, command.LeaseOwner })
+            .ToArrayAsync(cancellationToken);
+        foreach (var expired in expiredExternal)
+        {
+            await database.SendCommands.Where(command => command.Id == expired.Id && command.Status == "externalInFlight")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(command => command.Status, "deliveryUncertain")
+                    .SetProperty(command => command.ReconciliationReason, "external_dispatch_lease_expired")
+                    .SetProperty(command => command.LeaseOwner, (string?)null)
+                    .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
+                    .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+            await database.RobotConfigs
+                .Where(robot => robot.Id == expired.RobotConfigId && robot.SendLeaseOwner == expired.LeaseOwner)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(robot => robot.SendLeaseOwner, (string?)null)
+                    .SetProperty(robot => robot.SendLeaseExpiresAtUtc, (DateTime?)null)
+                    .SetProperty(robot => robot.SendCoordinationVersion, robot => robot.SendCoordinationVersion + 1), cancellationToken);
+        }
         var candidate = await (from command in database.SendCommands.AsNoTracking()
                                join robot in database.RobotConfigs.AsNoTracking() on command.RobotConfigId equals robot.Id
                                where (((command.Status == "pending" || command.Status == "retrying") && command.NextAttemptAtUtc <= nowUtc) ||
@@ -303,11 +323,37 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         await sendGate.DisposeAsync();
     }
 
+    public async Task<bool> MarkSendExternalInFlightAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken)
+    {
+        var updated = await database.SendCommands
+            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(value => value.Status, "externalInFlight")
+                .SetProperty(value => value.ExternalDispatchStartedAtUtc, dispatchedAtUtc)
+                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
+        return updated == 1;
+    }
+
+    public async Task MarkSendDeliveryUncertainAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var updated = await database.SendCommands
+            .Where(value => value.Id == command.Id && value.Status == "externalInFlight" && value.LeaseOwner == command.LeaseOwner)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(value => value.Status, "deliveryUncertain")
+                .SetProperty(value => value.ReconciliationReason, reason.Length > 256 ? reason[..256] : reason)
+                .SetProperty(value => value.LeaseOwner, (string?)null)
+                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
+        if (updated == 1) await ReleaseRobotGuardAsync(command, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     public async Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         var completed = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .Where(value => value.Id == command.Id && value.Status == "externalInFlight" && value.LeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.Status, "completed")
                 .SetProperty(value => value.SentAtUtc, completedAtUtc)
@@ -330,7 +376,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         {
             await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
             var updated = await database.SendCommands
-                .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+                .Where(value => value.Id == command.Id && (value.Status == "leased" || value.Status == "externalInFlight") && value.LeaseOwner == command.LeaseOwner)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(value => value.Status, "deadLetter")
                     .SetProperty(value => value.AttemptCount, attempts)
@@ -349,7 +395,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
         await using var retryTransaction = await database.Database.BeginTransactionAsync(cancellationToken);
         var retried = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .Where(value => value.Id == command.Id && (value.Status == "leased" || value.Status == "externalInFlight") && value.LeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.Status, "retrying")
                 .SetProperty(value => value.AttemptCount, attempts)
@@ -372,7 +418,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         var commandRenewed = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .Where(value => value.Id == command.Id && value.Status == "externalInFlight" && value.LeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.LeaseExpiresAtUtc, nowUtc.Add(leaseDuration)), cancellationToken);
         var robotRenewed = await database.RobotConfigs
             .Where(value => value.Id == command.RobotConfigId && value.IsEnabled && value.SendLeaseOwner == command.LeaseOwner)

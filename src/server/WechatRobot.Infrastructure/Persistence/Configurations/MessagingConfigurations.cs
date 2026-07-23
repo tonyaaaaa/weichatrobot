@@ -164,6 +164,7 @@ internal sealed class SendCommandConfiguration : IEntityTypeConfiguration<SendCo
         builder.Property(entity => entity.PayloadJson).HasColumnType("longtext").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.ReconciliationReason).HasMaxLength(256);
         builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.IdempotencyKey).IsUnique();
         builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });

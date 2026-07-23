@@ -172,6 +172,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         var resumedRepository = resumedScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
         var first = Assert.IsType<LeasedSendCommand>(await resumedRepository.LeaseNextSendCommandAsync("resumed-worker", now.AddMinutes(2),
             TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        Assert.True(await resumedRepository.MarkSendExternalInFlightAsync(first, now.AddMinutes(2), TestContext.Current.CancellationToken));
         await resumedRepository.CompleteSendCommandAsync(first, now.AddMinutes(2), TestContext.Current.CancellationToken);
         var second = Assert.IsType<LeasedSendCommand>(await resumedRepository.LeaseNextSendCommandAsync("resumed-worker", now.AddMinutes(2),
             TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
@@ -262,6 +263,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         var firstRepository = firstScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
         var first = await firstRepository.LeaseNextSendCommandAsync("worker-one", now, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         Assert.NotNull(first);
+        Assert.True(await firstRepository.MarkSendExternalInFlightAsync(first!, now, TestContext.Current.CancellationToken));
         await firstRepository.CompleteSendCommandAsync(first!, now, TestContext.Current.CancellationToken);
 
         await using (var stateScope = firstProvider.CreateAsyncScope())
@@ -307,6 +309,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         Assert.NotNull(first);
         Assert.Equal(firstId, first!.Id);
         Assert.Null(concurrent);
+        Assert.True(await firstRepository.MarkSendExternalInFlightAsync(first, now, TestContext.Current.CancellationToken));
         await firstRepository.CompleteSendCommandAsync(first, now, TestContext.Current.CancellationToken);
         var second = await secondRepository.LeaseNextSendCommandAsync("worker-two", now, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         Assert.NotNull(second);
@@ -333,6 +336,32 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
+    public async Task Expired_external_in_flight_send_becomes_uncertain_and_is_never_auto_released()
+    {
+        using var firstProvider = CreateProvider();
+        using var recoveryProvider = CreateProvider();
+        var now = TruncateToMicroseconds(DateTime.UtcNow.AddMinutes(1));
+        await SeedRobotAndCommandsAsync(firstProvider, 50, now, 1);
+        await using var firstScope = firstProvider.CreateAsyncScope();
+        var firstRepository = firstScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var leased = Assert.IsType<LeasedSendCommand>(await firstRepository.LeaseNextSendCommandAsync(
+            "crashed-after-dispatch", now, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.True(await firstRepository.MarkSendExternalInFlightAsync(leased, now, TestContext.Current.CancellationToken));
+
+        await using var recoveryScope = recoveryProvider.CreateAsyncScope();
+        var recoveryRepository = recoveryScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        Assert.Null(await recoveryRepository.LeaseNextSendCommandAsync(
+            "recovery-worker", now.AddSeconds(11), TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+        var database = recoveryScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var stored = await database.SendCommands.AsNoTracking().SingleAsync(
+            command => command.Id == leased.Id, TestContext.Current.CancellationToken);
+        Assert.Equal("deliveryUncertain", stored.Status);
+        Assert.Equal("external_dispatch_lease_expired", stored.ReconciliationReason);
+        Assert.Equal(0, stored.AttemptCount);
+    }
+
+    [Fact]
     public async Task Retry_waiting_earlier_command_blocks_later_command_until_it_completes()
     {
         using var firstProvider = CreateProvider();
@@ -355,6 +384,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         var first = await firstRepository.LeaseNextSendCommandAsync("worker-one", now, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         Assert.NotNull(first);
         Assert.Equal(firstId, first!.Id);
+        Assert.True(await firstRepository.MarkSendExternalInFlightAsync(first, now, TestContext.Current.CancellationToken));
         await firstRepository.FailSendCommandAsync(first, "retry", now, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.Null(await secondRepository.LeaseNextSendCommandAsync("worker-two", now.AddSeconds(1), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
@@ -362,6 +392,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         var retried = await firstRepository.LeaseNextSendCommandAsync("worker-one", now.AddSeconds(5), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         Assert.NotNull(retried);
         Assert.Equal(firstId, retried!.Id);
+        Assert.True(await firstRepository.MarkSendExternalInFlightAsync(retried, now.AddSeconds(5), TestContext.Current.CancellationToken));
         await firstRepository.CompleteSendCommandAsync(retried, now.AddSeconds(5), TestContext.Current.CancellationToken);
 
         var second = await secondRepository.LeaseNextSendCommandAsync("worker-two", now.AddSeconds(5), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -548,6 +579,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
 
         public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
         public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+        public Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
 
         public void Complete() => _result.TrySetResult(WorkToolSendResult.Success());
     }

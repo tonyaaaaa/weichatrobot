@@ -24,6 +24,7 @@ public static class WorkToolGroupOperationEndpoints
         group.MapGet("/robots", ListRobotsAsync);
         group.MapPut("/robots/{id:guid}", UpsertRobotAsync);
         group.MapPost("/robots/{id:guid}/test-connection", TestRobotConnectionAsync);
+        group.MapPost("/robots/{id:guid}/callbacks/bind", BindRobotCallbackAsync);
         group.MapGet("/groups", ListGroupsAsync);
         group.MapPost("/groups/register", RegisterExistingGroupAsync);
         group.MapGet("/group-operations", ListOperationsAsync);
@@ -101,6 +102,35 @@ public static class WorkToolGroupOperationEndpoints
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { return Results.Problem("WorkTool connection test failed.", statusCode: 502); }
     }
 
+    private static async Task<IResult> BindRobotCallbackAsync(
+        Guid id,
+        BindRobotCallbackRequest request,
+        WechatRobotDbContext database,
+        IWorkToolClient client,
+        IHostEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        if (request.Type is not (0 or 1 or 5 or 6) ||
+            !Uri.TryCreate(request.PublicBaseUrl, UriKind.Absolute, out var baseUri) ||
+            (baseUri.Scheme != Uri.UriSchemeHttps && !(environment.IsDevelopment() || environment.IsEnvironment("Testing"))))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["callback"] = ["Type must be 0, 1, 5, or 6 and the public base URL must use HTTPS."] });
+        var robot = await database.RobotConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == id && item.IsEnabled, cancellationToken);
+        if (robot is null || string.IsNullOrWhiteSpace(robot.CallbackRouteCode)) return Results.NotFound();
+        var callbackUrl = new Uri(baseUri, $"/api/worktool/config-callback/{robot.CallbackRouteCode}");
+        try
+        {
+            var result = await client.BindCallbackAsync(id, request.Type, callbackUrl, cancellationToken);
+            return result.Succeeded
+                ? Results.Ok(new CallbackBindingResponse(true, request.Type, callbackUrl.AbsoluteUri, "Callback bound."))
+                : Results.Problem("WorkTool callback binding failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Results.Problem("WorkTool callback binding failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
     private static async Task<IResult> ListGroupsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) =>
         Results.Ok(await database.GroupProfiles.AsNoTracking().OrderBy(group => group.Name).Select(group => new KnownGroupResponse(group.Id, group.RobotConfigId, group.ExternalGroupId, group.Name)).ToArrayAsync(cancellationToken));
 
@@ -174,6 +204,8 @@ public static class WorkToolGroupOperationEndpoints
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static string? SafeResult(string? value) => string.IsNullOrWhiteSpace(value) ? value : value.Length > 512 ? value[..512] : value;
     public sealed record UpdateRobotRequest(string Name, string WorkToolRobotId, bool IsEnabled);
+    public sealed record BindRobotCallbackRequest(int Type, string PublicBaseUrl);
+    public sealed record CallbackBindingResponse(bool Succeeded, int Type, string CallbackUrl, string Message);
     public sealed record RobotResponse(Guid Id, string Name, string RobotReference, bool IsEnabled);
     public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string ExternalGroupId, string Name, bool ManualInvitationCompleted);
     public sealed record KnownGroupResponse(Guid Id, Guid RobotConfigId, string ExternalGroupId, string Name);

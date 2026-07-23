@@ -84,6 +84,27 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
+    public async Task Configuration_callback_uses_opaque_route_and_returns_required_json_200()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var robot = await SeedRobotAsync(factory, "config-callback", "callback-secret");
+        using var client = factory.CreateClient();
+
+        var accepted = await client.PostAsJsonAsync(
+            $"/api/worktool/config-callback/{robot.CallbackRouteCode}",
+            new { type = 1, code = 0 },
+            TestContext.Current.CancellationToken);
+        var legacyRoute = await client.PostAsJsonAsync(
+            $"/api/worktool/config-callback/{robot.WorkToolRobotId}",
+            new { type = 1, code = 0 },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        Assert.Equal("{\"code\":0,\"message\":\"accepted\"}", await accepted.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(HttpStatusCode.Unauthorized, legacyRoute.StatusCode);
+    }
+
+    [Fact]
     public async Task Invalid_token_is_rejected_without_enqueuing()
     {
         await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
