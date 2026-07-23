@@ -79,6 +79,25 @@ public sealed class InboundMessageProcessorTests
         Assert.Equal(AnswerDecisionKind.Handoff, repository.HandoffResult!.Decision.Kind);
     }
 
+    [Fact]
+    public async Task Explicit_transfer_starts_handoff_before_retrieval_or_model_work()
+    {
+        var repository = new FakeRepository(Request() with { Question = "请转人工" });
+        var handoff = new FakeHandoff { ExplicitTrigger = true };
+        var retrieval = new FakeRetrieval();
+        var chat = new FakeChat();
+        var processor = new InboundMessageProcessor(repository, new ConversationContextService(), new RetrievalQueryBuilder(new(256)),
+            new FakeSummarizer("summary"), new GroundedAnswerService(retrieval, chat, new GroundedAnswerOptions(), new AnswerOutputFirewall()),
+            TimeProvider.System, handoff);
+
+        await processor.ProcessAsync(Job(repository.Request.MessageId), TestContext.Current.CancellationToken);
+
+        Assert.Equal(string.Empty, retrieval.Query);
+        Assert.Null(chat.LastRequest);
+        Assert.Null(repository.Result);
+        Assert.Equal("explicit_transfer", repository.HandoffResult?.Audit.FailureCode);
+    }
+
     private static InboundMessageProcessor Processor(FakeRepository repository, IConversationSummarizer summarizer)
     {
         var answer = new GroundedAnswerService(new FakeRetrieval(), new FakeChat(), new GroundedAnswerOptions(), new AnswerOutputFirewall());
@@ -125,7 +144,9 @@ public sealed class InboundMessageProcessorTests
     private sealed class FakeHandoff : IHandoffOrchestrator
     {
         public bool Trigger { get; init; }
+        public bool ExplicitTrigger { get; init; }
         public Task<bool> IsPausedAsync(ConversationProcessingRequest request, CancellationToken token) => Task.FromResult(false);
+        public Task<bool> TryStartExplicitAsync(ConversationProcessingRequest request, CancellationToken token) => Task.FromResult(ExplicitTrigger);
         public Task<bool> HandleDecisionAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) => Task.FromResult(Trigger);
     }
 

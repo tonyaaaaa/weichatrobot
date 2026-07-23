@@ -53,6 +53,26 @@ public sealed class HandoffTriggerTests
         Assert.Equal(expectedDegradation, store.Command.EvidenceJson.Contains("stable_sender_id_unavailable_group_pause", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Handoff_evidence_excludes_document_text_titles_and_source_uris()
+    {
+        var store = new CapturingStore();
+        var orchestrator = new HandoffOrchestrator(new HandoffService(store, TimeProvider.System), store,
+            new HandoffTriggerEvaluator(new HandoffTriggerOptions(["转人工"], 3)),
+            new HandoffTriggerOptions(["转人工"], 3));
+        var marker = "SENSITIVE-HANDOFF-MARKER";
+        var result = new GroundedAnswerResult(new(AnswerDecisionKind.Handoff, string.Empty),
+            new([new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 2, .8, [Guid.NewGuid()], marker, marker, $"https://example.invalid/{marker}")],
+                .7, .8, "policy", "Handoff", "policy_handoff"));
+
+        Assert.True(await orchestrator.HandleDecisionAsync(Request(HandoffPausePolicy.Group, "stable"), result,
+            TestContext.Current.CancellationToken));
+
+        Assert.NotNull(store.Command);
+        Assert.DoesNotContain(marker, store.Command!.EvidenceJson, StringComparison.Ordinal);
+        Assert.Contains("DocumentId", store.Command.EvidenceJson, StringComparison.Ordinal);
+    }
+
     private static ConversationProcessingRequest Request(HandoffPausePolicy policy, string? stableSenderId)
     {
         var messageId = Guid.NewGuid();

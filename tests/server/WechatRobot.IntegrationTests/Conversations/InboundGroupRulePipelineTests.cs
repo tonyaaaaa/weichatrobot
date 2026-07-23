@@ -67,15 +67,26 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
                 RuleKind = 0,
                 IncludePattern = includePattern,
                 IncludePatternKind = (int)includeKind,
-                ExcludePattern = excludePattern,
-                ExcludePatternKind = (int)excludeKind,
                 IsEnabled = true
             };
-            db.AddRange(robot, group, rule, new ModelConfigEntity
+            var persistedRules = new List<GroupRuleEntity> { rule };
+            if (excludePattern is not null)
+            {
+                persistedRules.Add(new GroupRuleEntity
+                {
+                    GroupProfileId = group.Id,
+                    RuleKind = 1,
+                    IncludePattern = excludePattern,
+                    IncludePatternKind = (int)excludeKind,
+                    IsEnabled = true
+                });
+            }
+            db.AddRange(robot, group, new ModelConfigEntity
             {
                 Name = $"chat-{suffix}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid",
                 Model = "fake", EncryptedApiKey = "fake", IsDefault = true
             });
+            db.GroupRules.AddRange(persistedRules);
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             var externalMessageId = $"rules-message-{suffix}";
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
@@ -114,7 +125,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
-    public async Task Exact_external_group_identity_is_authoritative_but_still_enforces_rules_against_the_canonical_name()
+    public async Task Visible_group_name_cannot_be_hijacked_by_another_profiles_external_id()
     {
         using var services = Services();
         Guid messageId;
@@ -124,20 +135,20 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
             var suffix = Guid.NewGuid().ToString("N");
-            var externalId = $"external-{suffix}";
+            var visibleName = $"visible-{suffix}";
             var robot = new RobotConfigEntity { Name = suffix, WorkToolRobotId = suffix, CallbackSecretHash = "test" };
-            var authoritative = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = externalId, Name = "技术部" };
-            var fuzzyOther = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = $"other-{suffix}", Name = externalId };
-            db.AddRange(robot, authoritative, fuzzyOther,
-                new GroupRuleEntity { GroupProfileId = authoritative.Id, RuleKind = 0, IncludePattern = "技术部", IncludePatternKind = (int)GroupRulePatternKind.Exact },
-                new GroupRuleEntity { GroupProfileId = fuzzyOther.Id, RuleKind = 0, IncludePattern = externalId, IncludePatternKind = (int)GroupRulePatternKind.Exact },
+            var intended = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = $"actual-{suffix}", Name = visibleName };
+            var hijacker = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = visibleName, Name = $"unrelated-{suffix}" };
+            db.AddRange(robot, intended, hijacker,
+                new GroupRuleEntity { GroupProfileId = intended.Id, RuleKind = 0, IncludePattern = visibleName, IncludePatternKind = (int)GroupRulePatternKind.Exact },
+                new GroupRuleEntity { GroupProfileId = hijacker.Id, RuleKind = 0, IncludePattern = hijacker.Name, IncludePatternKind = (int)GroupRulePatternKind.Exact },
                 new ModelConfigEntity { Name = $"chat-{suffix}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
-                robot.Id, $"message-{suffix}", $"fallback-{suffix}", DateTime.UtcNow, externalId, "Alice", "question", DateTime.UtcNow,
+                robot.Id, $"message-{suffix}", $"fallback-{suffix}", DateTime.UtcNow, visibleName, "Alice", "question", DateTime.UtcNow,
                 "stable", true), TestContext.Current.CancellationToken);
             messageId = await db.ConversationMessages.OrderByDescending(item => item.CreatedAtUtc).Select(item => item.Id).FirstAsync(TestContext.Current.CancellationToken);
-            groupId = authoritative.Id;
+            groupId = intended.Id;
         }
 
         Assert.True(await new DurableJobWorker(services.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System)

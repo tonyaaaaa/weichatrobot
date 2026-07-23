@@ -23,32 +23,22 @@ public sealed class GroundedConversationRepository(
     {
         var message = await database.ConversationMessages.AsNoTracking().SingleOrDefaultAsync(item => item.Id == messageId, token)
             ?? throw new KeyNotFoundException("Inbound conversation message was not found.");
-        var authoritative = await database.GroupProfiles.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled && item.ExternalGroupId == groupName, token);
+        var exactNames = await database.GroupProfiles.AsNoTracking()
+            .Where(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled && item.Name == groupName)
+            .OrderBy(item => item.Id).Take(2).ToArrayAsync(token);
         GroupProfileEntity[] candidates;
-        var authoritativeIdentity = authoritative is not null;
-        if (authoritative is not null)
+        var authoritativeIdentity = exactNames.Length == 1;
+        if (authoritativeIdentity)
         {
-            candidates = [authoritative];
+            candidates = exactNames;
         }
         else
         {
-            var exactNames = await database.GroupProfiles.AsNoTracking()
-                .Where(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled && item.Name == groupName)
-                .OrderBy(item => item.Id).Take(2).ToArrayAsync(token);
-            if (exactNames.Length == 1)
-            {
-                candidates = exactNames;
-                authoritativeIdentity = true;
-            }
-            else
-            {
-                candidates = await database.GroupProfiles.AsNoTracking()
-                    .Where(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled)
-                    .OrderBy(item => item.Id).Take(MaximumPolicyCandidateGroups + 1).ToArrayAsync(token);
-                if (candidates.Length > MaximumPolicyCandidateGroups)
-                    return NoReply(messageId, null, "group_rule_candidate_limit", "candidate_limit_exceeded");
-            }
+            candidates = await database.GroupProfiles.AsNoTracking()
+                .Where(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled)
+                .OrderBy(item => item.Id).Take(MaximumPolicyCandidateGroups + 1).ToArrayAsync(token);
+            if (candidates.Length > MaximumPolicyCandidateGroups)
+                return NoReply(messageId, null, "group_rule_candidate_limit", "candidate_limit_exceeded");
         }
 
         if (candidates.Length == 0)
@@ -69,9 +59,7 @@ public sealed class GroundedConversationRepository(
             var candidateRules = rules.Where(item => item.GroupProfileId == candidate.Id).ToArray();
             if (candidateRules.Any(item => item.RuleKind is not 0 and not 1))
                 return NoReply(messageId, candidate.Id, "group_rule_invalid", "invalid_enabled_rule_direction");
-            var names = authoritative is not null && candidate.Id == authoritative.Id
-                ? new[] { candidate.Name }
-                : new[] { groupName };
+            var names = new[] { groupName };
             var includes = candidateRules.Where(item => item.RuleKind == 0).ToArray();
             var excludes = candidateRules.Where(item => item.RuleKind == 1).ToArray();
             var included = includes.Length == 0 && authoritativeIdentity;

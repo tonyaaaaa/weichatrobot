@@ -51,6 +51,12 @@ public sealed class InboundMessageProcessor(
             committed = true;
             return;
         }
+        if (handoffs is not null && await handoffs.TryStartExplicitAsync(request, cancellationToken))
+        {
+            await conversations.PersistHandoffTerminalAsync(request, HandoffResult("explicit_transfer"), cancellationToken);
+            committed = true;
+            return;
+        }
         var effectiveContext = context.Build(request.History, request.ContextPolicy, request.Scope.ScopeKey, request.ReceivedAtUtc, request.Summary);
         string? updatedSummary = null;
         string? summaryFailureCode = null;
