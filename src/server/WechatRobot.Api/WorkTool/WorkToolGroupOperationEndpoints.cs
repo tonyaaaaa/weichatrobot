@@ -7,6 +7,7 @@ using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
+using WechatRobot.Api.Security;
 
 namespace WechatRobot.Api.WorkTool;
 
@@ -16,7 +17,9 @@ public static class WorkToolGroupOperationEndpoints
 
     public static IEndpointRouteBuilder MapWorkToolGroupOperationEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        var group = endpoints.MapGroup("/api/admin/worktool").RequireAuthorization(SystemRoles.Admin);
+        var group = endpoints.MapGroup("/api/admin/worktool")
+            .RequireAuthorization(SystemRoles.Admin)
+            .RequireRateLimiting(RateLimitPolicies.WorkToolCommands);
         group.MapGet("/robots", ListRobotsAsync);
         group.MapPut("/robots/{id:guid}", UpsertRobotAsync);
         group.MapPost("/robots/{id:guid}/test-connection", TestRobotConnectionAsync);

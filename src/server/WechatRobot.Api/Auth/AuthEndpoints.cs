@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Api.Security;
 
 namespace WechatRobot.Api.Auth;
 
@@ -13,7 +14,7 @@ public static class AuthEndpoints
     public static RouteGroupBuilder MapAuthEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/auth");
-        group.MapPost("login", LoginAsync).AllowAnonymous();
+        group.MapPost("login", LoginAsync).AllowAnonymous().RequireRateLimiting(RateLimitPolicies.Login);
         group.MapGet("me", GetCurrentUserAsync).RequireAuthorization();
         group.MapGet("probe/knowledge", () => Results.Ok()).RequireAuthorization(SystemRoles.KnowledgeOperator);
         return group;

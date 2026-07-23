@@ -1,5 +1,6 @@
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Api.Security;
 
 namespace WechatRobot.Api.Knowledge;
 
@@ -8,7 +9,7 @@ public static class DocumentEndpoints
     public static IEndpointRouteBuilder MapDocumentEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var documents = endpoints.MapGroup("/api/knowledge/documents").RequireAuthorization(SystemRoles.KnowledgeOperator);
-        documents.MapPost("", UploadAsync).DisableAntiforgery();
+        documents.MapPost("", UploadAsync).DisableAntiforgery().RequireRateLimiting(RateLimitPolicies.Upload);
         documents.MapPost("/{documentId:guid}/retry-upload", RetryAsync);
         documents.MapDelete("/{documentId:guid}/physical", RequestPhysicalDeleteAsync).RequireAuthorization(SystemRoles.Admin);
         return endpoints;

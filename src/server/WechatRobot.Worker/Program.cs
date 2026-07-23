@@ -19,10 +19,14 @@ using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Infrastructure.Conversations;
+using WechatRobot.Infrastructure.Health;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Worker.Jobs;
+using WechatRobot.Infrastructure.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
+builder.Logging.AddRedactingConsole();
+StartupConfigurationValidator.Validate(builder.Configuration, requireCors: false);
 var connectionString = builder.Configuration.GetConnectionString("WechatRobot")
     ?? throw new InvalidOperationException("ConnectionStrings:WechatRobot must be configured.");
 builder.Services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
@@ -145,6 +149,7 @@ builder.Services.AddHostedService<KnowledgeParseWorker>();
 builder.Services.AddHostedService<KnowledgeIndexWorker>();
 builder.Services.AddHostedService<KnowledgeCandidatePublishWorker>();
 builder.Services.AddHostedService<KnowledgeDocumentCleanupWorker>();
+builder.Services.AddHostedService<WorkerHeartbeatService>();
 
 var host = builder.Build();
 host.Run();

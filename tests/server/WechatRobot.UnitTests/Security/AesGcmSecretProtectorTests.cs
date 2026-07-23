@@ -3,6 +3,7 @@ using WechatRobot.Infrastructure.Security;
 
 namespace WechatRobot.UnitTests.Security;
 
+[Collection("EnvironmentVariables")]
 public sealed class AesGcmSecretProtectorTests
 {
     [Fact]

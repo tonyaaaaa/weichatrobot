@@ -12,6 +12,8 @@ using WechatRobot.Api.Knowledge;
 using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
 using WechatRobot.Api.Handoffs;
+using WechatRobot.Api.Health;
+using WechatRobot.Api.Security;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Conversations;
@@ -33,8 +35,12 @@ using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Infrastructure.WorkTool;
+using WechatRobot.Infrastructure.Health;
+using WechatRobot.Infrastructure.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddRedactingConsole();
+StartupConfigurationValidator.Validate(builder.Configuration, requireCors: true);
 
 var connectionString = builder.Configuration.GetConnectionString("WechatRobot")
     ?? throw new InvalidOperationException("ConnectionStrings:WechatRobot must be configured.");
@@ -45,7 +51,7 @@ if (allowedOrigins.Length == 0 || allowedOrigins.Any(string.IsNullOrWhiteSpace))
     throw new InvalidOperationException("Cors:AllowedOrigins must contain at least one explicit origin.");
 }
 
-builder.Services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
+builder.Services.AddDbContextFactory<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
 var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<ModelConfigurationService>();
@@ -124,7 +130,8 @@ builder.Services.AddScoped<InboundMessageService>(services => new InboundMessage
     services.GetRequiredService<IDurableJobRepository>(),
     services.GetRequiredService<TimeProvider>(),
     services.GetRequiredService<IOptions<WorkToolCallbackOptions>>().Value.FallbackDeduplicationWindow));
-WorkToolCallbackRateLimitPolicy.Add(builder.Services);
+builder.Services.AddApiRateLimits(builder.Environment.IsEnvironment("Testing"));
+builder.Services.AddWechatRobotHealth(builder.Configuration);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"));
@@ -214,7 +221,8 @@ app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
 app.MapHandoffEndpoints();
 app.MapKnowledgeReviewEndpoints();
-app.MapGet("/", () => Results.Ok());
+app.MapWechatRobotHealthEndpoints();
+app.MapGet("/", () => Results.Ok()).RequireAuthorization();
 
 app.Run();
 
