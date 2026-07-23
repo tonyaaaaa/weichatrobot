@@ -14,6 +14,8 @@ internal sealed class HandoffCaseConfiguration : IEntityTypeConfiguration<Handof
         builder.Property(x => x.ReasonCode).HasMaxLength(128).IsRequired(); builder.Property(x => x.EvidenceJson).HasColumnType("json").IsRequired();
         builder.Property(x => x.PauseScope).HasMaxLength(16).IsRequired(); builder.Property(x => x.StableSenderId).HasMaxLength(128);
         builder.Property(x => x.FinalAnswer).HasColumnType("longtext"); builder.Property(x => x.Version).IsConcurrencyToken();
+        builder.Property(x => x.StartIdempotencyKey).HasMaxLength(128); builder.HasIndex(x => x.StartIdempotencyKey).IsUnique();
+        builder.Property(x => x.RequestFingerprint).HasMaxLength(64);
         builder.HasIndex(x => x.QuestionMessageId).IsUnique(); builder.HasIndex(x => new { x.GroupProfileId, x.State });
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(x => x.QuestionMessageId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(x => x.RobotConfigId).OnDelete(DeleteBehavior.Restrict);

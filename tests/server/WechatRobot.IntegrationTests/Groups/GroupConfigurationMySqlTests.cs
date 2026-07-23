@@ -139,6 +139,7 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
+            builder.DisableStartupMigrations();
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:WechatRobot"] = _connectionString,

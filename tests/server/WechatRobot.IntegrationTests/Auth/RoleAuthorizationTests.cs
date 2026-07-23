@@ -3,29 +3,22 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.IntegrationTests.Infrastructure;
 
 namespace WechatRobot.IntegrationTests.Auth;
 
-public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory<Program>>
+public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiFactory>
 {
     private const string SigningKey = "integration-tests-signing-key-must-be-at-least-32-bytes";
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly RoleAuthorizationApiFactory _factory;
 
-    public RoleAuthorizationTests(WebApplicationFactory<Program> factory)
-    {
-        Environment.SetEnvironmentVariable("WECHATROBOT_MASTER_KEY_BASE64", Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
-        Environment.SetEnvironmentVariable("Jwt__Issuer", "integration-tests");
-        Environment.SetEnvironmentVariable("Jwt__Audience", "integration-tests-api");
-        Environment.SetEnvironmentVariable("Jwt__SigningKey", SigningKey);
-        Environment.SetEnvironmentVariable("ConnectionStrings__WechatRobot", "Server=localhost;Port=3306;Database=wechatrobot_tests;User Id=wechatrobot;Password=wechatrobot-tests-password");
-        Environment.SetEnvironmentVariable("Cors__AllowedOrigins__0", "https://admin.example.test");
-        _factory = factory;
-    }
+    public RoleAuthorizationTests(RoleAuthorizationApiFactory factory) => _factory = factory;
 
     [Fact]
     public void Auth_probe_route_is_mapped()
@@ -114,6 +107,10 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
             new { finalAnswer = "answer", expectedVersion = 0 }, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        var assign = await client.PostAsJsonAsync($"/api/handoffs/{Guid.NewGuid():D}/assign",
+            new { assigneeUserId = Guid.NewGuid(), expectedVersion = 0 }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, assign.StatusCode);
     }
 
     private static string CreateToken(string role, string? subject = null)
@@ -135,5 +132,24 @@ public sealed class RoleAuthorizationTests : IClassFixture<WebApplicationFactory
         };
 
         return new JwtSecurityTokenHandler().WriteToken(new JwtSecurityTokenHandler().CreateToken(descriptor));
+    }
+}
+
+public sealed class RoleAuthorizationApiFactory : WebApplicationFactory<Program>
+{
+    public RoleAuthorizationApiFactory()
+    {
+        Environment.SetEnvironmentVariable("WECHATROBOT_MASTER_KEY_BASE64", Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        Environment.SetEnvironmentVariable("Jwt__Issuer", "integration-tests");
+        Environment.SetEnvironmentVariable("Jwt__Audience", "integration-tests-api");
+        Environment.SetEnvironmentVariable("Jwt__SigningKey", "integration-tests-signing-key-must-be-at-least-32-bytes");
+        Environment.SetEnvironmentVariable("ConnectionStrings__WechatRobot", "Server=localhost;Port=3306;Database=wechatrobot_tests;User Id=wechatrobot;Password=wechatrobot-tests-password");
+        Environment.SetEnvironmentVariable("Cors__AllowedOrigins__0", "https://admin.example.test");
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+        builder.DisableStartupMigrations();
     }
 }

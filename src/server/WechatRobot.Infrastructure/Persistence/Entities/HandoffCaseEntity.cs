@@ -14,6 +14,8 @@ public sealed class HandoffCaseEntity
     public Guid? AssigneeUserId { get; set; }
     public Guid? ResolvedByUserId { get; set; }
     public string? FinalAnswer { get; set; }
+    public string? StartIdempotencyKey { get; set; }
+    public string? RequestFingerprint { get; set; }
     public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }

@@ -4,7 +4,7 @@ public enum HandoffPauseScope { Group, Sender }
 
 public sealed record StartHandoffCommand(Guid QuestionMessageId, Guid RobotConfigId, Guid GroupProfileId, string WorkToolRobotId,
     string GroupName, string ReasonCode, string EvidenceJson, HandoffPauseScope PauseScope, string? StableSenderId,
-    Guid? AssigneeUserId, string AssigneeTarget, string IdempotencyKey);
+    Guid? AssigneeUserId, string AssigneeTarget, string IdempotencyKey, string? RequestReason = null);
 public sealed record HandoffRecord(Guid Id, string State, Guid? AssigneeUserId, int Version);
 public sealed record ManualStartHandoffCommand(Guid QuestionMessageId, string Reason, HandoffPauseScope PauseScope, Guid? AssigneeUserId,
     string IdempotencyKey, Guid AuthenticatedActorUserId);
@@ -34,7 +34,7 @@ public sealed class HandoffService(IHandoffStore store, TimeProvider timeProvide
     public Task<HandoffRecord> StartManualAsync(ManualStartHandoffCommand command, CancellationToken token)
     {
         ValidateIdempotency(command.IdempotencyKey);
-        return store.StartManualAsync(command with { IdempotencyKey = $"manual:{command.QuestionMessageId:D}:{command.IdempotencyKey.Trim()}" },
+        return store.StartManualAsync(command with { IdempotencyKey = $"manual:{command.IdempotencyKey.Trim()}" },
             timeProvider.GetUtcNow().UtcDateTime, token);
     }
 

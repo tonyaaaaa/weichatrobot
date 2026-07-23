@@ -29,3 +29,21 @@
 ## Provider boundary
 
 - No live WorkTool, model, or embedding provider was called. The semantic regression uses deterministic fake model/embedding clients and an isolated pinned Qdrant Testcontainer.
+
+## Release-gate hardening
+
+- Serialized concurrent publish-outbox repair on the candidate row so identical approval replays converge when the outbox is missing or dead-lettered.
+- Persisted a normalized manual-handoff request fingerprint and globally unique start idempotency key. Exact replays return the existing case; reused keys or questions with changed payload return a controlled conflict.
+- Added robot-enabled checks when commands are enqueued, leased, renewed, and immediately before provider send. A cross-process MySQL named lock serializes enqueue, enable/disable, the provider call, and final command-state commit; disabling blocks queued and leased commands, waits for any in-flight send to finish, and idempotent re-enable resumes commands in FIFO order without leaving concurrent enqueues blocked.
+- Added stable, capped paging (`pageSize <= 100`) and totals to handoff messages and transitions.
+- Bound review fingerprints to `ReviewerUserId` and validated the authenticated assignment actor before target-user lookup.
+- Added migration `20260722163615_AddHandoffRequestFingerprint`; generated SQL contains the two nullable compatibility columns and unique `StartIdempotencyKey` index inside one transaction.
+- Made the integration suite globally serial while retaining a fresh MySQL database per real-database test class. All API factories now explicitly choose whether startup migrations are enabled, and a forced-environment startup smoke test covers every non-relational/no-database factory.
+
+## Final verification
+
+- `dotnet build WechatRobot.slnx --no-restore`: 0 warnings, 0 errors.
+- Full unit suite: 124/124 passed.
+- Full contract suite: 26/26 passed.
+- One complete serial integration run: 106/106 passed in 1h16m47s, including real MySQL 8.4.10, pinned Qdrant 1.18.2, callback performance, migration upgrade, cross-process send-gate interleavings, concurrency, authorization, and API-factory startup coverage.
+- `git diff --check`: passed.

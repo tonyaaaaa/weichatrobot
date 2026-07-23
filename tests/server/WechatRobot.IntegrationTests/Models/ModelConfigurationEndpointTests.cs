@@ -16,6 +16,7 @@ using WechatRobot.Application.Models;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.IntegrationTests.Infrastructure;
 
 namespace WechatRobot.IntegrationTests.Models;
 
@@ -150,6 +151,7 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.DisableStartupMigrations();
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Jwt:Issuer"] = "model-config-tests",

@@ -54,9 +54,23 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         var committedOutbox = await db.DurableJobs.SingleAsync(x => x.Id == candidate.Id, TestContext.Current.CancellationToken);
         db.DurableJobs.Remove(committedOutbox);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
-        var duplicate = await service.ReviewAsync(new(candidate.Id, reviewer, "approve", [tag.Id], null, "review-1", 0), TestContext.Current.CancellationToken);
+        async Task<KnowledgeCandidateReviewResult> ReplayAsync()
+        {
+            await using var replayDb = Database();
+            return await new KnowledgeCandidateService(new EfKnowledgeCandidateStore(replayDb), TimeProvider.System)
+                .ReviewAsync(new(candidate.Id, reviewer, "approve", [tag.Id], null, "review-1", 0), TestContext.Current.CancellationToken);
+        }
+        var repairedMissing = await Task.WhenAll(ReplayAsync(), ReplayAsync());
+        Assert.Equal(repairedMissing[0], repairedMissing[1]);
+        await db.DurableJobs.Where(x => x.Id == candidate.Id).ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Status, "deadLetter"),
+            TestContext.Current.CancellationToken);
+        var repairedFailed = await Task.WhenAll(ReplayAsync(), ReplayAsync());
+        Assert.Equal(repairedFailed[0], repairedFailed[1]);
+        var duplicate = repairedFailed[0];
         await Assert.ThrowsAsync<HandoffStateException>(() => service.ReviewAsync(
             new(candidate.Id, reviewer, "approve", [tag.Id], "不同答案", "review-1", 0), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<HandoffStateException>(() => service.ReviewAsync(
+            new(candidate.Id, Guid.NewGuid(), "approve", [tag.Id], null, "review-1", 0), TestContext.Current.CancellationToken));
 
         Assert.Equal(approved.PublishJobId, duplicate.PublishJobId);
         Assert.Equal("approved_pending_index", approved.Status);

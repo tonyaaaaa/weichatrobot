@@ -13,7 +13,7 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
     public async Task<KnowledgeCandidateReviewResult> ReviewAsync(ReviewKnowledgeCandidateCommand command, DateTime nowUtc, CancellationToken token)
     {
         var tags = command.TagIds ?? throw new ArgumentException("TagIds is required.");
-        var fingerprint = Fingerprint(command.CandidateId, command.Decision, tags, command.RevisedAnswer);
+        var fingerprint = Fingerprint(command.CandidateId, command.ReviewerUserId, command.Decision, tags, command.RevisedAnswer);
         var prior = await db.KnowledgeReviews.AsNoTracking().SingleOrDefaultAsync(x => x.IdempotencyKey == command.IdempotencyKey, token);
         if (prior is not null)
         {
@@ -100,7 +100,11 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
 
     private async Task EnsurePublishOutboxAsync(Guid candidateId, string tagIdsJson, DateTime nowUtc, CancellationToken token)
     {
-        var candidate = await db.KnowledgeCandidates.SingleAsync(x => x.Id == candidateId, token);
+        await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
+        var candidate = transaction is null
+            ? await db.KnowledgeCandidates.SingleAsync(x => x.Id == candidateId, token)
+            : await db.KnowledgeCandidates.FromSqlInterpolated($"SELECT * FROM knowledge_candidate WHERE Id = {candidateId} FOR UPDATE")
+                .SingleAsync(token);
         if (candidate.KnowledgeDocumentVersionId is not { } versionId) throw new HandoffStateException("Approved candidate has no knowledge version.");
         var version = await db.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(x => x.Id == versionId, token);
         var job = await db.DurableJobs.SingleOrDefaultAsync(x => x.Id == candidateId, token);
@@ -116,6 +120,7 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
         if (candidate.Status == "indexing" && !hasUsableIndexJob)
         { candidate.Status = "approved_pending_index"; candidate.Version++; candidate.UpdatedAtUtc = nowUtc; }
         await db.SaveChangesAsync(token);
+        if (transaction is not null) await transaction.CommitAsync(token);
     }
 
     private static DurableJobEntity PublishJob(Guid candidateId, Guid documentId, Guid versionId, IReadOnlyList<Guid> tags, DateTime now) => new()
@@ -126,7 +131,7 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
     };
 
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
-    private static string Fingerprint(Guid candidateId, string decision, IReadOnlyList<Guid> tags, string? revisedAnswer) =>
-        Hash(JsonSerializer.Serialize(new { candidateId, decision, tags = tags.Distinct().Order().ToArray(), revisedAnswer = revisedAnswer?.Trim() }));
+    private static string Fingerprint(Guid candidateId, Guid reviewerUserId, string decision, IReadOnlyList<Guid> tags, string? revisedAnswer) =>
+        Hash(JsonSerializer.Serialize(new { candidateId, reviewerUserId, decision, tags = tags.Distinct().Order().ToArray(), revisedAnswer = revisedAnswer?.Trim() }));
     private static string Limit(string value, int max) => value.Length <= max ? value : value[..max];
 }

@@ -40,7 +40,10 @@ public static class WorkToolGroupOperationEndpoints
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 || string.IsNullOrWhiteSpace(request.WorkToolRobotId) || request.WorkToolRobotId.Length > 128)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["robot"] = ["Robot name and WorkTool robot ID are required."] });
 
+        await using var sendGate = await MySqlRobotSendLock.AcquireAsync(database, id, cancellationToken);
+        await using var transaction = database.Database.IsRelational() ? await database.Database.BeginTransactionAsync(cancellationToken) : null;
         var robot = await database.RobotConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        var wasEnabled = robot?.IsEnabled;
         if (robot is null)
         {
             robot = new RobotConfigEntity { Id = id, CallbackSecretHash = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)) };
@@ -49,6 +52,26 @@ public static class WorkToolGroupOperationEndpoints
         robot.Name = request.Name.Trim(); robot.WorkToolRobotId = request.WorkToolRobotId.Trim(); robot.IsEnabled = request.IsEnabled;
         robot.UpdatedAtUtc = DateTime.UtcNow;
         await database.SaveChangesAsync(cancellationToken);
+        if (wasEnabled == true && !request.IsEnabled)
+        {
+            await database.SendCommands.Where(command => command.RobotConfigId == id &&
+                    (command.Status == "pending" || command.Status == "retrying" || command.Status == "leased"))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "blocked")
+                    .SetProperty(command => command.LeaseOwner, (string?)null).SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
+                    .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+            robot.SendLeaseOwner = null; robot.SendLeaseExpiresAtUtc = null; robot.SendCoordinationVersion++;
+            await database.SaveChangesAsync(cancellationToken);
+        }
+        else if (wasEnabled == false && request.IsEnabled)
+        {
+            var now = DateTime.UtcNow;
+            await database.SendCommands.Where(command => command.RobotConfigId == id && command.Status == "blocked")
+                .ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "pending")
+                    .SetProperty(command => command.NextAttemptAtUtc, now).SetProperty(command => command.LeaseOwner, (string?)null)
+                    .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
+                    .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+        }
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return Results.Ok(new RobotResponse(robot.Id, robot.Name, MaskRobotId(robot.WorkToolRobotId), robot.IsEnabled));
     }
 

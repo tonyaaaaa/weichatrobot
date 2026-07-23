@@ -8,6 +8,7 @@ namespace WechatRobot.Infrastructure.Persistence;
 
 public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurableJobRepository
 {
+    private MySqlRobotSendLock? activeSendGate;
     public async Task<InboundMessageIngestResult> IngestInboundMessageAsync(InboundMessageIngestRequest request, CancellationToken cancellationToken)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
@@ -163,20 +164,29 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
     public async Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken)
     {
+        await using var sendGate = await MySqlRobotSendLock.AcquireAsync(database, request.RobotConfigId, cancellationToken);
+        await using var transaction = database.Database.IsRelational()
+            ? await database.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var enabled = await database.RobotConfigs.AsNoTracking().Where(robot => robot.Id == request.RobotConfigId)
+            .Select(robot => (bool?)robot.IsEnabled).SingleOrDefaultAsync(cancellationToken) ?? throw new KeyNotFoundException("Robot was not found.");
         database.SendCommands.Add(new SendCommandEntity
         {
             RobotConfigId = request.RobotConfigId,
             IdempotencyKey = request.IdempotencyKey,
             PayloadJson = JsonSerializer.Serialize(new { request.WorkToolRobotId, request.GroupName, request.Text }),
+            Status = enabled ? "pending" : "blocked",
             NextAttemptAtUtc = DateTime.UtcNow
         });
         try
         {
             await database.SaveChangesAsync(cancellationToken);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
             return EnqueueSendCommandResult.Enqueued;
         }
         catch (DbUpdateException exception) when (IsUniqueConstraintViolation(exception))
         {
+            if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None);
             database.ChangeTracker.Clear();
             return EnqueueSendCommandResult.AlreadyExists;
         }
@@ -188,6 +198,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                                join robot in database.RobotConfigs.AsNoTracking() on command.RobotConfigId equals robot.Id
                                where (((command.Status == "pending" || command.Status == "retrying") && command.NextAttemptAtUtc <= nowUtc) ||
                                       (command.Status == "leased" && command.LeaseExpiresAtUtc <= nowUtc)) &&
+                                     robot.IsEnabled &&
                                      (robot.SendLeaseOwner == null || robot.SendLeaseExpiresAtUtc <= nowUtc) &&
                                      !database.SendCommands.Any(earlier =>
                                          earlier.RobotConfigId == command.RobotConfigId &&
@@ -204,7 +215,8 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         }
 
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var robotState = await database.RobotConfigs.AsNoTracking().SingleAsync(value => value.Id == candidate.RobotConfigId, cancellationToken);
+        var robotState = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(value => value.Id == candidate.RobotConfigId && value.IsEnabled, cancellationToken);
+        if (robotState is null) { await transaction.RollbackAsync(cancellationToken); return null; }
         var capacity = (decimal)robotState.SendRateLimitPerMinute;
         var elapsedSeconds = Math.Max(0, (nowUtc - robotState.SendRateUpdatedAtUtc).TotalSeconds);
         var availableTokens = Math.Min(capacity, robotState.SendRateTokens + (decimal)(elapsedSeconds * robotState.SendRateLimitPerMinute / 60d));
@@ -215,6 +227,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
         var robotUpdated = await database.RobotConfigs
             .Where(value => value.Id == robotState.Id && value.SendCoordinationVersion == robotState.SendCoordinationVersion &&
+                value.IsEnabled &&
                 (value.SendLeaseOwner == null || value.SendLeaseExpiresAtUtc <= nowUtc))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.SendRateTokens, availableTokens - 1)
@@ -248,6 +261,48 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         var payload = JsonSerializer.Deserialize<SendPayload>(leased.PayloadJson) ?? throw new InvalidOperationException("Send command payload is invalid.");
         return new LeasedSendCommand(leased.Id, leased.RobotConfigId, payload.WorkToolRobotId, payload.GroupName, payload.Text, leased.IdempotencyKey,
             robotState.SendRateLimitPerMinute, leased.AttemptCount, leaseOwner, payload.AtList);
+    }
+
+    public async Task<bool> EnsureSendEnabledAsync(LeasedSendCommand command, CancellationToken cancellationToken)
+    {
+        if (activeSendGate is not null) throw new InvalidOperationException("A robot send gate is already held by this repository.");
+        var sendGate = await MySqlRobotSendLock.AcquireAsync(database, command.RobotConfigId, cancellationToken);
+        try
+        {
+            await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+            var robot = await database.RobotConfigs.FromSqlInterpolated(
+                $"SELECT * FROM robot_config WHERE Id = {command.RobotConfigId} FOR UPDATE").AsNoTracking().SingleOrDefaultAsync(cancellationToken);
+            if (robot is not null && robot.IsEnabled)
+            {
+                var owned = await database.SendCommands.AsNoTracking().AnyAsync(value => value.Id == command.Id && value.Status == "leased" &&
+                    value.LeaseOwner == command.LeaseOwner, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                if (owned) activeSendGate = sendGate;
+                else await sendGate.DisposeAsync();
+                return owned;
+            }
+            await database.SendCommands.Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.Status, "blocked")
+                    .SetProperty(value => value.LeaseOwner, (string?)null).SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
+                    .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
+            await ReleaseRobotGuardAsync(command, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            await sendGate.DisposeAsync();
+            return false;
+        }
+        catch
+        {
+            await sendGate.DisposeAsync();
+            throw;
+        }
+    }
+
+    public async Task ReleaseSendGateAsync(CancellationToken cancellationToken)
+    {
+        if (activeSendGate is null) return;
+        var sendGate = activeSendGate;
+        activeSendGate = null;
+        await sendGate.DisposeAsync();
     }
 
     public async Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken)
@@ -322,7 +377,7 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.LeaseExpiresAtUtc, nowUtc.Add(leaseDuration)), cancellationToken);
         var robotRenewed = await database.RobotConfigs
-            .Where(value => value.Id == command.RobotConfigId && value.SendLeaseOwner == command.LeaseOwner)
+            .Where(value => value.Id == command.RobotConfigId && value.IsEnabled && value.SendLeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.SendLeaseExpiresAtUtc, nowUtc.Add(leaseDuration))
                 .SetProperty(value => value.SendCoordinationVersion, value => value.SendCoordinationVersion + 1), cancellationToken);

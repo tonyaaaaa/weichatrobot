@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using MySql.Data.MySqlClient;
 using WechatRobot.Application.Handoffs;
@@ -28,9 +30,10 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
             target = user.UserName;
         }
         var stable = command.PauseScope == HandoffPauseScope.Sender ? message.StableSenderId : null;
+        var reason = Normalize(command.Reason);
         return await StartAsync(new(message.Id, robot.Id, group.Id, robot.WorkToolRobotId, group.Name, "manual_transfer",
-            JsonSerializer.Serialize(new { command.AuthenticatedActorUserId, command.Reason }), command.PauseScope, stable,
-            command.AssigneeUserId, target, command.IdempotencyKey), nowUtc, token);
+            JsonSerializer.Serialize(new { command.AuthenticatedActorUserId, Reason = reason }), command.PauseScope, stable,
+            command.AssigneeUserId, target, command.IdempotencyKey, reason), nowUtc, token);
     }
     public async Task<HandoffRecord> StartAsync(StartHandoffCommand command, DateTime nowUtc, CancellationToken token)
     {
@@ -40,11 +43,16 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
         if (transaction is not null)
             _ = await db.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {command.GroupProfileId} FOR UPDATE")
                 .AsNoTracking().SingleAsync(token);
-        var existing = await db.HandoffCases.AsNoTracking().SingleOrDefaultAsync(x => x.QuestionMessageId == command.QuestionMessageId, token);
-        if (existing is not null)
+        var fingerprint = RequestFingerprint(command);
+        var matches = await db.HandoffCases.AsNoTracking().Where(x => x.QuestionMessageId == command.QuestionMessageId ||
+            x.StartIdempotencyKey == command.IdempotencyKey).Take(2).ToArrayAsync(token);
+        if (matches.Length > 0)
         {
+            if (matches.Length != 1 || matches[0].RequestFingerprint is null ||
+                !string.Equals(matches[0].RequestFingerprint, fingerprint, StringComparison.Ordinal))
+                throw new HandoffStateException("Handoff idempotency key or source question was already used with a different payload.");
             if (transaction is not null) await transaction.CommitAsync(token);
-            return Map(existing);
+            return Map(matches[0]);
         }
         var domain = HandoffCase.Start(Guid.NewGuid(), command.GroupProfileId, command.QuestionMessageId, command.ReasonCode, command.EvidenceJson,
             Enum.Parse<PauseScope>(command.PauseScope.ToString()), command.StableSenderId, nowUtc);
@@ -52,7 +60,7 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
             Id = domain.Id,
             GroupProfileId = command.GroupProfileId, ReasonCode = command.ReasonCode, EvidenceJson = command.EvidenceJson,
             PauseScope = command.PauseScope.ToString(), StableSenderId = command.StableSenderId, State = domain.State.ToString(),
-            CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
+            StartIdempotencyKey = command.IdempotencyKey, RequestFingerprint = fingerprint, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
         db.HandoffCases.Add(entity);
         AddTransition(entity.Id, null, 1, "AIActive", "WaitingHuman", command.ReasonCode, $"handoff:{entity.Id:D}:create", nowUtc);
         if (command.AssigneeUserId is { } initialAssignee)
@@ -75,7 +83,11 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
         {
             if (transaction is not null) await transaction.RollbackAsync(CancellationToken.None);
             db.ChangeTracker.Clear();
-            return Map(await db.HandoffCases.AsNoTracking().SingleAsync(x => x.QuestionMessageId == command.QuestionMessageId, token));
+            var committed = await db.HandoffCases.AsNoTracking().Where(x => x.QuestionMessageId == command.QuestionMessageId ||
+                x.StartIdempotencyKey == command.IdempotencyKey).Take(2).ToArrayAsync(token);
+            if (committed.Length == 1 && string.Equals(committed[0].RequestFingerprint, fingerprint, StringComparison.Ordinal))
+                return Map(committed[0]);
+            throw new HandoffStateException("Handoff idempotency key or source question was already used with a different payload.");
         }
     }
 
@@ -188,6 +200,11 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
     }
 
     private static string Safe(string value, int length) => new(value.Where(c => !char.IsControl(c)).Take(length).ToArray());
+    private static string Normalize(string value) => string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    private static string RequestFingerprint(StartHandoffCommand command) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+        JsonSerializer.Serialize(new { command.QuestionMessageId, command.RobotConfigId, command.GroupProfileId,
+            Reason = Normalize(command.RequestReason ?? command.ReasonCode), PauseScope = command.PauseScope.ToString(),
+            StableSenderId = command.StableSenderId?.Trim(), command.AssigneeUserId }))));
     private void AddTransition(Guid handoffId, Guid? actor, int sequence, string from, string to, string reason, string key, DateTime now) =>
         db.HandoffTransitions.Add(new() { HandoffCaseId = handoffId, ActorUserId = actor, Sequence = sequence, FromState = from, ToState = to,
             ReasonCode = reason, IdempotencyKey = key, CreatedAtUtc = now });

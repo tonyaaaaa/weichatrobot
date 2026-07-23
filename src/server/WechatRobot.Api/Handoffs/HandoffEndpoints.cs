@@ -44,20 +44,26 @@ public static class HandoffEndpoints
         return item is null ? TypedResults.NotFound() : TypedResults.Ok(item);
     }
 
-    private static async Task<IResult> MessagesAsync(Guid id, WechatRobotDbContext db, CancellationToken token)
+    private static async Task<IResult> MessagesAsync(Guid id, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
     {
         if (!await db.HandoffCases.AnyAsync(x => x.Id == id, token)) return TypedResults.NotFound();
-        var items = await db.HandoffMessages.AsNoTracking().Where(x => x.HandoffCaseId == id).OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
+        (page, pageSize) = Page(page, pageSize);
+        var query = db.HandoffMessages.AsNoTracking().Where(x => x.HandoffCaseId == id);
+        var total = await query.CountAsync(token);
+        var items = await query.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(x => new { x.Id, x.ExternalMessageId, x.SenderDisplayName, x.AuthenticatedUserId, x.AuthenticationKind, x.Text, x.CreatedAtUtc }).ToArrayAsync(token);
-        return TypedResults.Ok(items);
+        return TypedResults.Ok(new { items, total, page, pageSize });
     }
 
-    private static async Task<IResult> TransitionsAsync(Guid id, WechatRobotDbContext db, CancellationToken token)
+    private static async Task<IResult> TransitionsAsync(Guid id, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)
     {
         if (!await db.HandoffCases.AnyAsync(x => x.Id == id, token)) return TypedResults.NotFound();
-        var items = await db.HandoffTransitions.AsNoTracking().Where(x => x.HandoffCaseId == id).OrderBy(x => x.Sequence)
+        (page, pageSize) = Page(page, pageSize);
+        var query = db.HandoffTransitions.AsNoTracking().Where(x => x.HandoffCaseId == id);
+        var total = await query.CountAsync(token);
+        var items = await query.OrderBy(x => x.Sequence).ThenBy(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(x => new { x.Id, x.ActorUserId, x.Sequence, x.FromState, x.ToState, x.ReasonCode, x.CreatedAtUtc }).ToArrayAsync(token);
-        return TypedResults.Ok(items);
+        return TypedResults.Ok(new { items, total, page, pageSize });
     }
 
     private static (int Page, int PageSize) Page(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize <= 0 ? 20 : pageSize, 1, 100));
@@ -83,9 +89,9 @@ public static class HandoffEndpoints
     private static async Task<IResult> AssignAsync(Guid id, AssignHandoffRequest request, ClaimsPrincipal user, HandoffService service,
         UserManager<ApplicationUser> users, CancellationToken token)
     {
+        if (!TryActor(user, out var actor)) return TypedResults.Unauthorized();
         if (!await IsHumanAgentAsync(users, request.AssigneeUserId))
             return TypedResults.BadRequest(new { error = "Assignee must be an authenticated HumanAgent or Admin user." });
-        if (!TryActor(user, out var actor)) return TypedResults.Unauthorized();
         return await ExecuteAsync(() => service.AssignAsync(id, actor, request.AssigneeUserId, request.ExpectedVersion, token));
     }
     private static async Task<IResult> ResolveAsync(Guid id, ResolveHandoffRequest request, ClaimsPrincipal user, HandoffService service, CancellationToken token) =>

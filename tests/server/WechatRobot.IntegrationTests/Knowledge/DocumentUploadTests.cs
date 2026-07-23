@@ -16,6 +16,7 @@ using Microsoft.Extensions.Options;
 using WechatRobot.Application.Storage;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Knowledge.Parsing;
+using WechatRobot.IntegrationTests.Infrastructure;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
@@ -326,6 +327,7 @@ public sealed class DocumentUploadApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.DisableStartupMigrations();
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Jwt:Issuer"] = "document-tests", ["Jwt:Audience"] = "document-tests-api",

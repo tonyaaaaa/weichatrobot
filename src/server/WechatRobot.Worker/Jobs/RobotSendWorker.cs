@@ -21,15 +21,25 @@ public sealed class RobotSendWorker(IServiceScopeFactory scopeFactory, TimeProvi
             return false;
         }
 
+        var sendGateHeld = false;
         try
         {
+            if (!await repository.EnsureSendEnabledAsync(command, cancellationToken)) return true;
+            sendGateHeld = true;
             var client = scope.ServiceProvider.GetRequiredService<IWorkToolClient>();
             using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var renewal = RenewLeasesUntilSendCompletesAsync(repository, command, renewalCancellation.Token);
-            var result = await client.SendTextAsync(new WorkToolSendRequest(command.WorkToolRobotId, command.GroupName, command.Text,
-                command.IdempotencyKey, command.AtList), cancellationToken);
-            renewalCancellation.Cancel();
-            await renewal;
+            WorkToolSendResult result;
+            try
+            {
+                result = await client.SendTextAsync(new WorkToolSendRequest(command.WorkToolRobotId, command.GroupName, command.Text,
+                    command.IdempotencyKey, command.AtList), cancellationToken);
+            }
+            finally
+            {
+                renewalCancellation.Cancel();
+                await renewal;
+            }
             if (result.Succeeded)
             {
                 await repository.CompleteSendCommandAsync(command, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
@@ -42,6 +52,10 @@ public sealed class RobotSendWorker(IServiceScopeFactory scopeFactory, TimeProvi
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
             await repository.FailSendCommandAsync(command, "WorkTool send failed.", timeProvider.GetUtcNow().UtcDateTime, SendCommandService.GetRetryDelay(command.AttemptCount + 1), cancellationToken);
+        }
+        finally
+        {
+            if (sendGateHeld) await repository.ReleaseSendGateAsync(CancellationToken.None);
         }
 
         return true;
