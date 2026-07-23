@@ -185,3 +185,70 @@ PASS: 9 passed, 0 failed
 ```
 
 No Alibaba Cloud request was made during the review fixes or verification.
+
+## Final whole-branch review fixes
+
+- Retryable provider failures no longer retry immediately. `AliyunOcrClient`
+  now uses injectable delay and jitter seams. Positive provider `Retry-After`
+  guidance wins and is capped at 30 seconds; otherwise retries use bounded
+  exponential delay starting at 200 ms with up to 50% jitter. Caller
+  cancellation is passed to the delay.
+- `AlibabaSdkOcrProvider` normalizes `RetryAfter` / `Retry-After` values from
+  SDK exception properties, `DataResult`, or headers and carries the parsed
+  delay on `AliyunOcrProviderException`.
+- `Ocr:Endpoint` remains configurable. The default is Hangzhou, while startup
+  accepts safe Alibaba OCR hostnames shaped as
+  `ocr-api.<region>.aliyuncs.com`. Schemes, credentials, paths, ports,
+  malformed labels, and arbitrary hosts are rejected.
+- Worker startup calls the same `AliyunOcrOptions.Validate` method covered by
+  contract tests, including a successful Shanghai-region override.
+- Parameterized client tests now prove provider invocation for PNG, JPEG,
+  BMP, GIF, both TIFF byte orders, and WebP signatures.
+
+Covering tests:
+
+- `tests/server/WechatRobot.UnitTests/Knowledge/AliyunOcrClientTests.cs`
+  verifies Retry-After precedence/capping, fallback backoff/jitter, delay
+  cancellation plumbing, and every accepted image signature.
+- `tests/server/WechatRobot.UnitTests/Knowledge/AlibabaSdkOcrProviderTests.cs`
+  verifies SDK Retry-After normalization.
+- `tests/server/WechatRobot.ContractTests/Knowledge/OcrTopologyConfigurationTests.cs`
+  verifies the default and the safe configurable endpoint policy.
+
+Final-review RED:
+
+```text
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-restore -- --filter-class '*AlibabaSdkOcrProviderTests' --filter-class '*AliyunOcrClientTests'
+CS0246: IAliyunOcrDelay and IAliyunOcrJitter could not be found
+
+dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --no-restore -- --filter-class '*OcrTopologyConfigurationTests'
+CS0117: AliyunOcrOptions does not contain IsAllowedEndpoint
+```
+
+Final-review GREEN:
+
+```text
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-restore -- --filter-class '*AlibabaSdkOcrProviderTests' --filter-class '*AliyunOcrClientTests'
+PASS: 36 passed, 0 failed
+
+dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --no-restore -- --filter-class '*OcrTopologyConfigurationTests'
+PASS: 11 passed, 0 failed
+```
+
+No real Alibaba Cloud call was made.
+
+Fresh final verification:
+
+```text
+dotnet build WechatRobot.slnx -warnaserror
+PASS: 0 warnings, 0 errors
+
+dotnet test tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj --no-restore -- --filter-class '*Ocr*'
+PASS: 19 passed, 0 failed
+
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-restore -- --filter-class '*AlibabaSdkOcrProviderTests' --filter-class '*AliyunOcrClientTests'
+PASS: 36 passed, 0 failed
+
+git diff --check
+PASS
+```

@@ -87,10 +87,7 @@ builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
     if (!string.IsNullOrWhiteSpace(apiKey)) client.DefaultRequestHeaders.Add("api-key", apiKey);
 });
 var aliyunOcrOptions = builder.Configuration.GetSection(AliyunOcrOptions.SectionName).Get<AliyunOcrOptions>() ?? new AliyunOcrOptions();
-if (aliyunOcrOptions.Provider != "Aliyun" || aliyunOcrOptions.Action != "RecognizeGeneral" ||
-    aliyunOcrOptions.Endpoint != "ocr-api.cn-hangzhou.aliyuncs.com" || aliyunOcrOptions.Timeout != TimeSpan.FromSeconds(30) ||
-    aliyunOcrOptions.MaximumAttempts != 3)
-    throw new InvalidOperationException("OCR provider configuration must use Aliyun RecognizeGeneral, endpoint ocr-api.cn-hangzhou.aliyuncs.com, a 30-second timeout, and 3 attempts.");
+aliyunOcrOptions.Validate();
 var aliyunAccessKeyId = Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeyIdEnvironmentVariable);
 var aliyunAccessKeySecret = Environment.GetEnvironmentVariable(AliyunOcrOptions.AccessKeySecretEnvironmentVariable);
 if (string.IsNullOrWhiteSpace(aliyunAccessKeyId) || string.IsNullOrWhiteSpace(aliyunAccessKeySecret))

@@ -75,6 +75,33 @@ public sealed class AliyunOcrClientTests
     }
 
     [Fact]
+    public async Task Provider_retry_guidance_wins_and_is_safely_capped()
+    {
+        var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException(
+            "Throttling", "sanitized", retryAfter: TimeSpan.FromMinutes(5)));
+        var delay = new RecordingDelay();
+        var client = Create(provider, delay, new FixedJitter(.5));
+
+        await Assert.ThrowsAsync<OcrClientException>(() =>
+            client.RecognizeAsync([PngPage(1)], TestContext.Current.CancellationToken));
+
+        Assert.Equal([TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)], delay.Delays);
+    }
+
+    [Fact]
+    public async Task Missing_retry_guidance_uses_exponential_backoff_with_jitter()
+    {
+        var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException("Throttling", "sanitized"));
+        var delay = new RecordingDelay();
+        var client = Create(provider, delay, new FixedJitter(.5));
+
+        await Assert.ThrowsAsync<OcrClientException>(() =>
+            client.RecognizeAsync([PngPage(1)], TestContext.Current.CancellationToken));
+
+        Assert.Equal([TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500)], delay.Delays);
+    }
+
+    [Fact]
     public async Task Maps_adapter_normalized_timeout()
     {
         var provider = new FakeProvider((_, _) => throw new AliyunOcrProviderException(
@@ -115,8 +142,33 @@ public sealed class AliyunOcrClientTests
         Assert.DoesNotContain("89504e47", log, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static AliyunOcrClient Create(IAliyunOcrProvider provider) =>
-        new(provider, new AliyunOcrOptions(), NullLogger<AliyunOcrClient>.Instance);
+    [Theory]
+    [MemberData(nameof(SupportedImages))]
+    public async Task Accepts_each_supported_image_signature(byte[] image)
+    {
+        var provider = new FakeProvider();
+        await Create(provider).RecognizeAsync([new OcrRenderedPage(1, image, 100, 100)], TestContext.Current.CancellationToken);
+        Assert.Single(provider.Pages);
+    }
+
+    public static TheoryData<byte[]> SupportedImages => new()
+    {
+        new byte[] { 0x89, 0x50, 0x4e, 0x47 },
+        new byte[] { 0xff, 0xd8, 0xff, 0xe0 },
+        new byte[] { 0xff, 0xd8, 0xff, 0xe1 },
+        "BM00"u8.ToArray(),
+        "GIF89a"u8.ToArray(),
+        new byte[] { 0x49, 0x49, 0x2a, 0x00 },
+        new byte[] { 0x4d, 0x4d, 0x00, 0x2a },
+        "RIFF0000WEBP"u8.ToArray()
+    };
+
+    private static AliyunOcrClient Create(
+        IAliyunOcrProvider provider,
+        IAliyunOcrDelay? delay = null,
+        IAliyunOcrJitter? jitter = null) =>
+        new(provider, new AliyunOcrOptions(), NullLogger<AliyunOcrClient>.Instance,
+            delay ?? new RecordingDelay(), jitter ?? new FixedJitter(0));
 
     private static OcrRenderedPage PngPage(int page, int width = 100, int height = 100) =>
         new(page, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], width, height);
@@ -141,5 +193,21 @@ public sealed class AliyunOcrClientTests
         public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId,
             TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
             Messages.Add(formatter(state, exception));
+    }
+
+    private sealed class RecordingDelay : IAliyunOcrDelay
+    {
+        public List<TimeSpan> Delays { get; } = [];
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Delays.Add(delay);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FixedJitter(double value) : IAliyunOcrJitter
+    {
+        public double NextDouble() => value;
     }
 }

@@ -90,6 +90,7 @@ public sealed class AlibabaSdkOcrProvider : IAliyunOcrProvider
         var requestId = ReadString(exception, "RequestId") ??
             FindValue(dataResult, "RequestId") ??
             FindValue(exception.Data, "RequestId");
+        var retryAfter = ReadRetryAfter(exception, dataResult);
         var algorithmTimeout = code.Contains("AlgorithmTimeOut", StringComparison.OrdinalIgnoreCase);
         var isTimeout = !algorithmTimeout && (exception is TimeoutException or TaskCanceledException ||
             statusCode is 408 or 504 ||
@@ -97,7 +98,7 @@ public sealed class AlibabaSdkOcrProvider : IAliyunOcrProvider
             exception.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
             exception.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase));
         return new AliyunOcrProviderException(code, "Alibaba Cloud OCR SDK request failed.",
-            requestId, exception, statusCode, isTimeout);
+            requestId, exception, statusCode, isTimeout, retryAfter);
     }
 
     private static object? ReadMember(object source, string name) =>
@@ -130,6 +131,18 @@ public sealed class AlibabaSdkOcrProvider : IAliyunOcrProvider
     private static int? FindDictionaryInt(object? source, string key) =>
         int.TryParse(FindValue(source, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
             ? parsed : null;
+
+    private static TimeSpan? ReadRetryAfter(Exception exception, object? dataResult)
+    {
+        var value = ReadMember(exception, "RetryAfter") ??
+            FindValue(dataResult, "Retry-After") ??
+            FindValue(dataResult, "RetryAfter") ??
+            FindValue(ReadMember(exception, "Headers"), "Retry-After");
+        if (value is TimeSpan delay) return delay;
+        return double.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out var seconds) && seconds > 0
+            ? TimeSpan.FromSeconds(seconds) : null;
+    }
 
     private sealed class AlibabaOcrSdkInvoker : IAlibabaOcrSdkInvoker
     {

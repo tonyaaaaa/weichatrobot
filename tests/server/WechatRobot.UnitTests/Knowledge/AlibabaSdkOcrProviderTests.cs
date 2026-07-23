@@ -44,6 +44,16 @@ public sealed class AlibabaSdkOcrProviderTests
     }
 
     [Fact]
+    public async Task Normalizes_retry_after_from_sdk_exception_data()
+    {
+        var provider = CreateThrowing(new FakeSdkException("Throttling", 429,
+            new Dictionary<string, object?> { ["Retry-After"] = "7" }));
+        var exception = await Assert.ThrowsAsync<AliyunOcrProviderException>(() =>
+            provider.RecognizeGeneralAsync(new MemoryStream([1]), 1, TestContext.Current.CancellationToken));
+        Assert.Equal(TimeSpan.FromSeconds(7), exception.RetryAfter);
+    }
+
+    [Fact]
     public async Task Normalizes_sdk_timeout_code_as_timeout()
     {
         var provider = CreateThrowing(new FakeSdkException("OperationTimeout", 408, null));

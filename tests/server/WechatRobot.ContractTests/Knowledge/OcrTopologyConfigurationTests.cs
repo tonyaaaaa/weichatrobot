@@ -18,6 +18,30 @@ public sealed class OcrTopologyConfigurationTests
         Assert.Equal("RUN_ALIYUN_OCR_E2E", AliyunOcrOptions.RealTestEnvironmentVariable);
     }
 
+    [Theory]
+    [InlineData("ocr-api.cn-hangzhou.aliyuncs.com", true)]
+    [InlineData("ocr-api.cn-shanghai.aliyuncs.com", true)]
+    [InlineData("ocr-api.ap-southeast-1.aliyuncs.com", true)]
+    [InlineData("https://ocr-api.cn-hangzhou.aliyuncs.com", false)]
+    [InlineData("user@ocr-api.cn-hangzhou.aliyuncs.com", false)]
+    [InlineData("ocr-api.cn-hangzhou.aliyuncs.com/path", false)]
+    [InlineData("ocr-api.cn-hangzhou.aliyuncs.com:443", false)]
+    [InlineData("ocr-api.evil.example", false)]
+    [InlineData("ocr-api..aliyuncs.com", false)]
+    public void Allows_only_safe_Alibaba_OCR_endpoint_hosts(string endpoint, bool expected)
+    {
+        Assert.Equal(expected, AliyunOcrOptions.IsAllowedEndpoint(endpoint));
+    }
+
+    [Fact]
+    public void Complete_startup_options_validation_allows_region_override_and_rejects_arbitrary_host()
+    {
+        new AliyunOcrOptions { Endpoint = "ocr-api.cn-shanghai.aliyuncs.com" }.Validate();
+        var invalid = new AliyunOcrOptions { Endpoint = "ocr-api.evil.example" };
+        var exception = Assert.Throws<InvalidOperationException>(invalid.Validate);
+        Assert.Contains("ocr-api.<region>.aliyuncs.com", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Repository_has_no_local_ocr_service_or_container()
     {
