@@ -436,7 +436,10 @@ public sealed class RoleHeaderAuthenticationHandler(IOptionsMonitor<Authenticati
     {
         var role = Request.Headers["X-Test-Role"].ToString();
         if (string.IsNullOrWhiteSpace(role)) return Task.FromResult(AuthenticateResult.NoResult());
-        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.Name, "document-user"), new Claim(ClaimTypes.Role, role)], Scheme.Name));
+        var claims = Request.Headers.ContainsKey("X-Test-No-Name")
+            ? [new Claim(ClaimTypes.Role, role)]
+            : new[] { new Claim(ClaimTypes.Name, "document-user"), new Claim(ClaimTypes.Role, role) };
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name)));
     }
 }

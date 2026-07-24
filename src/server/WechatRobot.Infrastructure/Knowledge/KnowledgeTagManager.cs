@@ -225,7 +225,116 @@ public sealed class KnowledgeTagManager(WechatRobotDbContext database)
         }
     }
 
+    public async Task<KnowledgeTagMutationResult> DeleteAsync(
+        Guid id,
+        string actor,
+        int expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.KnowledgeTags.SingleOrDefaultAsync(
+            tag => tag.Id == id,
+            cancellationToken);
+        if (entity is null)
+        {
+            return new(KnowledgeTagMutationStatus.NotFound);
+        }
+
+        if (entity.Version != expectedVersion)
+        {
+            return ConcurrencyConflict(entity);
+        }
+
+        var references = await ReferencesAsync(id, cancellationToken);
+        if (references.IsReferenced)
+        {
+            return new(
+                KnowledgeTagMutationStatus.Referenced,
+                ToRecord(entity),
+                references);
+        }
+
+        var before = AuditSnapshot(entity);
+        database.KnowledgeTags.Remove(entity);
+        AddAudit(
+            actor,
+            "knowledge-tag.delete",
+            entity.Id,
+            new { before });
+
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            return Succeeded(entity);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return await ReloadConcurrencyConflictAsync(id, cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            database.ChangeTracker.Clear();
+            var current = await database.KnowledgeTags.AsNoTracking().SingleOrDefaultAsync(
+                tag => tag.Id == id,
+                cancellationToken);
+            if (current is null)
+            {
+                return new(KnowledgeTagMutationStatus.NotFound);
+            }
+
+            references = await ReferencesAsync(id, cancellationToken);
+            if (references.IsReferenced)
+            {
+                return new(
+                    KnowledgeTagMutationStatus.Referenced,
+                    ToRecord(current),
+                    references);
+            }
+
+            throw;
+        }
+    }
+
     public static string NormalizeName(string name) => name.Trim().ToUpperInvariant();
+
+    private async Task<KnowledgeTagReferenceSummary> ReferencesAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var groups = await database.GroupProfileTags.CountAsync(
+            item => item.KnowledgeTagId == id,
+            cancellationToken);
+        var chunks = await database.KnowledgeChunkTags.CountAsync(
+            item => item.KnowledgeTagId == id,
+            cancellationToken);
+        var reviewJson = await database.KnowledgeReviews.AsNoTracking()
+            .Select(item => item.TagIdsJson)
+            .ToArrayAsync(cancellationToken);
+        var indexJson = await database.KnowledgeIndexJobs.AsNoTracking()
+            .Select(item => item.PendingTagIdsJson)
+            .ToArrayAsync(cancellationToken);
+        return new(
+            groups,
+            chunks,
+            reviewJson.Count(json => ContainsTag(json, id)),
+            indexJson.Count(json => ContainsTag(json, id)));
+    }
+
+    private static bool ContainsTag(string json, Guid id)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Array &&
+                   document.RootElement.EnumerateArray().Any(item =>
+                       item.ValueKind == JsonValueKind.String &&
+                       Guid.TryParse(item.GetString(), out var value) &&
+                       value == id);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     private async Task<KnowledgeTagEntity?> FindByNormalizedNameAsync(
         string normalizedName,
