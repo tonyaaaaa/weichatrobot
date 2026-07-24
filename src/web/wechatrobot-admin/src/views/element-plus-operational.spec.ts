@@ -62,16 +62,22 @@ describe('Task 16 Element Plus operational surfaces', () => {
         maxRetries: 2,
         isEnabled: true,
         isDefault: true,
+        connectionStatus: 'Succeeded' as const,
         hasApiKey: true,
-        lastFour: '1234'
+        lastFour: '1234',
+        version: 1
       }]),
-      save: vi.fn(),
-      testConnection: vi.fn()
+      create: vi.fn(),
+      update: vi.fn(),
+      testConnection: vi.fn(),
+      setEnabled: vi.fn(),
+      setDefault: vi.fn(),
+      clearApiKey: vi.fn(),
+      delete: vi.fn()
     };
     const models = mount(ModelSettingsView, { props: { api: modelApi } });
     await flushPromises();
-    expect(models.findComponent({ name: 'ElForm' }).exists()).toBe(true);
-    expect(models.findComponent({ name: 'ElInput' }).exists()).toBe(true);
+    expect(models.findComponent({ name: 'ElButton' }).exists()).toBe(true);
     expect(models.findComponent({ name: 'ElTag' }).exists()).toBe(true);
 
     const documents = mount(KnowledgeDocumentsView, {

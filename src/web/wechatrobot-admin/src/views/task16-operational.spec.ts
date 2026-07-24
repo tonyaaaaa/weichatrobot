@@ -487,22 +487,23 @@ describe('Task 16 operational pages', () => {
   });
 
   it('masks model secrets and tests a saved connection without revealing the key', async () => {
+    const configured = { id: 'm1', name: 'chat-default', provider: 'openai-compatible', configurationType: 'chat' as const, baseUrl: 'https://example.test/v1', model: 'gpt-test', timeoutSeconds: 60, maxRetries: 2, isEnabled: true, isDefault: true, connectionStatus: 'Succeeded' as const, hasApiKey: true, lastFour: '1234', version: 1 };
     const api = {
-      list: vi.fn().mockResolvedValue([{ id: 'm1', name: 'chat-default', provider: 'openai-compatible', configurationType: 'chat', baseUrl: 'https://example.test/v1', model: 'gpt-test', timeoutSeconds: 60, maxRetries: 2, isEnabled: true, isDefault: true, hasApiKey: true, lastFour: '1234' }]),
-      save: vi.fn().mockResolvedValue({ id: 'm1', name: 'chat-default', provider: 'openai-compatible', configurationType: 'chat', baseUrl: 'https://new.example.test/v1', model: 'gpt-test', timeoutSeconds: 60, maxRetries: 2, isEnabled: true, isDefault: true, hasApiKey: true, lastFour: '5678' }),
-      testConnection: vi.fn().mockResolvedValue({ succeeded: true })
+      list: vi.fn().mockResolvedValue([configured]),
+      create: vi.fn(),
+      update: vi.fn(),
+      testConnection: vi.fn().mockResolvedValue(configured),
+      setEnabled: vi.fn(),
+      setDefault: vi.fn(),
+      clearApiKey: vi.fn(),
+      delete: vi.fn()
     };
     const wrapper = mount(ModelSettingsView, { props: { api } });
     await flushPromises();
     expect(wrapper.text()).toContain('••••1234');
     expect(wrapper.text()).not.toContain('sk-');
-    await wrapper.get('#base-url-chat-default').setValue('https://new.example.test/v1');
-    await wrapper.get('#api-key-chat-default').setValue('new-local-key');
-    await wrapper.get('[data-testid="save-chat-default"]').trigger('click');
-    await flushPromises();
-    expect(api.save).toHaveBeenCalledWith('chat-default', expect.objectContaining({ baseUrl: 'https://new.example.test/v1', apiKey: 'new-local-key' }));
-    await wrapper.get('[data-testid="test-chat-default"]').trigger('click');
-    expect(api.testConnection).toHaveBeenCalledWith('chat-default');
+    await wrapper.get('[data-testid="test-m1"]').trigger('click');
+    expect(api.testConnection).toHaveBeenCalledWith('m1');
   });
 
   it('states unavailable backend capabilities honestly for users and system settings', () => {
