@@ -37,7 +37,7 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
             db.RobotConfigs.Add(robot);
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             var repository = setupScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
-            await repository.IngestInboundMessageAsync(new InboundMessageIngestRequest(robot.Id, "message-fixed", "fallback-fixed", DateTime.UtcNow, "Support", "Alice", "hello", DateTime.UtcNow), TestContext.Current.CancellationToken);
+            await repository.IngestInboundMessageAsync(new InboundMessageIngestRequest(robot.Id, "message-fixed", "fallback-fixed", DateTime.UtcNow, "Support", null, "Alice", "hello", DateTime.UtcNow), TestContext.Current.CancellationToken);
             robotId = robot.Id;
         }
 
@@ -142,7 +142,7 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
 
     private sealed class FakeConversationRepository(WechatRobotDbContext database, IDurableJobRepository jobs) : IGroundedConversationRepository
     {
-        public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, bool wasMentioned, CancellationToken token) =>
+        public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, string? groupRemark, bool wasMentioned, CancellationToken token) =>
             Task.FromResult(new InboundPolicyDecision(messageId, InboundPolicyDecisionKind.Proceed, null, null, "{}"));
         public Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token) => Task.CompletedTask;
         public async Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token)

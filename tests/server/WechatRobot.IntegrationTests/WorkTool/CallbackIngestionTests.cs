@@ -82,11 +82,16 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
 
         await using var scope = factory.Services.CreateAsyncScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-        Assert.Equal(1, await database.ConversationMessages.CountAsync(message => message.RobotConfigId == robot.Id, TestContext.Current.CancellationToken));
+        var message = await database.ConversationMessages.SingleAsync(
+            message => message.RobotConfigId == robot.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("Support", message.GroupName);
+        Assert.Equal("Support", message.GroupRemark);
         Assert.Equal(1, await CountJobsForRobotAsync(database, robot.Id));
         var job = await database.DurableJobs.SingleAsync(item => item.RelatedConversationMessageId != null
             && item.PayloadJson.Contains(robot.Id.ToString()), TestContext.Current.CancellationToken);
         Assert.Contains("\"WasMentioned\":false", job.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"GroupRemark\":\"Support\"", job.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -19,7 +19,7 @@ public sealed record InboundPolicyDecision(Guid MessageId, InboundPolicyDecision
 
 public interface IGroundedConversationRepository
 {
-    Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, bool wasMentioned, CancellationToken token);
+    Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, string? groupRemark, bool wasMentioned, CancellationToken token);
     Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token);
     Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token);
     Task<ConversationProcessingRequest> LeaseForProcessingAsync(Guid messageId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token);

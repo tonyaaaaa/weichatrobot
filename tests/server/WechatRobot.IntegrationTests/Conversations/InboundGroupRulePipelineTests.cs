@@ -92,7 +92,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             var externalMessageId = $"rules-message-{suffix}";
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
-                robot.Id, externalMessageId, $"rules-fallback-{suffix}", DateTime.UtcNow, inboundGroupName, "Alice", "question",
+                robot.Id, externalMessageId, $"rules-fallback-{suffix}", DateTime.UtcNow, inboundGroupName, null, "Alice", "question",
                 DateTime.UtcNow, "stable-alice", wasMentioned), TestContext.Current.CancellationToken);
             messageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == externalMessageId)
                 .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
@@ -149,7 +149,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
                 new ModelConfigEntity { Name = $"chat-{suffix}", NormalizedName = $"CHAT-{suffix.ToUpperInvariant()}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
-                robot.Id, $"message-{suffix}", $"fallback-{suffix}", DateTime.UtcNow, visibleName, "Alice", "question", DateTime.UtcNow,
+                robot.Id, $"message-{suffix}", $"fallback-{suffix}", DateTime.UtcNow, visibleName, null, "Alice", "question", DateTime.UtcNow,
                 "stable", true), TestContext.Current.CancellationToken);
             messageId = await db.ConversationMessages.OrderByDescending(item => item.CreatedAtUtc).Select(item => item.Id).FirstAsync(TestContext.Current.CancellationToken);
             groupId = intended.Id;
@@ -163,6 +163,145 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
             .SingleAsync(item => item.Id == messageId, TestContext.Current.CancellationToken);
         Assert.Equal(groupId, message.GroupProfileId);
         Assert.Null(message.TerminalDecision);
+    }
+
+    [Fact]
+    public async Task Duplicate_visible_names_are_resolved_only_by_the_exact_configured_remark()
+    {
+        using var services = Services();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var suffix = Guid.NewGuid().ToString("N");
+        var robot = new RobotConfigEntity { Name = suffix, WorkToolRobotId = suffix, CallbackSecretHash = "test" };
+        var east = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = $"legacy-east-{suffix}",
+            Name = $"duplicate-{suffix}",
+            WorkToolGroupRemark = "support-east"
+        };
+        var west = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = $"legacy-west-{suffix}",
+            Name = east.Name,
+            WorkToolGroupRemark = "support-west"
+        };
+        db.AddRange(robot, east, west);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var externalMessageId = $"remark-{suffix}";
+        await repository.IngestInboundMessageAsync(new InboundMessageIngestRequest(
+            robot.Id,
+            externalMessageId,
+            $"fallback-{suffix}",
+            DateTime.UtcNow,
+            east.Name,
+            "support-east",
+            "Alice",
+            "question",
+            DateTime.UtcNow,
+            "stable",
+            true), TestContext.Current.CancellationToken);
+        var messageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == externalMessageId)
+            .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
+
+        var decision = await scope.ServiceProvider.GetRequiredService<IGroundedConversationRepository>()
+            .EvaluateInboundPolicyAsync(messageId, east.Name, "support-east", true, TestContext.Current.CancellationToken);
+
+        Assert.Equal(InboundPolicyDecisionKind.Proceed, decision.Kind);
+        Assert.Equal(east.Id, decision.GroupProfileId);
+    }
+
+    [Fact]
+    public async Task Duplicate_visible_names_without_a_usable_remark_are_rejected_as_ambiguous()
+    {
+        using var services = Services();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var suffix = Guid.NewGuid().ToString("N");
+        var robot = new RobotConfigEntity { Name = suffix, WorkToolRobotId = suffix, CallbackSecretHash = "test" };
+        var first = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = $"legacy-first-{suffix}",
+            Name = $"duplicate-{suffix}"
+        };
+        var second = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = $"legacy-second-{suffix}",
+            Name = first.Name
+        };
+        db.AddRange(robot, first, second);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var externalMessageId = $"ambiguous-{suffix}";
+        await repository.IngestInboundMessageAsync(new InboundMessageIngestRequest(
+            robot.Id,
+            externalMessageId,
+            $"fallback-{suffix}",
+            DateTime.UtcNow,
+            first.Name,
+            null,
+            "Alice",
+            "question",
+            DateTime.UtcNow), TestContext.Current.CancellationToken);
+        var messageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == externalMessageId)
+            .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
+
+        var decision = await scope.ServiceProvider.GetRequiredService<IGroundedConversationRepository>()
+            .EvaluateInboundPolicyAsync(messageId, first.Name, null, true, TestContext.Current.CancellationToken);
+
+        Assert.Equal(InboundPolicyDecisionKind.NoReply, decision.Kind);
+        Assert.Null(decision.GroupProfileId);
+        Assert.Equal("group_identity_ambiguous", decision.Reason);
+    }
+
+    [Fact]
+    public async Task Obsolete_external_group_id_is_never_used_as_a_callback_identity_fallback()
+    {
+        using var services = Services();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var suffix = Guid.NewGuid().ToString("N");
+        var callbackName = $"callback-{suffix}";
+        var robot = new RobotConfigEntity { Name = suffix, WorkToolRobotId = suffix, CallbackSecretHash = "test" };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = callbackName,
+            Name = $"different-{suffix}",
+            WorkToolGroupRemark = "configured"
+        };
+        db.AddRange(robot, group);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var externalMessageId = $"legacy-{suffix}";
+        await repository.IngestInboundMessageAsync(new InboundMessageIngestRequest(
+            robot.Id,
+            externalMessageId,
+            $"fallback-{suffix}",
+            DateTime.UtcNow,
+            callbackName,
+            "configured",
+            "Alice",
+            "question",
+            DateTime.UtcNow), TestContext.Current.CancellationToken);
+        var messageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == externalMessageId)
+            .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
+
+        var decision = await scope.ServiceProvider.GetRequiredService<IGroundedConversationRepository>()
+            .EvaluateInboundPolicyAsync(messageId, callbackName, "configured", true, TestContext.Current.CancellationToken);
+
+        Assert.Equal(InboundPolicyDecisionKind.NoReply, decision.Kind);
+        Assert.Equal("group_rule_unmatched", decision.Reason);
     }
 
     private ServiceProvider Services() => new ServiceCollection()

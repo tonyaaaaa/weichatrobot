@@ -36,6 +36,7 @@ public sealed class RecordedCallbackSampleTests
         Assert.False(sample.AtMe);
         Assert.True(sample.IsSupportedGroupText(out var reason), reason);
         Assert.Equal("recorded-message-001", sample.MessageId);
+        Assert.Equal("Recorded Support Group", sample.GroupRemark);
     }
 
     [Fact]

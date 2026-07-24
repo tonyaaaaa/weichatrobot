@@ -23,6 +23,7 @@ public sealed record InboundMessageIngestRequest(
     string FallbackHash,
     DateTime FallbackWindowStartUtc,
     string GroupName,
+    string? GroupRemark,
     string SenderDisplayName,
     string Text,
     DateTime ReceivedAtUtc,

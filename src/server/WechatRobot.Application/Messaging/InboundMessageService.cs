@@ -17,6 +17,7 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
             robotDeduplicationScope,
             callback.MessageId,
             callback.GroupName!,
+            callback.GroupRemark,
             callback.ReceivedName!,
             callback.Spoken!,
             receivedAtUtc,
@@ -30,6 +31,7 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
             fallbackHash,
             fallbackWindowStartUtc,
             Normalize(callback.GroupName)!,
+            Normalize(callback.GroupRemark),
             Normalize(callback.ReceivedName)!,
             Normalize(callback.Spoken)!,
             receivedAtUtc,
@@ -41,6 +43,7 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
         string robotCode,
         string? messageId,
         string groupName,
+        string? groupRemark,
         string senderName,
         string text,
         DateTime receivedAtUtc,
@@ -53,7 +56,7 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
         }
 
         var windowStart = FloorToWindow(receivedAtUtc, timeBucket);
-        var stableInput = string.Join("\n", Normalize(robotCode), Normalize(groupName), Normalize(senderName), Normalize(text), windowStart.Ticks);
+        var stableInput = string.Join("\n", Normalize(robotCode), Normalize(groupName), Normalize(groupRemark), Normalize(senderName), Normalize(text), windowStart.Ticks);
         return new($"fallback:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(stableInput)))}", windowStart);
     }
 
