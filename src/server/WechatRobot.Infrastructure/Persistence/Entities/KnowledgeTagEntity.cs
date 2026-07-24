@@ -7,5 +7,6 @@ public sealed class KnowledgeTagEntity
     public string NormalizedName { get; set; } = string.Empty;
     public bool IsEnabled { get; set; } = true;
     public bool IsGlobalPublic { get; set; }
+    public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

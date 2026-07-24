@@ -72,6 +72,7 @@ internal sealed class KnowledgeTagConfiguration : IEntityTypeConfiguration<Knowl
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.NormalizedName).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.NormalizedName).IsUnique();
     }
 }

@@ -40,6 +40,8 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<KnowledgeCandidateEntity> KnowledgeCandidates => Set<KnowledgeCandidateEntity>();
     public DbSet<KnowledgeReviewEntity> KnowledgeReviews => Set<KnowledgeReviewEntity>();
     public DbSet<WorkerHeartbeatEntity> WorkerHeartbeats => Set<WorkerHeartbeatEntity>();
+    public DbSet<SystemSettingEntity> SystemSettings => Set<SystemSettingEntity>();
+    public DbSet<AdministrationAuditEntity> AdministrationAudits => Set<AdministrationAuditEntity>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
