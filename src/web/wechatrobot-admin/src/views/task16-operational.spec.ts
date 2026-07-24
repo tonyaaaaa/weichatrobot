@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 import { describe, expect, it, vi } from 'vitest';
 import KnowledgeDocumentsView from './knowledge/KnowledgeDocumentsView.vue';
 import DocumentDetailView from './knowledge/DocumentDetailView.vue';
@@ -177,8 +178,22 @@ describe('Task 16 operational pages', () => {
     expect(api.mergePreviews).toHaveBeenCalledWith('ver-1', 'p2', 'p3', 2);
   });
 
-  it('explains that any bound tag matches and global-public content is always visible', () => {
-    const wrapper = mount(KnowledgeTagsView);
+  it('explains that any bound tag matches and global-public content is always visible', async () => {
+    const pinia = createPinia();
+    const wrapper = mount(KnowledgeTagsView, {
+      props: {
+        api: {
+          list: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
+          options: vi.fn(),
+          create: vi.fn(),
+          update: vi.fn(),
+          setEnabled: vi.fn(),
+          delete: vi.fn()
+        }
+      },
+      global: { plugins: [pinia] }
+    });
+    await flushPromises();
     expect(wrapper.text()).toContain('任一标签');
     expect(wrapper.text()).toContain('全局公开');
     expect(wrapper.text()).toContain('OR');
