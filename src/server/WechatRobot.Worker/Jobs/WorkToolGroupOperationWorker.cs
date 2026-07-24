@@ -12,6 +12,7 @@ public sealed class WorkToolGroupOperationWorker(
 {
     private readonly string _owner = $"group-operation-{Environment.MachineName}-{Guid.NewGuid():N}";
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan ResultTimeout = TimeSpan.FromMinutes(10);
 
     public async Task<bool> ProcessOnceAsync(CancellationToken cancellationToken)
     {
@@ -19,24 +20,34 @@ public sealed class WorkToolGroupOperationWorker(
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         var now = timeProvider.GetUtcNow().UtcDateTime;
         await database.WorkToolOperationAudits
-            .Where(item => item.Status == "ExternalInFlight" && item.LeaseExpiresAtUtc <= now)
+            .Where(item => item.Status == WorkToolCommandStatuses.Accepted &&
+                           item.AcceptedAtUtc <= now.Subtract(ResultTimeout))
             .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, "DeliveryUncertain")
-                .SetProperty(item => item.Result, "External dispatch lease expired; reconciliation required.")
+                .SetProperty(item => item.Status, WorkToolCommandStatuses.ResultTimeout)
+                .SetProperty(item => item.CompletedAtUtc, now)
+                .SetProperty(item => item.Version, item => item.Version + 1), cancellationToken);
+
+        await database.WorkToolOperationAudits
+            .Where(item => item.Status == WorkToolCommandStatuses.Dispatching && item.LeaseExpiresAtUtc <= now)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, WorkToolCommandStatuses.DeliveryUnknown)
+                .SetProperty(item => item.Result, "external_dispatch_lease_expired")
                 .SetProperty(item => item.LeaseOwner, (string?)null)
                 .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
                 .SetProperty(item => item.Version, item => item.Version + 1), cancellationToken);
 
         var candidate = await database.WorkToolOperationAudits.AsNoTracking()
-            .Where(item => item.Status == "Queued")
+            .Where(item => item.Status == WorkToolCommandStatuses.Queued || item.Status == "Queued")
             .OrderBy(item => item.CreatedAtUtc).ThenBy(item => item.Id)
             .Select(item => new { item.Id, item.Version })
             .FirstOrDefaultAsync(cancellationToken);
         if (candidate is null) return false;
         var leased = await database.WorkToolOperationAudits
-            .Where(item => item.Id == candidate.Id && item.Status == "Queued" && item.Version == candidate.Version)
+            .Where(item => item.Id == candidate.Id &&
+                           (item.Status == WorkToolCommandStatuses.Queued || item.Status == "Queued") &&
+                           item.Version == candidate.Version)
             .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, "ExternalInFlight")
+                .SetProperty(item => item.Status, WorkToolCommandStatuses.Dispatching)
                 .SetProperty(item => item.ExternalDispatchStartedAtUtc, now)
                 .SetProperty(item => item.LeaseOwner, _owner)
                 .SetProperty(item => item.LeaseExpiresAtUtc, now.Add(LeaseDuration))
@@ -53,29 +64,55 @@ public sealed class WorkToolGroupOperationWorker(
                 ?? throw new InvalidOperationException("Stored group operation is invalid.");
             var result = await scope.ServiceProvider.GetRequiredService<IWorkToolClient>()
                 .ExecuteGroupOperationAsync(command, cancellationToken);
-            if (result.Succeeded)
+            if (result.Accepted &&
+                !string.IsNullOrWhiteSpace(result.MessageId) &&
+                result.MessageId.Length <= WorkToolCommandResultDto.MaximumMessageIdLength)
             {
-                await CompleteAsync(database, candidate.Id, "Succeeded", null, now, cancellationToken);
+                await MarkAcceptedAsync(
+                    database,
+                    candidate.Id,
+                    result.MessageId,
+                    timeProvider.GetUtcNow().UtcDateTime,
+                    cancellationToken);
             }
-            else if (result.DeliveryMayHaveOccurred)
+            else if (result.Accepted || result.DeliveryMayHaveOccurred)
             {
-                await CompleteAsync(database, candidate.Id, "DeliveryUncertain", "Provider outcome is unknown; reconciliation required.", null, cancellationToken);
+                await CompleteAsync(database, candidate.Id, WorkToolCommandStatuses.DeliveryUnknown, "delivery_outcome_unknown", null, cancellationToken);
             }
             else
             {
-                await CompleteAsync(database, candidate.Id, "Failed", "WorkTool rejected the command.", now, cancellationToken);
+                await CompleteAsync(database, candidate.Id, WorkToolCommandStatuses.Rejected, result.FailureCode ?? "worktool_rejected",
+                    timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
             }
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            await CompleteAsync(database, candidate.Id, "DeliveryUncertain", "Provider outcome is unknown; reconciliation required.", null, cancellationToken);
+            await CompleteAsync(database, candidate.Id, WorkToolCommandStatuses.DeliveryUnknown, "delivery_outcome_unknown", null, cancellationToken);
         }
         return true;
     }
 
+    private Task<int> MarkAcceptedAsync(
+        WechatRobotDbContext database,
+        Guid id,
+        string workToolMessageId,
+        DateTime acceptedAtUtc,
+        CancellationToken token) =>
+        database.WorkToolOperationAudits
+            .Where(item => item.Id == id && item.Status == WorkToolCommandStatuses.Dispatching && item.LeaseOwner == _owner)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, WorkToolCommandStatuses.Accepted)
+                .SetProperty(item => item.WorkToolCommandMessageId, workToolMessageId)
+                .SetProperty(item => item.AcceptedAtUtc, acceptedAtUtc)
+                .SetProperty(item => item.CompletedAtUtc, (DateTime?)null)
+                .SetProperty(item => item.Result, (string?)null)
+                .SetProperty(item => item.LeaseOwner, (string?)null)
+                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(item => item.Version, item => item.Version + 1), token);
+
     private Task<int> CompleteAsync(WechatRobotDbContext database, Guid id, string status, string? result, DateTime? completedAtUtc, CancellationToken token) =>
         database.WorkToolOperationAudits
-            .Where(item => item.Id == id && item.Status == "ExternalInFlight" && item.LeaseOwner == _owner)
+            .Where(item => item.Id == id && item.Status == WorkToolCommandStatuses.Dispatching && item.LeaseOwner == _owner)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(item => item.Status, status)
                 .SetProperty(item => item.Result, result)

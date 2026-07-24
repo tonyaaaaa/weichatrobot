@@ -398,9 +398,10 @@ public sealed class InMemoryKnowledgeJobRepository(WechatRobotDbContext database
     public Task<InboundMessageIngestResult> IngestInboundMessageAsync(InboundMessageIngestRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task<bool> MarkSendExternalInFlightAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task MarkSendDeliveryUncertainAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<bool> MarkSendDispatchingAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task MarkSendDeliveryUnknownAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task MarkSendAcceptedAsync(LeasedSendCommand command, string workToolMessageId, DateTime acceptedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task MarkSendRejectedAsync(LeasedSendCommand command, string reason, DateTime rejectedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<bool> RenewSendLeasesAsync(LeasedSendCommand command, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken) => throw new NotSupportedException();
 }
