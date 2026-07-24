@@ -136,6 +136,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         {
             var database = setupScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await database.ModelConfigs.Where(item => item.ConfigurationType == "embedding" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
             var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
             var collection = $"kb_cosine_3_stale_{Guid.NewGuid():N}";
@@ -156,7 +158,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "slow", Status = "approved" };
             database.AddRange(tag, document, version, chunk, new ModelConfigEntity
             {
-                Name = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
+                Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
                 Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
             });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
@@ -215,6 +217,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         {
             var database = setupScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await database.ModelConfigs.Where(item => item.ConfigurationType == "embedding" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
             await database.DurableJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
             var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
@@ -226,7 +230,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             database.AddRange(tag, document, version, chunk,
                 new ModelConfigEntity
                 {
-                    Name = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding",
+                    Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding",
                     BaseUrl = "https://fake/", Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
                 });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
@@ -269,6 +273,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         var dbOptions = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString).Options;
         await using var database = new WechatRobotDbContext(dbOptions);
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await database.ModelConfigs.Where(item => item.ConfigurationType == "embedding" && item.IsDefault)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
         await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
         var tagA = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
         var tagB = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
@@ -296,7 +302,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagA.Id },
             new ModelConfigEntity
             {
-                Name = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
+                Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
                 Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
             });
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
@@ -645,6 +651,8 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         {
             var database = setupScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await database.ModelConfigs.Where(item => item.ConfigurationType == "embedding" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             await database.KnowledgeIndexJobs.ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed"), TestContext.Current.CancellationToken);
             var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
             var document = new KnowledgeDocumentEntity { Status = "uploaded" };
@@ -655,7 +663,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             database.AddRange(tag, document, version, chunk,
                 new ModelConfigEntity
                 {
-                    Name = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
+                    Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
                     Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
                 });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);

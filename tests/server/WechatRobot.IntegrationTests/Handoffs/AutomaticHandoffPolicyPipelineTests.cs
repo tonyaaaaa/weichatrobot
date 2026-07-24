@@ -38,6 +38,8 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
         {
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await db.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             var suffix = Guid.NewGuid().ToString("N");
             var robot = new RobotConfigEntity { Name = $"handoff-{suffix}", WorkToolRobotId = $"handoff-{suffix}", CallbackSecretHash = "test" };
             var group = new GroupProfileEntity
@@ -49,7 +51,7 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
             };
             db.AddRange(robot, group, new ModelConfigEntity
             {
-                Name = $"chat-{suffix}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid",
+                Name = $"chat-{suffix}", NormalizedName = $"CHAT-{suffix.ToUpperInvariant()}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid",
                 Model = "fake", EncryptedApiKey = "fake", IsDefault = true
             });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);

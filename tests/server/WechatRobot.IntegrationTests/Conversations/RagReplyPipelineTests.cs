@@ -30,12 +30,14 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         {
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await db.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             var robot = new RobotConfigEntity { Name = $"rag-{Guid.NewGuid():N}", WorkToolRobotId = $"rag-{Guid.NewGuid():N}", CallbackSecretHash = "test" };
             var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = "Support", Name = "Support", ContextSenderIsolated = true };
             var other = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = "Other", Name = "Other" };
             db.AddRange(robot, group, other, new ModelConfigEntity
             {
-                Name = $"chat-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test",
+                Name = $"chat-{Guid.NewGuid():N}", NormalizedName = $"CHAT-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test",
                 Model = "fake", EncryptedApiKey = "fake", IsDefault = true
             });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
@@ -89,6 +91,8 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         {
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await db.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             var oldAt = DateTime.UtcNow.AddMinutes(-31);
             var robot = new RobotConfigEntity { Name = $"idle-{Guid.NewGuid():N}", WorkToolRobotId = $"idle-{Guid.NewGuid():N}", CallbackSecretHash = "test" };
             var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = "IdleSupport", Name = "IdleSupport", ContextSummaryEnabled = true };
@@ -115,7 +119,7 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
                 ContextPolicy = "historical", EvidenceJson = "[]", InputSummaryJson = "{}", CreatedAtUtc = oldAt
             }, new ModelConfigEntity
             {
-                Name = $"chat-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test",
+                Name = $"chat-{Guid.NewGuid():N}", NormalizedName = $"CHAT-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test",
                 Model = "fake", EncryptedApiKey = "fake", IsDefault = true
             });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);

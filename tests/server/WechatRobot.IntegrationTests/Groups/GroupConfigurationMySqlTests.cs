@@ -90,6 +90,8 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         await using var scope = factory.Services.CreateAsyncScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await database.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
         var now = DateTime.UtcNow.AddMinutes(-2);
         var robot = new RobotConfigEntity { Name = $"clear-{Guid.NewGuid():N}", WorkToolRobotId = Guid.NewGuid().ToString("N"), CallbackSecretHash = "hash" };
         var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = Guid.NewGuid().ToString("N"), Name = $"clear-{Guid.NewGuid():N}" };
@@ -105,7 +107,7 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         var otherInbound = Message(robot.Id, other, otherSession, "other old", 1, now);
         database.AddRange(robot, group, other, groupSession, senderSession, otherSession, groupInbound, groupOutbound, senderInbound, senderOutbound, otherInbound,
             Audit(group.Id, groupInbound.Id, now), Audit(group.Id, senderInbound.Id, now),
-            new ModelConfigEntity { Name = $"chat-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
+            new ModelConfigEntity { Name = $"chat-{Guid.NewGuid():N}", NormalizedName = $"CHAT-{Guid.NewGuid():N}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         using var client = factory.CreateClient();

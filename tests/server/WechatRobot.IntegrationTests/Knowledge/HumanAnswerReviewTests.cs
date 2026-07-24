@@ -29,6 +29,8 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
     {
         await using var db = Database();
         await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await db.ModelConfigs.Where(item => item.ConfigurationType == "embedding" && item.IsDefault)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
         var tag = new KnowledgeTagEntity { Name = "售后", NormalizedName = "售后", IsEnabled = true };
         var reviewer = Guid.NewGuid();
         var reviewerUser = new ApplicationUser { Id = reviewer, UserName = "reviewer-" + reviewer.ToString("N"), NormalizedUserName = ("reviewer-" + reviewer.ToString("N")).ToUpperInvariant(),
@@ -37,7 +39,7 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = Guid.NewGuid().ToString("N"), Name = "技术部" };
         var question = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name, SenderDisplayName = "客户",
             Text = "如何申请售后？", FallbackHash = Guid.NewGuid().ToString("N") };
-        var embeddingConfig = new ModelConfigEntity { Name = "candidate-embedding-" + Guid.NewGuid().ToString("N"), Provider = "fake", ConfigurationType = "embedding",
+        var embeddingConfig = new ModelConfigEntity { Name = "candidate-embedding-" + Guid.NewGuid().ToString("N"), NormalizedName = "CANDIDATE-EMBEDDING-" + Guid.NewGuid().ToString("N"), Provider = "fake", ConfigurationType = "embedding",
             BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", TimeoutSeconds = 5, MaxRetries = 0, IsEnabled = true, IsDefault = true };
         db.AddRange(tag, reviewerUser, robot, group, question, embeddingConfig);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);

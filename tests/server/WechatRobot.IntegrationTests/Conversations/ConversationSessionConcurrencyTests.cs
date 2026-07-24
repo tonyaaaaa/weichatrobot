@@ -217,10 +217,12 @@ public sealed class ConversationSessionConcurrencyTests : IClassFixture<MySqlFix
     {
         await using var db = Database();
         await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await db.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
         var suffix = Guid.NewGuid().ToString("N");
         var robot = new RobotConfigEntity { Name = $"session-{suffix}", WorkToolRobotId = $"session-{suffix}", CallbackSecretHash = "test" };
         var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = $"Support-{suffix}", Name = $"Support-{suffix}", ContextSenderIsolated = senderIsolated };
-        db.AddRange(robot, group, new ModelConfigEntity { Name = $"chat-{suffix}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
+        db.AddRange(robot, group, new ModelConfigEntity { Name = $"chat-{suffix}", NormalizedName = $"CHAT-{suffix.ToUpperInvariant()}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         currentGroup = group.Name;
         return (robot.Id, group.Id);

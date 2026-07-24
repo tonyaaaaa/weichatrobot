@@ -51,6 +51,8 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
         {
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await db.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             var suffix = Guid.NewGuid().ToString("N");
             var robot = new RobotConfigEntity { Name = $"rules-{suffix}", WorkToolRobotId = $"rules-{suffix}", CallbackSecretHash = "test" };
             var group = new GroupProfileEntity
@@ -83,7 +85,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
             }
             db.AddRange(robot, group, new ModelConfigEntity
             {
-                Name = $"chat-{suffix}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid",
+                Name = $"chat-{suffix}", NormalizedName = $"CHAT-{suffix.ToUpperInvariant()}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid",
                 Model = "fake", EncryptedApiKey = "fake", IsDefault = true
             });
             db.GroupRules.AddRange(persistedRules);
@@ -134,6 +136,8 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
         {
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            await db.ModelConfigs.Where(item => item.ConfigurationType == "chat" && item.IsDefault)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsDefault, false), TestContext.Current.CancellationToken);
             var suffix = Guid.NewGuid().ToString("N");
             var visibleName = $"visible-{suffix}";
             var robot = new RobotConfigEntity { Name = suffix, WorkToolRobotId = suffix, CallbackSecretHash = "test" };
@@ -142,7 +146,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
             db.AddRange(robot, intended, hijacker,
                 new GroupRuleEntity { GroupProfileId = intended.Id, RuleKind = 0, IncludePattern = visibleName, IncludePatternKind = (int)GroupRulePatternKind.Exact },
                 new GroupRuleEntity { GroupProfileId = hijacker.Id, RuleKind = 0, IncludePattern = hijacker.Name, IncludePatternKind = (int)GroupRulePatternKind.Exact },
-                new ModelConfigEntity { Name = $"chat-{suffix}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
+                new ModelConfigEntity { Name = $"chat-{suffix}", NormalizedName = $"CHAT-{suffix.ToUpperInvariant()}", Provider = "fake", ConfigurationType = "chat", BaseUrl = "https://fake.invalid", Model = "fake", EncryptedApiKey = "fake", IsDefault = true });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
                 robot.Id, $"message-{suffix}", $"fallback-{suffix}", DateTime.UtcNow, visibleName, "Alice", "question", DateTime.UtcNow,
