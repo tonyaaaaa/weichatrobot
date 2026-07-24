@@ -61,7 +61,7 @@ Only one phase may be `InProgress` at a time. Update the table whenever a phase 
 | Phase | State | Detailed plan | Depends on |
 |---|---|---|---|
 | P0 WorkTool contract correction | Completed | `docs/superpowers/plans/2026-07-24-worktool-contract-correction.md` | None |
-| P1 Knowledge tag closure | NotStarted | Create after P0 acceptance | P0 |
+| P1 Knowledge tag closure | Planned | `docs/superpowers/plans/2026-07-24-knowledge-tag-closure.md` | P0 |
 | P1 Knowledge document management | NotStarted | Create after tag acceptance | Tags |
 | P1 Typed system settings | NotStarted | Create after document acceptance | None |
 | P1 Dashboard and operational summary | NotStarted | Create after settings acceptance | P0, settings |
