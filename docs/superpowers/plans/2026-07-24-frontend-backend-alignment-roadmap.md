@@ -60,7 +60,7 @@ Only one phase may be `InProgress` at a time. Update the table whenever a phase 
 
 | Phase | State | Detailed plan | Depends on |
 |---|---|---|---|
-| P0 WorkTool contract correction | Planned | `docs/superpowers/plans/2026-07-24-worktool-contract-correction.md` | None |
+| P0 WorkTool contract correction | Completed | `docs/superpowers/plans/2026-07-24-worktool-contract-correction.md` | None |
 | P1 Knowledge tag closure | NotStarted | Create after P0 acceptance | P0 |
 | P1 Knowledge document management | NotStarted | Create after tag acceptance | Tags |
 | P1 Typed system settings | NotStarted | Create after document acceptance | None |
@@ -92,6 +92,29 @@ npm run typecheck
 npm test -- --run
 npm run build
 ```
+
+### P0 completion record — 2026-07-24
+
+Implementation commits:
+
+- `ec87616`, `dbe382f`: documented WorkTool HTTP contracts and migration compatibility.
+- `90b454a`, `e7fbd41`, `4367b38`: command receipts, encrypted callback configuration, and scoped credential backfill.
+- `a0c7c92`, `ce48276`, `2fbc6f4`: group name/remark matching, result correlation, and accepted-versus-executed state separation.
+- `cc618f7`: honest group operation API names and frontend states.
+- `8e02946`, `e9d2ba5`: callback scripts, fake-provider result loop, real-evidence verifier, and operations regression.
+
+Verified from the current source with isolated outputs because the running API and Worker retained the default Debug binaries:
+
+- WorkTool contract tests: 24 passed.
+- Full server unit tests: 206 passed.
+- WorkTool integration namespace: 64 passed, 2 explicit real-WorkTool tests skipped because their safety opt-in environments were not configured.
+- Callback PowerShell operations acceptance: passed.
+- Full solution build: 0 warnings, 0 errors.
+- Frontend typecheck: passed.
+- Frontend tests: 60 passed.
+- Frontend production build: passed.
+
+No real WorkTool or Enterprise WeChat mutation was claimed. The explicit real gates now reject legacy `Succeeded` and `accepted` rows and require a correlated `executedSucceeded` result before an operator may record real execution success.
 
 ## Phase 1: Knowledge Tag Closure
 
