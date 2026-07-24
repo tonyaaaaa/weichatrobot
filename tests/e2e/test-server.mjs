@@ -11,6 +11,7 @@ const port = 4178;
 let state;
 function resetState() {
   state = createInitialState();
+  state.models = [];
 }
 resetState();
 
@@ -59,21 +60,106 @@ async function handleApi(request, response, url) {
   const roles = requiredRoles(url.pathname);
   if (roles.length && !user.roles.some(role => roles.includes(role))) return sendJson(response, 403, { error: 'forbidden' });
 
-  if (url.pathname === '/api/admin/model-configurations' && request.method === 'GET') return sendJson(response, 200, [state.model]);
+  if (url.pathname === '/api/admin/model-configurations' && request.method === 'GET') return sendJson(response, 200, state.models);
+  if (url.pathname === '/api/admin/model-configurations' && request.method === 'POST') {
+    const body = await readJson(request);
+    const hasApiKey = typeof body.apiKey === 'string' && body.apiKey.trim().length > 0;
+    const created = {
+      id: '33333333-3333-3333-3333-333333333333',
+      name: body.name.trim(),
+      provider: body.provider.trim(),
+      configurationType: body.configurationType,
+      baseUrl: body.baseUrl.replace(/\/+$/, ''),
+      model: body.model.trim(),
+      timeoutSeconds: body.timeoutSeconds,
+      maxRetries: body.maxRetries,
+      isEnabled: false,
+      isDefault: false,
+      connectionStatus: 'Untested',
+      hasApiKey,
+      lastFour: hasApiKey ? body.apiKey.slice(-4) : null,
+      version: 0
+    };
+    state.models.push(created);
+    return sendJson(response, 201, created);
+  }
   if (url.pathname === '/api/admin/robots/' && request.method === 'GET') return sendJson(response, 200, [state.robot]);
   if (url.pathname === '/api/admin/robots/robot-e2e' && request.method === 'PUT') {
     const body = await readJson(request);
     state.robot = { ...state.robot, ...body, updatedAtUtc: '2026-07-23T00:01:00Z' };
     return sendJson(response, 200, state.robot);
   }
-  if (url.pathname === '/api/admin/model-configurations/e2e-chat' && request.method === 'PUT') {
-    const body = await readJson(request);
-    state.model = { ...state.model, ...body, hasApiKey: true, lastFour: '1234' };
-    delete state.model.apiKey;
-    return sendJson(response, 200, state.model);
-  }
-  if (url.pathname === '/api/admin/model-configurations/e2e-chat/test-connection' && request.method === 'POST') {
-    return sendJson(response, 200, { succeeded: true });
+  const modelRoute = url.pathname.match(/^\/api\/admin\/model-configurations\/([^/]+)(?:\/(test-connection|enabled|default|api-key))?$/);
+  if (modelRoute) {
+    const id = decodeURIComponent(modelRoute[1]);
+    const action = modelRoute[2];
+    const index = state.models.findIndex(model => model.id === id);
+    if (index < 0) return sendJson(response, 404, { code: 'model_not_found' });
+    const current = state.models[index];
+
+    if (!action && request.method === 'PUT') {
+      const body = await readJson(request);
+      if (body.version !== current.version) return sendJson(response, 409, { code: 'model_concurrency_conflict' });
+      const hasReplacementKey = typeof body.apiKey === 'string' && body.apiKey.trim().length > 0;
+      const updated = {
+        ...current,
+        ...body,
+        name: body.name.trim(),
+        baseUrl: body.baseUrl.replace(/\/+$/, ''),
+        model: body.model.trim(),
+        hasApiKey: hasReplacementKey || current.hasApiKey,
+        lastFour: hasReplacementKey ? body.apiKey.slice(-4) : current.lastFour,
+        version: current.version + 1
+      };
+      delete updated.apiKey;
+      state.models[index] = updated;
+      return sendJson(response, 200, updated);
+    }
+    if (action === 'test-connection' && request.method === 'POST') {
+      state.models[index] = { ...current, connectionStatus: 'Succeeded', lastTestedAtUtc: '2026-07-24T02:00:00Z', version: current.version + 1 };
+      return sendJson(response, 200, state.models[index]);
+    }
+    if (action === 'enabled' && request.method === 'POST') {
+      const body = await readJson(request);
+      if (body.version !== current.version) return sendJson(response, 409, { code: 'model_concurrency_conflict' });
+      if (body.enabled && current.connectionStatus !== 'Succeeded') return sendJson(response, 409, { code: 'model_test_required' });
+      state.models[index] = { ...current, isEnabled: body.enabled, version: current.version + 1 };
+      return sendJson(response, 200, state.models[index]);
+    }
+    if (action === 'default' && request.method === 'POST') {
+      const body = await readJson(request);
+      if (body.version !== current.version) return sendJson(response, 409, { code: 'model_concurrency_conflict' });
+      if (body.isDefault && current.connectionStatus !== 'Succeeded') return sendJson(response, 409, { code: 'model_test_required' });
+      state.models = state.models.map(model =>
+        model.id !== id && model.configurationType === current.configurationType
+          ? { ...model, isDefault: false }
+          : model);
+      state.models[index] = { ...state.models[index], isEnabled: body.isDefault ? true : current.isEnabled, isDefault: body.isDefault, version: current.version + 1 };
+      return sendJson(response, 200, state.models[index]);
+    }
+    if (action === 'api-key' && request.method === 'DELETE') {
+      if (Number(url.searchParams.get('version')) !== current.version) return sendJson(response, 409, { code: 'model_concurrency_conflict' });
+      state.models[index] = {
+        ...current,
+        hasApiKey: false,
+        lastFour: null,
+        connectionStatus: 'Untested',
+        isEnabled: false,
+        isDefault: false,
+        version: current.version + 1
+      };
+      return sendJson(response, 200, state.models[index]);
+    }
+    if (!action && request.method === 'DELETE') {
+      if (Number(url.searchParams.get('version')) !== current.version) return sendJson(response, 409, { code: 'model_concurrency_conflict' });
+      if (current.isDefault) return sendJson(response, 409, { code: 'model_default_delete_blocked' });
+      if (id === '44444444-4444-4444-4444-444444444444') {
+        return sendJson(response, 409, { code: 'model_reference_delete_blocked', retrievalAuditCount: 2 });
+      }
+      state.models.splice(index, 1);
+      response.writeHead(204);
+      return response.end();
+    }
   }
 
   if (/^\/api\/groups\/[^/]+\/configuration$/.test(url.pathname)) return sendJson(response, 200, groupConfiguration());

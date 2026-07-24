@@ -88,12 +88,28 @@ test('admin updates robot and fake model settings and previews every group rule 
   await expect(page.getByText('机器人设置已保存。')).toBeVisible();
 
   await page.getByRole('link', { name: '模型配置' }).click();
-  await expect(page.getByText('••••1234')).toBeVisible();
-  await page.locator('#model-e2e-chat').fill('safe-chat-v2');
-  await page.getByTestId('save-e2e-chat').click();
-  await expect(page.getByText('e2e-chat 已保存；浏览器未保留明文密钥。')).toBeVisible();
-  await page.getByTestId('test-e2e-chat').click();
-  await expect(page.getByText('e2e-chat 连接测试成功。')).toBeVisible();
+  await page.getByTestId('create-model').click();
+  await page.getByLabel('配置名称').fill('E2E 对话模型');
+  await page.getByLabel('接口地址').fill('http://127.0.0.1:4178/__fake/chat');
+  await page.getByLabel('模型名称').fill('safe-chat-v1');
+  await page.getByTestId('model-save').click();
+  const modelId = '33333333-3333-3333-3333-333333333333';
+  const modelCard = page.getByTestId(`model-card-${modelId}`);
+  await expect(modelCard).toContainText('E2E 对话模型');
+  await expect(modelCard).toContainText('待测试');
+  await page.getByTestId(`test-${modelId}`).click();
+  await expect(modelCard).toContainText('测试成功');
+  await page.getByTestId(`enable-${modelId}`).click();
+  await expect(modelCard).toContainText('已启用');
+  await page.getByTestId(`default-${modelId}`).click();
+  await expect(modelCard).toContainText('默认');
+  await page.getByTestId(`edit-${modelId}`).click();
+  await page.getByLabel('配置名称').fill('E2E 对话模型（已改名）');
+  await page.getByTestId('model-save').click();
+  await expect(page.getByTestId(`model-card-${modelId}`)).toContainText('E2E 对话模型（已改名）');
+  await page.reload();
+  await expect(page.getByTestId(`model-card-${modelId}`)).toContainText('已启用');
+  await expect(page.getByTestId(`model-card-${modelId}`)).toContainText('默认');
 
   await page.getByRole('link', { name: '群管理' }).click();
   await page.getByLabel('群配置 ID').fill('group-e2e');
@@ -102,7 +118,7 @@ test('admin updates robot and fake model settings and previews every group rule 
   await page.getByLabel('include-1-模式').fill('技术部');
   await page.getByTestId('add-contains-include').click();
   await page.getByLabel('include-2-模式').fill('技术');
-  await page.getByPlaceholder('每行一个已知群名称').fill('技术部\n技术部-禁用');
+  await page.getByLabel('已知群名称').fill('技术部\n技术部-禁用');
   await page.getByTestId('preview-rules').click();
   await expect(page.getByText('技术部：将匹配')).toBeVisible();
   await expect(page.getByText('技术部-禁用：已排除')).toBeVisible();
