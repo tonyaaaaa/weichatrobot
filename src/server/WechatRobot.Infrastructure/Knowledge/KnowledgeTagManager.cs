@@ -1,6 +1,8 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
 
 namespace WechatRobot.Infrastructure.Knowledge;
 
@@ -64,5 +66,240 @@ public sealed class KnowledgeTagManager(WechatRobotDbContext database)
                 tag.IsGlobalPublic))
             .ToArrayAsync(cancellationToken);
 
+    public async Task<KnowledgeTagMutationResult> CreateAsync(
+        string actor,
+        KnowledgeTagDraft draft,
+        CancellationToken cancellationToken)
+    {
+        var name = ValidateAndTrimName(draft.Name);
+        if (name is null)
+        {
+            return InvalidName();
+        }
+
+        var normalizedName = NormalizeName(name);
+        var conflict = await FindByNormalizedNameAsync(normalizedName, null, cancellationToken);
+        if (conflict is not null)
+        {
+            return NameConflict(conflict);
+        }
+
+        var entity = new KnowledgeTagEntity
+        {
+            Name = name,
+            NormalizedName = normalizedName,
+            IsEnabled = true,
+            IsGlobalPublic = draft.IsGlobalPublic
+        };
+        database.KnowledgeTags.Add(entity);
+        AddAudit(
+            actor,
+            "knowledge-tag.create",
+            entity.Id,
+            new { after = AuditSnapshot(entity) });
+
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            return Succeeded(entity);
+        }
+        catch (DbUpdateException)
+        {
+            database.ChangeTracker.Clear();
+            conflict = await FindByNormalizedNameAsync(normalizedName, null, cancellationToken);
+            if (conflict is not null)
+            {
+                return NameConflict(conflict);
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<KnowledgeTagMutationResult> UpdateAsync(
+        Guid id,
+        string actor,
+        KnowledgeTagUpdate update,
+        CancellationToken cancellationToken)
+    {
+        var name = ValidateAndTrimName(update.Name);
+        if (name is null)
+        {
+            return InvalidName();
+        }
+
+        var entity = await database.KnowledgeTags.SingleOrDefaultAsync(
+            tag => tag.Id == id,
+            cancellationToken);
+        if (entity is null)
+        {
+            return new(KnowledgeTagMutationStatus.NotFound);
+        }
+
+        if (entity.Version != update.ExpectedVersion)
+        {
+            return ConcurrencyConflict(entity);
+        }
+
+        var normalizedName = NormalizeName(name);
+        var conflict = await FindByNormalizedNameAsync(normalizedName, id, cancellationToken);
+        if (conflict is not null)
+        {
+            return NameConflict(conflict);
+        }
+
+        var before = AuditSnapshot(entity);
+        entity.Name = name;
+        entity.NormalizedName = normalizedName;
+        entity.IsGlobalPublic = update.IsGlobalPublic;
+        entity.Version++;
+        AddAudit(
+            actor,
+            "knowledge-tag.update",
+            entity.Id,
+            new { before, after = AuditSnapshot(entity) });
+
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            return Succeeded(entity);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return await ReloadConcurrencyConflictAsync(id, cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            database.ChangeTracker.Clear();
+            conflict = await FindByNormalizedNameAsync(normalizedName, id, cancellationToken);
+            if (conflict is not null)
+            {
+                return NameConflict(conflict);
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<KnowledgeTagMutationResult> SetEnabledAsync(
+        Guid id,
+        string actor,
+        KnowledgeTagStateUpdate update,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.KnowledgeTags.SingleOrDefaultAsync(
+            tag => tag.Id == id,
+            cancellationToken);
+        if (entity is null)
+        {
+            return new(KnowledgeTagMutationStatus.NotFound);
+        }
+
+        if (entity.Version != update.ExpectedVersion)
+        {
+            return ConcurrencyConflict(entity);
+        }
+
+        if (entity.IsEnabled == update.IsEnabled)
+        {
+            return Succeeded(entity);
+        }
+
+        var before = AuditSnapshot(entity);
+        entity.IsEnabled = update.IsEnabled;
+        entity.Version++;
+        AddAudit(
+            actor,
+            update.IsEnabled ? "knowledge-tag.enable" : "knowledge-tag.disable",
+            entity.Id,
+            new { before, after = AuditSnapshot(entity) });
+
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            return Succeeded(entity);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return await ReloadConcurrencyConflictAsync(id, cancellationToken);
+        }
+    }
+
     public static string NormalizeName(string name) => name.Trim().ToUpperInvariant();
+
+    private async Task<KnowledgeTagEntity?> FindByNormalizedNameAsync(
+        string normalizedName,
+        Guid? excludedId,
+        CancellationToken cancellationToken) =>
+        await database.KnowledgeTags.AsNoTracking().SingleOrDefaultAsync(
+            tag => tag.NormalizedName == normalizedName &&
+                   (excludedId == null || tag.Id != excludedId),
+            cancellationToken);
+
+    private async Task<KnowledgeTagMutationResult> ReloadConcurrencyConflictAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        database.ChangeTracker.Clear();
+        var current = await database.KnowledgeTags.AsNoTracking().SingleOrDefaultAsync(
+            tag => tag.Id == id,
+            cancellationToken);
+        return current is null
+            ? new(KnowledgeTagMutationStatus.NotFound)
+            : ConcurrencyConflict(current);
+    }
+
+    private void AddAudit(string actor, string action, Guid targetId, object detail)
+    {
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
+        {
+            Actor = string.IsNullOrWhiteSpace(actor) ? "unknown" : actor,
+            Action = action,
+            TargetType = "knowledge-tag",
+            TargetId = targetId.ToString("D"),
+            SanitizedDetailJson = JsonSerializer.Serialize(detail)
+        });
+    }
+
+    private static string? ValidateAndTrimName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var trimmed = name.Trim();
+        return trimmed.Length <= 128 ? trimmed : null;
+    }
+
+    private static object AuditSnapshot(KnowledgeTagEntity entity) => new
+    {
+        name = entity.Name,
+        isEnabled = entity.IsEnabled,
+        isGlobalPublic = entity.IsGlobalPublic,
+        version = entity.Version
+    };
+
+    private static KnowledgeTagRecord ToRecord(KnowledgeTagEntity entity) =>
+        new(
+            entity.Id,
+            entity.Name,
+            entity.IsEnabled,
+            entity.IsGlobalPublic,
+            entity.Version,
+            entity.CreatedAtUtc);
+
+    private static KnowledgeTagMutationResult Succeeded(KnowledgeTagEntity entity) =>
+        new(KnowledgeTagMutationStatus.Succeeded, ToRecord(entity));
+
+    private static KnowledgeTagMutationResult InvalidName() =>
+        new(
+            KnowledgeTagMutationStatus.InvalidInput,
+            Error: "knowledge-tag-name-invalid");
+
+    private static KnowledgeTagMutationResult NameConflict(KnowledgeTagEntity entity) =>
+        new(KnowledgeTagMutationStatus.NameConflict, ToRecord(entity));
+
+    private static KnowledgeTagMutationResult ConcurrencyConflict(KnowledgeTagEntity entity) =>
+        new(KnowledgeTagMutationStatus.ConcurrencyConflict, ToRecord(entity));
 }

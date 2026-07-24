@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
@@ -152,6 +154,192 @@ public sealed class KnowledgeTagManagerTests
     public void NormalizeName_trims_and_uses_invariant_uppercase(string input, string expected)
     {
         Assert.Equal(expected, KnowledgeTagManager.NormalizeName(input));
+    }
+
+    [Fact]
+    public async Task Create_normalizes_name_and_writes_one_sanitized_audit()
+    {
+        await using var database = NewDatabase();
+        var manager = new KnowledgeTagManager(database);
+
+        var result = await manager.CreateAsync(
+            "knowledge-operator",
+            new KnowledgeTagDraft("  Product  ", false),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.Succeeded, result.Status);
+        Assert.Equal("Product", result.Tag!.Name);
+        Assert.Equal(0, result.Tag.Version);
+        var tag = await database.KnowledgeTags.SingleAsync(
+            item => item.NormalizedName == "PRODUCT",
+            TestContext.Current.CancellationToken);
+        var audit = await database.AdministrationAudits.SingleAsync(
+            item => item.TargetId == tag.Id.ToString("D"),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("knowledge-operator", audit.Actor);
+        Assert.Equal("knowledge-tag.create", audit.Action);
+        Assert.Equal("knowledge-tag", audit.TargetType);
+        using var detail = JsonDocument.Parse(audit.SanitizedDetailJson);
+        Assert.Equal("Product", detail.RootElement.GetProperty("after").GetProperty("name").GetString());
+        Assert.DoesNotContain(
+            "authorization",
+            audit.SanitizedDetailJson,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Create_rejects_invalid_name_without_writing_tag_or_audit(string name)
+    {
+        await using var database = NewDatabase();
+
+        var result = await new KnowledgeTagManager(database).CreateAsync(
+            "knowledge-operator",
+            new KnowledgeTagDraft(name, false),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.InvalidInput, result.Status);
+        Assert.Equal("knowledge-tag-name-invalid", result.Error);
+        Assert.Empty(database.KnowledgeTags);
+        Assert.Empty(database.AdministrationAudits);
+    }
+
+    [Fact]
+    public async Task Create_and_update_reject_normalized_name_conflicts()
+    {
+        await using var database = NewDatabase();
+        var existing = new KnowledgeTagEntity
+        {
+            Name = "Product",
+            NormalizedName = "PRODUCT"
+        };
+        var other = new KnowledgeTagEntity
+        {
+            Name = "Support",
+            NormalizedName = "SUPPORT"
+        };
+        database.KnowledgeTags.AddRange(existing, other);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var manager = new KnowledgeTagManager(database);
+
+        var create = await manager.CreateAsync(
+            "knowledge-operator",
+            new KnowledgeTagDraft(" product ", false),
+            TestContext.Current.CancellationToken);
+        var update = await manager.UpdateAsync(
+            other.Id,
+            "knowledge-operator",
+            new KnowledgeTagUpdate("PRODUCT", false, other.Version),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.NameConflict, create.Status);
+        Assert.Equal(existing.Id, create.Tag!.Id);
+        Assert.Equal(KnowledgeTagMutationStatus.NameConflict, update.Status);
+        Assert.Equal(existing.Id, update.Tag!.Id);
+        Assert.Empty(database.AdministrationAudits);
+    }
+
+    [Fact]
+    public async Task Update_requires_current_version_and_audits_before_and_after()
+    {
+        await using var database = NewDatabase();
+        var tag = new KnowledgeTagEntity
+        {
+            Name = "Product",
+            NormalizedName = "PRODUCT",
+            Version = 3
+        };
+        database.KnowledgeTags.Add(tag);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var manager = new KnowledgeTagManager(database);
+
+        var stale = await manager.UpdateAsync(
+            tag.Id,
+            "knowledge-operator",
+            new KnowledgeTagUpdate("Changed", true, ExpectedVersion: 2),
+            TestContext.Current.CancellationToken);
+        var saved = await manager.UpdateAsync(
+            tag.Id,
+            "knowledge-operator",
+            new KnowledgeTagUpdate("Changed", true, ExpectedVersion: 3),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.ConcurrencyConflict, stale.Status);
+        Assert.Equal(3, stale.Tag!.Version);
+        Assert.Equal("Product", stale.Tag.Name);
+        Assert.Equal(KnowledgeTagMutationStatus.Succeeded, saved.Status);
+        Assert.Equal(4, saved.Tag!.Version);
+        Assert.Equal("Changed", saved.Tag.Name);
+        Assert.True(saved.Tag.IsGlobalPublic);
+        var audit = Assert.Single(database.AdministrationAudits);
+        Assert.Equal("knowledge-tag.update", audit.Action);
+        using var detail = JsonDocument.Parse(audit.SanitizedDetailJson);
+        Assert.Equal("Product", detail.RootElement.GetProperty("before").GetProperty("name").GetString());
+        Assert.Equal("Changed", detail.RootElement.GetProperty("after").GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task State_change_is_versioned_audited_and_idempotent_for_same_state()
+    {
+        await using var database = NewDatabase();
+        var tag = new KnowledgeTagEntity
+        {
+            Name = "Product",
+            NormalizedName = "PRODUCT",
+            IsEnabled = true
+        };
+        database.KnowledgeTags.Add(tag);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var manager = new KnowledgeTagManager(database);
+
+        var noOp = await manager.SetEnabledAsync(
+            tag.Id,
+            "knowledge-operator",
+            new KnowledgeTagStateUpdate(true, ExpectedVersion: 0),
+            TestContext.Current.CancellationToken);
+        var disabled = await manager.SetEnabledAsync(
+            tag.Id,
+            "knowledge-operator",
+            new KnowledgeTagStateUpdate(false, ExpectedVersion: 0),
+            TestContext.Current.CancellationToken);
+        var stale = await manager.SetEnabledAsync(
+            tag.Id,
+            "knowledge-operator",
+            new KnowledgeTagStateUpdate(true, ExpectedVersion: 0),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.Succeeded, noOp.Status);
+        Assert.Equal(0, noOp.Tag!.Version);
+        Assert.Equal(KnowledgeTagMutationStatus.Succeeded, disabled.Status);
+        Assert.False(disabled.Tag!.IsEnabled);
+        Assert.Equal(1, disabled.Tag.Version);
+        Assert.Equal(KnowledgeTagMutationStatus.ConcurrencyConflict, stale.Status);
+        var audit = Assert.Single(database.AdministrationAudits);
+        Assert.Equal("knowledge-tag.disable", audit.Action);
+    }
+
+    [Fact]
+    public async Task Mutations_return_not_found_without_audit()
+    {
+        await using var database = NewDatabase();
+        var manager = new KnowledgeTagManager(database);
+        var id = Guid.NewGuid();
+
+        var update = await manager.UpdateAsync(
+            id,
+            "knowledge-operator",
+            new KnowledgeTagUpdate("Product", false, 0),
+            TestContext.Current.CancellationToken);
+        var state = await manager.SetEnabledAsync(
+            id,
+            "knowledge-operator",
+            new KnowledgeTagStateUpdate(false, 0),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.NotFound, update.Status);
+        Assert.Equal(KnowledgeTagMutationStatus.NotFound, state.Status);
+        Assert.Empty(database.AdministrationAudits);
     }
 
     private static WechatRobotDbContext NewDatabase()
