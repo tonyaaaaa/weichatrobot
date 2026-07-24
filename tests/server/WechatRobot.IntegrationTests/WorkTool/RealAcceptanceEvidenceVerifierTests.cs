@@ -64,29 +64,70 @@ public sealed class RealAcceptanceEvidenceVerifierTests
         var robotId = Guid.NewGuid();
         var createId = Guid.NewGuid();
         var renameId = Guid.NewGuid();
+        var fromUtc = new DateTime(2026, 7, 24, 8, 0, 0, DateTimeKind.Utc);
+        var resultAtUtc = fromUtc.AddMinutes(1);
+        var toUtc = fromUtc.AddMinutes(2);
         var audits = new[]
         {
-            OperationAudit(Guid.NewGuid(), "Rename", 207, "other-admin", robotId, "group-a", 0, "EMPTY", 7, "DECOY"),
-            OperationAudit(createId, "Create", 206, "model-admin", robotId, "group-a", 2, "MEMBERS", 12, "ANNOUNCEMENT"),
-            OperationAudit(renameId, "Rename", 207, "model-admin", robotId, "group-a", 0, "EMPTY", 7, "RENAMED")
+            OperationAudit(Guid.NewGuid(), "Rename", 207, "other-admin", robotId, "group-a", 0, "EMPTY", 7, "DECOY", "executedSucceeded", resultAtUtc),
+            OperationAudit(createId, "Create", 206, "model-admin", robotId, "group-a", 2, "MEMBERS", 12, "ANNOUNCEMENT", "executedSucceeded", resultAtUtc),
+            OperationAudit(renameId, "Rename", 207, "model-admin", robotId, "group-a", 0, "EMPTY", 7, "RENAMED", "executedSucceeded", resultAtUtc)
         };
 
         Assert.True(RealAcceptanceEvidenceVerifier.ExactOperation(audits,
-            new(createId, "Succeeded", 206, robotId, "group-a", "Create", 2, "MEMBERS", 12, "ANNOUNCEMENT", "model-admin")));
+            new(createId, 206, robotId, "group-a", "Create", 2, "MEMBERS", 12, "ANNOUNCEMENT", "model-admin", fromUtc, toUtc)));
         Assert.True(RealAcceptanceEvidenceVerifier.ExactOperation(audits,
-            new(renameId, "Succeeded", 207, robotId, "group-a", "Rename", 0, "EMPTY", 7, "RENAMED", "model-admin")));
+            new(renameId, 207, robotId, "group-a", "Rename", 0, "EMPTY", 7, "RENAMED", "model-admin", fromUtc, toUtc)));
         Assert.False(RealAcceptanceEvidenceVerifier.ExactOperation(audits,
-            new(renameId, "Succeeded", 207, robotId, "group-a", "Create", 0, "EMPTY", 7, "RENAMED", "model-admin")));
+            new(renameId, 207, robotId, "group-a", "Create", 0, "EMPTY", 7, "RENAMED", "model-admin", fromUtc, toUtc)));
+    }
+
+    [Theory]
+    [InlineData("Succeeded")]
+    [InlineData("accepted")]
+    [InlineData("executedFailed")]
+    public void Exact_operation_rejects_non_executed_success_statuses(string status)
+    {
+        var now = new DateTime(2026, 7, 24, 8, 0, 0, DateTimeKind.Utc);
+        var id = Guid.NewGuid();
+        var robotId = Guid.NewGuid();
+        var audit = OperationAudit(id, "Create", 206, "model-admin", robotId, "group-a", 1, "MEMBERS", 0, "EMPTY", status, now);
+
+        Assert.False(RealAcceptanceEvidenceVerifier.ExactOperation([audit],
+            new(id, 206, robotId, "group-a", "Create", 1, "MEMBERS", 0, "EMPTY", "model-admin", now.AddMinutes(-1), now.AddMinutes(1))));
+    }
+
+    [Fact]
+    public void Exact_operation_rejects_missing_message_id_nonzero_code_or_result_outside_window()
+    {
+        var now = new DateTime(2026, 7, 24, 8, 0, 0, DateTimeKind.Utc);
+        var id = Guid.NewGuid();
+        var robotId = Guid.NewGuid();
+        var expected = new RealOperationExpectation(id, 206, robotId, "group-a", "Create", 1, "MEMBERS", 0, "EMPTY", "model-admin", now.AddMinutes(-1), now.AddMinutes(1));
+
+        var missingId = OperationAudit(id, "Create", 206, "model-admin", robotId, "group-a", 1, "MEMBERS", 0, "EMPTY", "executedSucceeded", now);
+        missingId.WorkToolCommandMessageId = null;
+        var nonzero = OperationAudit(id, "Create", 206, "model-admin", robotId, "group-a", 1, "MEMBERS", 0, "EMPTY", "executedSucceeded", now);
+        nonzero.WorkToolResultCode = 1;
+        var outside = OperationAudit(id, "Create", 206, "model-admin", robotId, "group-a", 1, "MEMBERS", 0, "EMPTY", "executedSucceeded", now.AddMinutes(2));
+
+        Assert.False(RealAcceptanceEvidenceVerifier.ExactOperation([missingId], expected));
+        Assert.False(RealAcceptanceEvidenceVerifier.ExactOperation([nonzero], expected));
+        Assert.False(RealAcceptanceEvidenceVerifier.ExactOperation([outside], expected));
     }
 
     private static WorkToolOperationAuditEntity OperationAudit(Guid id, string operation, int command, string operatorName,
-        Guid robotId, string groupIdentifier, int memberCount, string memberDisplayNamesHash, int valueLength, string valueHash) => new()
+        Guid robotId, string groupIdentifier, int memberCount, string memberDisplayNamesHash, int valueLength, string valueHash,
+        string status, DateTime resultAtUtc) => new()
     {
         Id = id,
         Operation = operation,
         WorkToolCommandNumber = command,
         OperatorName = operatorName,
-        Status = "Succeeded",
+        Status = status,
+        WorkToolCommandMessageId = $"fake-command-{id:N}",
+        WorkToolResultCode = 0,
+        WorkToolResultAtUtc = resultAtUtc,
         SanitizedRequestJson = $$"""
             {"robotConfigId":"{{robotId:D}}","kind":"{{operation}}","groupIdentifier":"{{groupIdentifier}}","memberCount":{{memberCount}},"memberDisplayNamesHash":"{{memberDisplayNamesHash}}","valueLength":{{valueLength}},"valueHash":"{{valueHash}}"}
             """

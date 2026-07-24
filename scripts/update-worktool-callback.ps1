@@ -1,77 +1,111 @@
-[CmdletBinding(SupportsShouldProcess, ConfirmImpact = "Medium")]
+[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][uri]$TunnelUrl,
-    [Parameter(Mandatory = $true)][string]$CallbackToken,
-    [Parameter(Mandatory = $true)][string]$WorkToolRobotId,
-    [Parameter(Mandatory = $true)][uri]$WorkToolUpdateUri,
+    [Parameter(Mandatory = $true)][uri]$ApiBaseUrl,
+    [Parameter(Mandatory = $true)][Guid]$RobotConfigId,
+    [Parameter(Mandatory = $true)][uri]$PublicBaseUrl,
+    [Parameter(Mandatory = $true)][string]$BearerToken,
     [switch]$Apply,
-    [ValidateRange(1, 60)][int]$TimeoutSeconds = 10,
     [string]$Confirmation
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Net.Http
 
-if (-not $TunnelUrl.IsAbsoluteUri -or
-    $TunnelUrl.Scheme -cne "https" -or
-    -not [string]::IsNullOrEmpty($TunnelUrl.UserInfo) -or
-    $TunnelUrl.AbsolutePath -ne "/" -or
-    -not [string]::IsNullOrEmpty($TunnelUrl.Query) -or
-    -not [string]::IsNullOrEmpty($TunnelUrl.Fragment)) {
-    throw "Cloudflare tunnel URL must be an HTTPS origin without user info, path, query, or fragment."
-}
-$updateIsLoopback = $WorkToolUpdateUri.IsLoopback -and $WorkToolUpdateUri.Scheme -eq "http"
-if ($WorkToolUpdateUri.Scheme -ne "https" -and -not $updateIsLoopback) {
-    throw "WorkTool update URI must use HTTPS; HTTP is allowed only for loopback fake tests."
-}
-if ([string]::IsNullOrWhiteSpace($CallbackToken) -or [string]::IsNullOrWhiteSpace($WorkToolRobotId)) {
-    throw "Callback token and the authoritative WorkTool robot ID are required."
+function Test-Origin {
+    param(
+        [Parameter(Mandatory = $true)][uri]$Value,
+        [switch]$AllowLoopbackHttp
+    )
+
+    if (-not $Value.IsAbsoluteUri -or
+        -not [string]::IsNullOrEmpty($Value.UserInfo) -or
+        $Value.AbsolutePath -ne "/" -or
+        -not [string]::IsNullOrEmpty($Value.Query) -or
+        -not [string]::IsNullOrEmpty($Value.Fragment)) {
+        return $false
+    }
+    if ($Value.Scheme -eq "https") { return $true }
+    return $AllowLoopbackHttp -and $Value.Scheme -eq "http" -and $Value.IsLoopback
 }
 
-$callbackBuilder = [UriBuilder]::new($TunnelUrl)
-$callbackBuilder.Path = "/api/worktool/callback/$([uri]::EscapeDataString($WorkToolRobotId))"
-$callbackBuilder.Query = "token=$([uri]::EscapeDataString($CallbackToken))"
-$callbackUrl = $callbackBuilder.Uri.AbsoluteUri
-$safeUrl = "$($TunnelUrl.Scheme)://$($TunnelUrl.Authority)/api/worktool/callback/{robot-code}?token=[REDACTED]"
-Write-Host "Callback route preview: $safeUrl"
-$robotHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($WorkToolRobotId))).Substring(0, 12)
-Write-Host "Target route fingerprint (SHA-256 prefix): $robotHash"
+if (-not (Test-Origin -Value $ApiBaseUrl -AllowLoopbackHttp)) {
+    throw "API base URL must be an HTTPS origin; HTTP is allowed only for loopback tests."
+}
+if (-not (Test-Origin -Value $PublicBaseUrl -AllowLoopbackHttp)) {
+    throw "Public callback base URL must be an HTTPS origin; HTTP is allowed only for loopback tests."
+}
+if ([string]::IsNullOrWhiteSpace($BearerToken)) {
+    throw "Bearer token is required."
+}
+
+$publicOrigin = $PublicBaseUrl.GetLeftPart([UriPartial]::Authority)
+Write-Host "Robot configuration: $($RobotConfigId.ToString('D'))"
+Write-Host "Public callback origin: $publicOrigin"
+Write-Host "Actions: configure message callback and command-result callback"
 
 if (-not $Apply) {
-    Write-Host "Preview only. Re-run with -Apply to permit an update."
+    Write-Host "Preview only. Re-run with -Apply."
     return
 }
 
 $answer = if ($PSBoundParameters.ContainsKey("Confirmation")) {
-    if (-not $updateIsLoopback) { throw "-Confirmation is permitted only for loopback fake tests." }
     $Confirmation
 } else {
-    Read-Host "Type UPDATE to confirm this external callback change"
+    Read-Host "Type APPLY to confirm both callback configuration changes"
 }
-if ($answer -cne "UPDATE") { throw "Confirmation did not match; no update was sent." }
+if ($answer -cne "APPLY") {
+    throw "Confirmation did not match; no callback configuration was changed."
+}
 
-$safeTarget = "$($WorkToolUpdateUri.Scheme)://$($WorkToolUpdateUri.Authority)/"
-if ($PSCmdlet.ShouldProcess($safeTarget, "Update the fingerprinted WorkTool robot callback")) {
-    $payload = @{ robotId = $WorkToolRobotId; callbackUrl = $callbackUrl } | ConvertTo-Json -Compress
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $client = [Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+$handler = [Net.Http.HttpClientHandler]::new()
+$client = [Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromSeconds(30)
+$client.DefaultRequestHeaders.Authorization =
+    [Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $BearerToken)
+
+function Invoke-CallbackConfiguration {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][hashtable]$Payload,
+        [Parameter(Mandatory = $true)][string]$ActionName
+    )
+
+    $endpoint = [Uri]::new($ApiBaseUrl, $RelativePath)
+    $content = $null
+    $response = $null
     try {
-        $content = [Net.Http.StringContent]::new($payload, [Text.Encoding]::UTF8, "application/json")
-        $response = $client.PostAsync($WorkToolUpdateUri, $content).GetAwaiter().GetResult()
+        $json = $Payload | ConvertTo-Json -Compress
+        $content = [Net.Http.StringContent]::new($json, [Text.Encoding]::UTF8, "application/json")
+        $response = $client.PostAsync($endpoint, $content).GetAwaiter().GetResult()
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode) {
-            throw "Callback update endpoint returned HTTP $([int]$response.StatusCode)."
+            throw "$ActionName returned HTTP $([int]$response.StatusCode)."
         }
         try { $business = $body | ConvertFrom-Json -ErrorAction Stop }
-        catch { throw "Callback update endpoint returned invalid JSON." }
-        if ($business.success -isnot [bool] -or -not $business.success) {
-            throw "Callback update endpoint did not report business success."
+        catch { throw "$ActionName returned invalid JSON." }
+        if ($business.succeeded -isnot [bool] -or -not $business.succeeded) {
+            throw "$ActionName did not report success."
         }
-        Write-Host "WorkTool callback update request accepted."
     } finally {
         if ($content) { $content.Dispose() }
         if ($response) { $response.Dispose() }
-        $client.Dispose()
-        $handler.Dispose()
     }
+}
+
+try {
+    $robotPath = [uri]::EscapeDataString($RobotConfigId.ToString("D"))
+    Invoke-CallbackConfiguration `
+        -RelativePath "api/admin/worktool/robots/$robotPath/message-callback/configure" `
+        -Payload @{ publicBaseUrl = $publicOrigin; replyAll = $true } `
+        -ActionName "Message callback configuration"
+    Write-Host "Message callback configuration accepted."
+
+    Invoke-CallbackConfiguration `
+        -RelativePath "api/admin/worktool/robots/$robotPath/command-result-callback/configure" `
+        -Payload @{ publicBaseUrl = $publicOrigin } `
+        -ActionName "Command-result callback configuration"
+    Write-Host "Command-result callback configuration accepted."
+} finally {
+    $client.Dispose()
+    $handler.Dispose()
 }
