@@ -453,6 +453,206 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
         Assert.True(document.RootElement.GetProperty("isEnabled").GetBoolean());
     }
 
+    [Fact]
+    public async Task Clear_api_key_is_idempotent_and_invalidates_connection_state()
+    {
+        var entity = await SeedConfigurationAsync("clear-key");
+        using (var seedScope = _factory.Services.CreateScope())
+        {
+            var database = seedScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var service = seedScope.ServiceProvider.GetRequiredService<ModelConfigurationService>();
+            var stored = await database.ModelConfigs.SingleAsync(
+                item => item.Id == entity.Id,
+                TestContext.Current.CancellationToken);
+            stored.EncryptedApiKey = service.ProtectSubmittedApiKey("provider-secret", null);
+            stored.ApiKeyVersion = 1;
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var tested = await client.PostAsync(
+            $"/api/admin/model-configurations/{entity.Id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+        tested.EnsureSuccessStatusCode();
+        var testedVersion = await ReadVersionAsync(tested);
+
+        var cleared = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{entity.Id}/api-key?version={testedVersion}",
+            TestContext.Current.CancellationToken);
+        cleared.EnsureSuccessStatusCode();
+        using var clearedJson = JsonDocument.Parse(
+            await cleared.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.False(clearedJson.RootElement.GetProperty("hasApiKey").GetBoolean());
+        Assert.Equal(ModelConnectionStatus.Untested, clearedJson.RootElement.GetProperty("connectionStatus").GetString());
+        var clearedVersion = clearedJson.RootElement.GetProperty("version").GetInt32();
+
+        var repeated = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{entity.Id}/api-key?version={clearedVersion}",
+            TestContext.Current.CancellationToken);
+        repeated.EnsureSuccessStatusCode();
+        Assert.False(JsonDocument.Parse(
+            await repeated.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .RootElement.GetProperty("hasApiKey").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Delete_blocks_default_and_structured_retrieval_references()
+    {
+        var defaultConfig = await SeedConfigurationAsync("delete-default");
+        var referencedConfig = await SeedConfigurationAsync("delete-referenced");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var storedDefault = await database.ModelConfigs.SingleAsync(
+                item => item.Id == defaultConfig.Id,
+                TestContext.Current.CancellationToken);
+            storedDefault.IsDefault = true;
+            database.RetrievalAudits.Add(new()
+            {
+                ConversationMessageId = Guid.NewGuid(),
+                GroupProfileId = Guid.NewGuid(),
+                ModelConfigurationId = referencedConfig.Id,
+                Decision = "Answer",
+                ContextPolicy = "group"
+            });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var defaultDelete = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{defaultConfig.Id}?version={defaultConfig.Version}",
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, defaultDelete.StatusCode);
+        Assert.Equal("model_default_delete_blocked", await ReadCodeAsync(defaultDelete));
+
+        var referenceDelete = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{referencedConfig.Id}?version={referencedConfig.Version}",
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, referenceDelete.StatusCode);
+        using var referenceJson = JsonDocument.Parse(
+            await referenceDelete.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("model_reference_delete_blocked", referenceJson.RootElement.GetProperty("code").GetString());
+        Assert.Equal(1, referenceJson.RootElement.GetProperty("retrievalAuditCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Delete_unreferenced_non_default_returns_no_content()
+    {
+        var entity = await SeedConfigurationAsync("delete-free");
+        using var client = _factory.CreateClient();
+
+        var response = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{entity.Id}?version={entity.Version}",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Model_management_audits_are_complete_and_never_contain_key_material()
+    {
+        const string plaintextKey = "provider-secret-audit-1234";
+        using var client = _factory.CreateClient();
+        var create = await client.PostAsJsonAsync(
+            "/api/admin/model-configurations",
+            new
+            {
+                name = $"audit-{Guid.NewGuid():N}",
+                provider = "OpenAI compatible",
+                configurationType = "chat",
+                baseUrl = "https://provider.example.test",
+                model = "model",
+                apiKey = plaintextKey,
+                timeoutSeconds = 30,
+                maxRetries = 0
+            },
+            TestContext.Current.CancellationToken);
+        create.EnsureSuccessStatusCode();
+        using var createdJson = JsonDocument.Parse(
+            await create.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var id = createdJson.RootElement.GetProperty("id").GetGuid();
+        var version = createdJson.RootElement.GetProperty("version").GetInt32();
+        string storedCiphertext;
+        using (var keyScope = _factory.Services.CreateScope())
+        {
+            var keyDatabase = keyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            storedCiphertext = (await keyDatabase.ModelConfigs.AsNoTracking().SingleAsync(
+                item => item.Id == id,
+                TestContext.Current.CancellationToken)).EncryptedApiKey!;
+        }
+
+        var rename = await client.PutAsJsonAsync(
+            $"/api/admin/model-configurations/{id}",
+            new
+            {
+                name = $"renamed-{Guid.NewGuid():N}",
+                provider = "OpenAI compatible",
+                configurationType = "chat",
+                baseUrl = "https://provider.example.test",
+                model = "model",
+                apiKey = (string?)null,
+                timeoutSeconds = 30,
+                maxRetries = 0,
+                version
+            },
+            TestContext.Current.CancellationToken);
+        rename.EnsureSuccessStatusCode();
+        version = await ReadVersionAsync(rename);
+        var tested = await client.PostAsync(
+            $"/api/admin/model-configurations/{id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+        tested.EnsureSuccessStatusCode();
+        version = await ReadVersionAsync(tested);
+        var enabled = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{id}/enabled",
+            new { enabled = true, version },
+            TestContext.Current.CancellationToken);
+        enabled.EnsureSuccessStatusCode();
+        version = await ReadVersionAsync(enabled);
+        var defaulted = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{id}/default",
+            new { isDefault = true, version },
+            TestContext.Current.CancellationToken);
+        defaulted.EnsureSuccessStatusCode();
+        version = await ReadVersionAsync(defaulted);
+        var clearedDefault = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{id}/default",
+            new { isDefault = false, version },
+            TestContext.Current.CancellationToken);
+        clearedDefault.EnsureSuccessStatusCode();
+        version = await ReadVersionAsync(clearedDefault);
+        var clearedKey = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{id}/api-key?version={version}",
+            TestContext.Current.CancellationToken);
+        clearedKey.EnsureSuccessStatusCode();
+        version = await ReadVersionAsync(clearedKey);
+        var deleted = await client.DeleteAsync(
+            $"/api/admin/model-configurations/{id}?version={version}",
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var audits = await database.AdministrationAudits.AsNoTracking()
+            .Where(item => item.TargetId == id.ToString())
+            .ToListAsync(TestContext.Current.CancellationToken);
+        var actions = audits.Select(item => item.Action).ToHashSet();
+        Assert.All(
+            new[]
+            {
+                "model_configuration_created", "model_configuration_updated", "model_connection_tested",
+                "model_configuration_enabled_changed", "model_configuration_default_changed",
+                "model_api_key_cleared", "model_configuration_deleted"
+            },
+            action => Assert.Contains(action, actions));
+        var serialized = string.Join('\n', audits.Select(item => item.SanitizedDetailJson));
+        Assert.DoesNotContain(plaintextKey, serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain(storedCiphertext, serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("1234", serialized, StringComparison.Ordinal);
+    }
+
     private async Task<ModelConfigEntity> SeedConfigurationAsync(string prefix, string type = "chat")
     {
         _factory.ChatClient.NextException = null;

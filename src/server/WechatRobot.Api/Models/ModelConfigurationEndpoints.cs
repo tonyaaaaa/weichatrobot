@@ -18,6 +18,8 @@ public static class ModelConfigurationEndpoints
         group.MapPost("{id:guid}/test-connection", TestConnectionByIdAsync);
         group.MapPost("{id:guid}/enabled", SetEnabledAsync);
         group.MapPost("{id:guid}/default", SetDefaultAsync);
+        group.MapDelete("{id:guid}/api-key", ClearApiKeyAsync);
+        group.MapDelete("{id:guid}", DeleteAsync);
         group.MapPut("{name}", UpsertAsync);
         group.MapPost("{name}/test-connection", TestConnectionAsync);
         return group;
@@ -27,6 +29,7 @@ public static class ModelConfigurationEndpoints
         CreateModelConfigurationRequest request,
         ModelConfigurationManager manager,
         ModelConfigurationService service,
+        HttpContext httpContext,
         CancellationToken cancellationToken)
     {
         var result = await manager.CreateAsync(
@@ -39,6 +42,7 @@ public static class ModelConfigurationEndpoints
                 request.ApiKey,
                 request.TimeoutSeconds,
                 request.MaxRetries),
+            httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
 
         return MapMutationResult(
@@ -51,6 +55,7 @@ public static class ModelConfigurationEndpoints
         UpdateModelConfigurationByIdRequest request,
         ModelConfigurationManager manager,
         ModelConfigurationService service,
+        HttpContext httpContext,
         CancellationToken cancellationToken)
     {
         var result = await manager.UpdateAsync(
@@ -65,6 +70,7 @@ public static class ModelConfigurationEndpoints
                 request.TimeoutSeconds,
                 request.MaxRetries,
                 request.Version),
+            httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
 
         return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
@@ -118,6 +124,37 @@ public static class ModelConfigurationEndpoints
         return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
     }
 
+    private static async Task<IResult> ClearApiKeyAsync(
+        Guid id,
+        int version,
+        ModelConfigurationManager manager,
+        ModelConfigurationService service,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await manager.ClearApiKeyAsync(
+            id,
+            version,
+            httpContext.User.Identity?.Name ?? "unknown",
+            cancellationToken);
+        return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
+    }
+
+    private static async Task<IResult> DeleteAsync(
+        Guid id,
+        int version,
+        ModelConfigurationManager manager,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await manager.DeleteAsync(
+            id,
+            version,
+            httpContext.User.Identity?.Name ?? "unknown",
+            cancellationToken);
+        return MapMutationResult(result, _ => Results.NoContent());
+    }
+
     private static async Task<IResult> ListAsync(ModelConfigurationManager manager, ModelConfigurationService service, CancellationToken cancellationToken)
     {
         var configurations = await manager.ListAsync(cancellationToken);
@@ -129,6 +166,7 @@ public static class ModelConfigurationEndpoints
         UpdateModelConfigurationRequest request,
         ModelConfigurationManager manager,
         ModelConfigurationService service,
+        HttpContext httpContext,
         CancellationToken cancellationToken)
     {
         var result = await manager.UpsertCompatibilityAsync(
@@ -136,6 +174,7 @@ public static class ModelConfigurationEndpoints
             new CompatibilityModelConfigurationCommand(
                 request.Provider, request.ConfigurationType, request.BaseUrl, request.Model, request.ApiKey,
                 request.TimeoutSeconds, request.MaxRetries, request.IsEnabled, request.IsDefault),
+            httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
         return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
     }
@@ -214,6 +253,17 @@ public static class ModelConfigurationEndpoints
             }),
             ModelConfigurationMutationStatus.ProviderFailure when service is not null =>
                 Results.Json(ToResponse(result.Entity!, service), statusCode: StatusCodes.Status502BadGateway),
+            ModelConfigurationMutationStatus.DefaultDeleteBlocked => Results.Conflict(new
+            {
+                code = "model_default_delete_blocked",
+                message = "Clear the default assignment before deleting this configuration."
+            }),
+            ModelConfigurationMutationStatus.ReferenceDeleteBlocked => Results.Conflict(new
+            {
+                code = "model_reference_delete_blocked",
+                message = "The model configuration is referenced by retrieval audit history.",
+                retrievalAuditCount = result.References!.RetrievalAuditCount
+            }),
             _ => Results.Problem()
         };
 

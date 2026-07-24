@@ -63,6 +63,47 @@ public sealed class ConversationAuditQueryTests(MySqlFixture fixture) : IClassFi
         Assert.DoesNotContain(fullPage.Items, item => item.Send?.Status == "dead_letter");
     }
 
+    [Fact]
+    public async Task Retrieval_audit_persists_a_structured_model_configuration_reference()
+    {
+        var counter = new CommandCounter();
+        await using var db = Database(counter);
+        await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var model = new ModelConfigEntity
+        {
+            Name = $"audit-model-{Guid.NewGuid():N}",
+            NormalizedName = $"AUDIT-MODEL-{Guid.NewGuid():N}",
+            Provider = "openai-compatible",
+            ConfigurationType = "chat",
+            BaseUrl = "https://provider.example.test",
+            Model = "model"
+        };
+        var robot = new RobotConfigEntity
+        {
+            Name = "model-reference",
+            WorkToolRobotId = $"model-reference-{Guid.NewGuid():N}",
+            CallbackSecretHash = "hash"
+        };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = $"group-{Guid.NewGuid():N}",
+            Name = "技术部"
+        };
+        var message = Message(robot.Id, group.Id, "model-reference", DateTime.UtcNow);
+        var audit = Audit(message.Id, group.Id, DateTime.UtcNow);
+        audit.ModelConfigurationId = model.Id;
+        db.AddRange(model, robot, group, message, audit);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(
+            model.Id,
+            (await db.RetrievalAudits.AsNoTracking().SingleAsync(
+                item => item.Id == audit.Id,
+                TestContext.Current.CancellationToken)).ModelConfigurationId);
+    }
+
     private WechatRobotDbContext Database(CommandCounter counter) => new(
         new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(fixture.ConnectionString).AddInterceptors(counter).Options);
 

@@ -322,6 +322,7 @@ public sealed class GroundedConversationRepository(
         {
             ConversationMessageId = request.MessageId,
             GroupProfileId = request.GroupProfileId,
+            ModelConfigurationId = request.ModelConfigurationId == Guid.Empty ? null : request.ModelConfigurationId,
             Decision = result.Audit.Decision,
             ConfidenceThreshold = result.Audit.ConfidenceThreshold,
             ConfidenceValue = result.Audit.ConfidenceValue,
@@ -384,6 +385,7 @@ public sealed class GroundedConversationRepository(
         inbound.GroupProfileId = request.GroupProfileId; inbound.ConversationSessionId = request.ConversationSessionId;
         inbound.SessionSequence = session.NextSequence + 1; inbound.ProcessingState = "completed";
         database.RetrievalAudits.Add(new RetrievalAuditEntity { ConversationMessageId = request.MessageId, GroupProfileId = request.GroupProfileId,
+            ModelConfigurationId = request.ModelConfigurationId == Guid.Empty ? null : request.ModelConfigurationId,
             Decision = AnswerDecisionKind.Handoff.ToString(), ConfidenceThreshold = result.Audit.ConfidenceThreshold, ConfidenceValue = result.Audit.ConfidenceValue,
             ContextPolicy = result.Audit.ContextPolicy, FailureCode = result.Audit.FailureCode,
             EvidenceJson = JsonSerializer.Serialize(result.Audit.Evidence.Select(x => new { x.DocumentId, x.VersionId, x.ChunkId, x.PageNumber, x.Similarity, x.TagIds })),

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using WechatRobot.Application.Models;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
@@ -17,6 +18,7 @@ public sealed class ModelConfigurationManager(
 
     public async Task<ModelConfigurationMutationResult> CreateAsync(
         CreateModelConfigurationCommand command,
+        string actor,
         CancellationToken cancellationToken)
     {
         var errors = Validate(command.Name, command.ConfigurationType, command.BaseUrl, command.Model,
@@ -56,6 +58,12 @@ public sealed class ModelConfigurationManager(
         };
 
         database.ModelConfigs.Add(entity);
+        Audit(actor, "model_configuration_created", entity, new
+        {
+            entity.Name,
+            entity.ConfigurationType,
+            entity.Provider
+        });
         try
         {
             await database.SaveChangesAsync(cancellationToken);
@@ -71,6 +79,7 @@ public sealed class ModelConfigurationManager(
     public async Task<ModelConfigurationMutationResult> UpsertCompatibilityAsync(
         string routeName,
         CompatibilityModelConfigurationCommand command,
+        string actor,
         CancellationToken cancellationToken)
     {
         var normalizedName = NormalizeName(routeName);
@@ -83,12 +92,14 @@ public sealed class ModelConfigurationManager(
                 new CreateModelConfigurationCommand(
                     routeName, command.Provider, command.ConfigurationType, command.BaseUrl, command.Model,
                     command.ApiKey, command.TimeoutSeconds, command.MaxRetries),
+                actor,
                 cancellationToken)
             : await UpdateAsync(
                 entity.Id,
                 new UpdateModelConfigurationCommand(
                     entity.Name, command.Provider, command.ConfigurationType, command.BaseUrl, command.Model,
                     command.ApiKey, command.TimeoutSeconds, command.MaxRetries, entity.Version),
+                actor,
                 cancellationToken);
 
         if (result.Status != ModelConfigurationMutationStatus.Success)
@@ -142,6 +153,12 @@ public sealed class ModelConfigurationManager(
             entity.TestedConfigurationFingerprint = CurrentFingerprint(entity);
             entity.Version++;
             entity.UpdatedAtUtc = entity.LastTestedAtUtc.Value;
+            Audit(actor, "model_connection_tested", entity, new
+            {
+                entity.Name,
+                entity.ConfigurationType,
+                connectionStatus = ModelConnectionStatus.Succeeded
+            });
             await database.SaveChangesAsync(cancellationToken);
             return ModelConfigurationMutationResult.Succeeded(entity);
         }
@@ -153,6 +170,13 @@ public sealed class ModelConfigurationManager(
             entity.TestedConfigurationFingerprint = null;
             entity.Version++;
             entity.UpdatedAtUtc = entity.LastTestedAtUtc.Value;
+            Audit(actor, "model_connection_tested", entity, new
+            {
+                entity.Name,
+                entity.ConfigurationType,
+                connectionStatus = ModelConnectionStatus.Failed,
+                failureSummary = entity.LastTestFailureSummary
+            });
             await database.SaveChangesAsync(cancellationToken);
             return ModelConfigurationMutationResult.ProviderFailure(entity);
         }
@@ -189,6 +213,12 @@ public sealed class ModelConfigurationManager(
         entity.IsEnabled = enabled;
         entity.Version++;
         entity.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        Audit(actor, "model_configuration_enabled_changed", entity, new
+        {
+            entity.Name,
+            entity.ConfigurationType,
+            enabled
+        });
         await database.SaveChangesAsync(cancellationToken);
         return ModelConfigurationMutationResult.Succeeded(entity);
     }
@@ -244,6 +274,12 @@ public sealed class ModelConfigurationManager(
 
         entity.Version++;
         entity.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        Audit(actor, "model_configuration_default_changed", entity, new
+        {
+            entity.Name,
+            entity.ConfigurationType,
+            isDefault
+        });
         try
         {
             await database.SaveChangesAsync(cancellationToken);
@@ -267,6 +303,7 @@ public sealed class ModelConfigurationManager(
     public async Task<ModelConfigurationMutationResult> UpdateAsync(
         Guid id,
         UpdateModelConfigurationCommand command,
+        string actor,
         CancellationToken cancellationToken)
     {
         var errors = Validate(command.Name, command.ConfigurationType, command.BaseUrl, command.Model,
@@ -331,6 +368,12 @@ public sealed class ModelConfigurationManager(
             entity.IsDefault = false;
         }
 
+        Audit(actor, "model_configuration_updated", entity, new
+        {
+            entity.Name,
+            entity.ConfigurationType,
+            changedFields = new[] { "name", "provider", "configurationType", "baseUrl", "model", "timeoutSeconds", "maxRetries" }
+        });
         try
         {
             await database.SaveChangesAsync(cancellationToken);
@@ -342,6 +385,92 @@ public sealed class ModelConfigurationManager(
         catch (DbUpdateException)
         {
             return ModelConfigurationMutationResult.NameConflict();
+        }
+
+        return ModelConfigurationMutationResult.Succeeded(entity);
+    }
+
+    public async Task<ModelConfigurationMutationResult> ClearApiKeyAsync(
+        Guid id,
+        int version,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.ModelConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (entity is null)
+        {
+            return ModelConfigurationMutationResult.NotFound();
+        }
+
+        if (entity.Version != version)
+        {
+            return ModelConfigurationMutationResult.ConcurrencyConflict();
+        }
+
+        entity.EncryptedApiKey = service.ClearApiKey(entity.EncryptedApiKey);
+        entity.ApiKeyVersion++;
+        entity.ConnectionStatus = ModelConnectionStatus.Untested;
+        entity.LastTestedAtUtc = null;
+        entity.LastTestFailureSummary = null;
+        entity.TestedConfigurationFingerprint = null;
+        entity.IsEnabled = false;
+        entity.IsDefault = false;
+        entity.Version++;
+        entity.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        Audit(actor, "model_api_key_cleared", entity, new
+        {
+            entity.Name,
+            entity.ConfigurationType,
+            hasApiKey = false
+        });
+        await database.SaveChangesAsync(cancellationToken);
+        return ModelConfigurationMutationResult.Succeeded(entity);
+    }
+
+    public async Task<ModelConfigurationMutationResult> DeleteAsync(
+        Guid id,
+        int version,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.ModelConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (entity is null)
+        {
+            return ModelConfigurationMutationResult.NotFound();
+        }
+
+        if (entity.Version != version)
+        {
+            return ModelConfigurationMutationResult.ConcurrencyConflict();
+        }
+
+        if (entity.IsDefault)
+        {
+            return ModelConfigurationMutationResult.DefaultDeleteBlocked();
+        }
+
+        var retrievalAuditCount = await database.RetrievalAudits.CountAsync(
+            item => item.ModelConfigurationId == id,
+            cancellationToken);
+        if (retrievalAuditCount > 0)
+        {
+            return ModelConfigurationMutationResult.ReferenceDeleteBlocked(
+                new ModelConfigurationReferenceSummary(retrievalAuditCount));
+        }
+
+        await using var transaction = database.Database.ProviderName?.Contains("InMemory", StringComparison.Ordinal) != true
+            ? await database.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        database.ModelConfigs.Remove(entity);
+        Audit(actor, "model_configuration_deleted", entity, new
+        {
+            entity.Name,
+            entity.ConfigurationType
+        });
+        await database.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
         }
 
         return ModelConfigurationMutationResult.Succeeded(entity);
@@ -378,6 +507,19 @@ public sealed class ModelConfigurationManager(
         }
 
         return "invalid_response";
+    }
+
+    private void Audit(string actor, string action, ModelConfigEntity entity, object detail)
+    {
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
+        {
+            Actor = string.IsNullOrWhiteSpace(actor) ? "unknown" : actor,
+            Action = action,
+            TargetType = "model_configuration",
+            TargetId = entity.Id.ToString(),
+            SanitizedDetailJson = JsonSerializer.Serialize(detail),
+            CreatedAtUtc = timeProvider.GetUtcNow().UtcDateTime
+        });
     }
 
     private static Dictionary<string, string[]>? Validate(
@@ -471,13 +613,16 @@ public enum ModelConfigurationMutationStatus
     TestRequired,
     DefaultDisableForbidden,
     DefaultConflict,
-    ProviderFailure
+    ProviderFailure,
+    DefaultDeleteBlocked,
+    ReferenceDeleteBlocked
 }
 
 public sealed record ModelConfigurationMutationResult(
     ModelConfigurationMutationStatus Status,
     ModelConfigEntity? Entity = null,
-    Dictionary<string, string[]>? Errors = null)
+    Dictionary<string, string[]>? Errors = null,
+    ModelConfigurationReferenceSummary? References = null)
 {
     public static ModelConfigurationMutationResult Succeeded(ModelConfigEntity entity) =>
         new(ModelConfigurationMutationStatus.Success, entity);
@@ -505,4 +650,12 @@ public sealed record ModelConfigurationMutationResult(
 
     public static ModelConfigurationMutationResult ProviderFailure(ModelConfigEntity entity) =>
         new(ModelConfigurationMutationStatus.ProviderFailure, entity);
+
+    public static ModelConfigurationMutationResult DefaultDeleteBlocked() =>
+        new(ModelConfigurationMutationStatus.DefaultDeleteBlocked);
+
+    public static ModelConfigurationMutationResult ReferenceDeleteBlocked(ModelConfigurationReferenceSummary references) =>
+        new(ModelConfigurationMutationStatus.ReferenceDeleteBlocked, References: references);
 }
+
+public sealed record ModelConfigurationReferenceSummary(int RetrievalAuditCount);
