@@ -18,6 +18,7 @@ public sealed class ConversationMessageEntity
     public string FallbackHash { get; set; } = string.Empty;
     public DateTime FallbackWindowStartUtc { get; set; }
     public string GroupName { get; set; } = string.Empty;
+    public string? GroupRemark { get; set; }
     public string SenderDisplayName { get; set; } = string.Empty;
     public string? StableSenderId { get; set; }
     public string Text { get; set; } = string.Empty;

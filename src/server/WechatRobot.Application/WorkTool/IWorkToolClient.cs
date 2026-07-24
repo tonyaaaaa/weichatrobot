@@ -17,31 +17,37 @@ public interface IWorkToolClient
 
     Task<WorkToolRobotSnapshot> GetRobotAsync(
         Guid robotConfigId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<WorkToolOnlineSnapshot> GetOnlineAsync(
         Guid robotConfigId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<WorkToolMessageCallbackConfiguration> ConfigureMessageCallbackAsync(
         Guid robotConfigId,
         WorkToolMessageCallbackRequest request,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<IReadOnlyList<WorkToolEventCallbackRegistration>> ListEventCallbacksAsync(
         Guid robotConfigId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<WorkToolCallbackMutationResult> BindEventCallbackAsync(
         Guid robotConfigId,
         int type,
         Uri callbackUrl,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<WorkToolCallbackMutationResult> DeleteEventCallbackAsync(
         Guid robotConfigId,
         int type,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     [Obsolete("Use GetRobotAsync. This compatibility method is removed after P0 callers migrate.")]
     Task<WorkToolSendResult> TestConnectionAsync(

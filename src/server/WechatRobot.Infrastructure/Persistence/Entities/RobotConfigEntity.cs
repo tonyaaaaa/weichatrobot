@@ -8,6 +8,9 @@ public sealed class RobotConfigEntity
     public string? EncryptedWorkToolRobotId { get; set; }
     public string? CallbackRouteCode { get; set; }
     public string CallbackSecretHash { get; set; } = string.Empty;
+    public string? EncryptedCallbackSecret { get; set; }
+    public string? PreviousCallbackSecretHash { get; set; }
+    public DateTime? PreviousCallbackSecretExpiresAtUtc { get; set; }
     public bool IsEnabled { get; set; } = true;
     public int SendRateLimitPerMinute { get; set; } = 50;
     public decimal SendRateTokens { get; set; } = 50m;

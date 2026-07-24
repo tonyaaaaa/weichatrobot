@@ -88,9 +88,9 @@ public sealed class GroupOperationWorkerTests : IClassFixture<MySqlFixture>
     private sealed class RecordingClient : IWorkToolClient
     {
         public int Calls { get; private set; }
-        public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken)
-        { Calls++; return Task.FromResult(WorkToolSendResult.Success()); }
-        public Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<WorkToolCommandSubmission> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken)
+        { Calls++; return Task.FromResult(new WorkToolCommandSubmission(true, "fake-group-command", null, false)); }
+        public Task<WorkToolCommandSubmission> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken) => throw new NotSupportedException();
     }

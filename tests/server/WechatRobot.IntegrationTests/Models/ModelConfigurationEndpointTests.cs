@@ -809,12 +809,19 @@ public sealed class RecordingEmbeddingClient : IEmbeddingClient
 public sealed class RecordingWorkToolClient : IWorkToolClient
 {
     public int GroupOperationCalls { get; private set; }
-    public WorkToolSendResult NextGroupOperationResult { get; set; } = WorkToolSendResult.Success();
-    public Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+    public WorkToolCommandSubmission NextGroupOperationResult { get; set; } = Accepted("fake-group-command");
+    public Task<WorkToolCommandSubmission> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => Task.FromResult(Accepted("fake-send-command"));
     public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
     public Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
-    public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) { GroupOperationCalls++; return Task.FromResult(NextGroupOperationResult); }
-    public void Reset(WorkToolSendResult? next = null) { GroupOperationCalls = 0; NextGroupOperationResult = next ?? WorkToolSendResult.Success(); }
+    public Task<WorkToolCommandSubmission> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) { GroupOperationCalls++; return Task.FromResult(NextGroupOperationResult); }
+    public void Reset(WorkToolSendResult? next = null)
+    {
+        GroupOperationCalls = 0;
+        NextGroupOperationResult = next is null || next.Succeeded
+            ? Accepted("fake-group-command")
+            : new(false, null, next.FailureReason, next.DeliveryMayHaveOccurred);
+    }
+    private static WorkToolCommandSubmission Accepted(string messageId) => new(true, messageId, null, false);
 }
 
 public sealed class IntegrationAdminAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>

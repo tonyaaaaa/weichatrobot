@@ -15,6 +15,8 @@ internal sealed class RobotConfigConfiguration : IEntityTypeConfiguration<RobotC
         builder.Property(entity => entity.EncryptedWorkToolRobotId).HasMaxLength(512);
         builder.Property(entity => entity.CallbackRouteCode).HasMaxLength(64);
         builder.Property(entity => entity.CallbackSecretHash).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.EncryptedCallbackSecret).HasMaxLength(1024);
+        builder.Property(entity => entity.PreviousCallbackSecretHash).HasMaxLength(128);
         builder.Property(entity => entity.SendRateLimitPerMinute).HasDefaultValue(50).IsRequired();
         builder.Property(entity => entity.SendRateTokens).HasPrecision(10, 4).HasDefaultValue(50m).IsRequired();
         builder.Property(entity => entity.SendLeaseOwner).HasMaxLength(128);
@@ -31,12 +33,13 @@ internal sealed class GroupProfileConfiguration : IEntityTypeConfiguration<Group
     {
         builder.ToTable("group_profile");
         builder.HasKey(entity => entity.Id);
-        builder.Property(entity => entity.ExternalGroupId).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.ExternalGroupId).HasMaxLength(128);
         builder.Property(entity => entity.Name).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.WorkToolGroupRemark).HasMaxLength(256);
         builder.Property(entity => entity.HandoffPausePolicy).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
         builder.Property(entity => entity.ConfigurationVersion).HasDefaultValue(0).IsConcurrencyToken();
         builder.ToTable(table => table.HasCheckConstraint("CK_group_profile_handoff_pause_policy", "`HandoffPausePolicy` IN ('Group','Sender')"));
-        builder.HasIndex(entity => new { entity.RobotConfigId, entity.ExternalGroupId }).IsUnique();
+        builder.HasIndex(entity => new { entity.RobotConfigId, entity.Name, entity.WorkToolGroupRemark });
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
     }
 }
@@ -92,6 +95,7 @@ internal sealed class ConversationMessageConfiguration : IEntityTypeConfiguratio
         builder.Property(entity => entity.TerminalEvidenceJson).HasColumnType("json");
         builder.Property(entity => entity.FallbackHash).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.GroupName).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.GroupRemark).HasMaxLength(256);
         builder.Property(entity => entity.SenderDisplayName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.StableSenderId).HasMaxLength(128);
         builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
@@ -167,9 +171,13 @@ internal sealed class SendCommandConfiguration : IEntityTypeConfiguration<SendCo
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
         builder.Property(entity => entity.ReconciliationReason).HasMaxLength(256);
+        builder.Property(entity => entity.WorkToolCommandMessageId).HasMaxLength(128);
+        builder.Property(entity => entity.WorkToolSuccessListJson).HasColumnType("json");
+        builder.Property(entity => entity.WorkToolFailListJson).HasColumnType("json");
         builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.IdempotencyKey).IsUnique();
         builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });
+        builder.HasIndex(entity => entity.WorkToolCommandMessageId).IsUnique();
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.SetNull);
     }
@@ -231,9 +239,13 @@ internal sealed class WorkToolOperationAuditConfiguration : IEntityTypeConfigura
         builder.Property(entity => entity.Result).HasMaxLength(1024);
         builder.Property(entity => entity.EncryptedCommandJson).HasMaxLength(8192);
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
+        builder.Property(entity => entity.WorkToolCommandMessageId).HasMaxLength(128);
+        builder.Property(entity => entity.WorkToolSuccessListJson).HasColumnType("json");
+        builder.Property(entity => entity.WorkToolFailListJson).HasColumnType("json");
         builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.CreatedAtUtc);
         builder.HasIndex(entity => new { entity.Status, entity.CreatedAtUtc });
+        builder.HasIndex(entity => entity.WorkToolCommandMessageId).IsUnique();
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
     }
 }

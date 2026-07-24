@@ -568,20 +568,22 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
 
     private sealed class BlockingWorkToolClient : IWorkToolClient
     {
-        private readonly TaskCompletionSource<WorkToolSendResult> _result = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<WorkToolCommandSubmission> _result = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<WorkToolSendResult> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken)
+        public Task<WorkToolCommandSubmission> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken)
         {
             Started.TrySetResult(true);
             return _result.Task.WaitAsync(cancellationToken);
         }
 
-        public Task<WorkToolSendResult> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
+        public Task<WorkToolCommandSubmission> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) => Task.FromResult(Accepted("fake-group-command"));
         public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
         public Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
 
-        public void Complete() => _result.TrySetResult(WorkToolSendResult.Success());
+        public void Complete() => _result.TrySetResult(Accepted("fake-send-command"));
+
+        private static WorkToolCommandSubmission Accepted(string messageId) => new(true, messageId, null, false);
     }
 
     private sealed class RobotAdminFactory : WebApplicationFactory<Program>

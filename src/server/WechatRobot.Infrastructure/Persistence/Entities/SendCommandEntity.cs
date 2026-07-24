@@ -18,4 +18,10 @@ public sealed class SendCommandEntity
     public DateTime? SentAtUtc { get; set; }
     public DateTime? ExternalDispatchStartedAtUtc { get; set; }
     public string? ReconciliationReason { get; set; }
+    public string? WorkToolCommandMessageId { get; set; }
+    public DateTime? AcceptedAtUtc { get; set; }
+    public int? WorkToolResultCode { get; set; }
+    public DateTime? WorkToolResultAtUtc { get; set; }
+    public string? WorkToolSuccessListJson { get; set; }
+    public string? WorkToolFailListJson { get; set; }
 }
