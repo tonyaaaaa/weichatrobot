@@ -135,6 +135,7 @@ internal sealed class RetrievalAuditConfiguration : IEntityTypeConfiguration<Ret
         builder.HasIndex(entity => new { entity.GroupProfileId, entity.CreatedAtUtc });
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.ConversationMessageId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ModelConfigEntity>().WithMany().HasForeignKey(entity => entity.ModelConfigurationId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -194,14 +195,25 @@ internal sealed class ModelConfigConfiguration : IEntityTypeConfiguration<ModelC
         builder.ToTable("model_config");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.NormalizedName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Provider).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.ConfigurationType).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.DefaultConfigurationType)
+            .HasMaxLength(32)
+            .HasComputedColumnSql(
+                "CASE WHEN `IsDefault` = 1 THEN `ConfigurationType` ELSE NULL END",
+                stored: true);
         builder.Property(entity => entity.BaseUrl).HasMaxLength(2048).IsRequired();
         builder.Property(entity => entity.Model).HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.EncryptedApiKey).HasColumnType("longtext");
         builder.Property(entity => entity.TimeoutSeconds).IsRequired();
         builder.Property(entity => entity.MaxRetries).IsRequired();
-        builder.HasIndex(entity => entity.Name).IsUnique();
+        builder.Property(entity => entity.ConnectionStatus).HasMaxLength(16).IsRequired();
+        builder.Property(entity => entity.LastTestFailureSummary).HasMaxLength(1024);
+        builder.Property(entity => entity.TestedConfigurationFingerprint).HasMaxLength(64);
+        builder.Property(entity => entity.Version).IsConcurrencyToken();
+        builder.HasIndex(entity => entity.NormalizedName).IsUnique();
+        builder.HasIndex(entity => entity.DefaultConfigurationType).IsUnique();
     }
 }
 

@@ -205,8 +205,8 @@ git commit -m "feat: support keyless OpenAI-compatible models"
 - Modify: `src/server/WechatRobot.Infrastructure/Persistence/Entities/ModelConfigEntity.cs`
 - Modify: `src/server/WechatRobot.Infrastructure/Persistence/Entities/RetrievalAuditEntity.cs`
 - Modify: `src/server/WechatRobot.Infrastructure/Persistence/Configurations/MessagingConfigurations.cs`
-- Create: `src/server/WechatRobot.Infrastructure/Persistence/Migrations/20260724090000_HardenModelConfigurationManagement.cs`
-- Create: `src/server/WechatRobot.Infrastructure/Persistence/Migrations/20260724090000_HardenModelConfigurationManagement.Designer.cs`
+- Create: `src/server/WechatRobot.Infrastructure/Persistence/Migrations/20260724014009_HardenModelConfigurationManagement.cs`
+- Create: `src/server/WechatRobot.Infrastructure/Persistence/Migrations/20260724014009_HardenModelConfigurationManagement.Designer.cs`
 - Modify: `src/server/WechatRobot.Infrastructure/Persistence/Migrations/WechatRobotDbContextModelSnapshot.cs`
 - Modify: `tests/server/WechatRobot.IntegrationTests/Persistence/MigrationTests.cs`
 - Create: `tests/server/WechatRobot.IntegrationTests/Models/ModelConfigurationMySqlConstraintTests.cs`
@@ -327,9 +327,9 @@ Run:
 dotnet ef migrations add HardenModelConfigurationManagement --project src/server/WechatRobot.Infrastructure --startup-project src/server/WechatRobot.Api
 ```
 
-Rename the generated migration and its designer to the fixed
-`20260724090000_HardenModelConfigurationManagement` ID, update the designer's
-`[Migration]` attribute to that exact ID, and edit the migration so it:
+Keep the generated
+`20260724014009_HardenModelConfigurationManagement` ID and edit the migration
+so it:
 
 1. Adds nullable columns first.
 2. Backfills `NormalizedName = UPPER(TRIM(Name))`.

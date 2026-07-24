@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.IntegrationTests.Infrastructure;
 
 namespace WechatRobot.IntegrationTests.Persistence;
@@ -63,6 +64,13 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
         Assert.Null(migrated.EncryptedApiKey);
         Assert.Equal(30, migrated.TimeoutSeconds);
         Assert.Equal(0, migrated.MaxRetries);
+        Assert.Equal("EXISTING-CHAT", migrated.NormalizedName);
+        Assert.Equal(ModelConnectionStatus.Untested, migrated.ConnectionStatus);
+        Assert.Null(migrated.LastTestedAtUtc);
+        Assert.Null(migrated.LastTestFailureSummary);
+        Assert.Null(migrated.TestedConfigurationFingerprint);
+        Assert.Equal(0, migrated.ApiKeyVersion);
+        Assert.Equal(0, migrated.Version);
     }
 
     [Fact]

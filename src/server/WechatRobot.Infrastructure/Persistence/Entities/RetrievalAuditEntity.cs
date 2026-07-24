@@ -5,6 +5,7 @@ public sealed class RetrievalAuditEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid ConversationMessageId { get; set; }
     public Guid GroupProfileId { get; set; }
+    public Guid? ModelConfigurationId { get; set; }
     public string Decision { get; set; } = string.Empty;
     public double ConfidenceThreshold { get; set; }
     public double? ConfidenceValue { get; set; }
