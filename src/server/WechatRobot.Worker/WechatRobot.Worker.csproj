@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WechatRobot.Application\WechatRobot.Application.csproj" />
+    <ProjectReference Include="..\WechatRobot.Infrastructure\WechatRobot.Infrastructure.csproj" />
+    <ProjectReference Include="..\WechatRobot.PdfRenderer\WechatRobot.PdfRenderer.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Target Name="CopyPdfRenderer" AfterTargets="Build">
+    <ItemGroup>
+      <PdfRendererFiles Include="$(MSBuildThisFileDirectory)..\WechatRobot.PdfRenderer\bin\$(Configuration)\net10.0\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PdfRendererFiles)"
+          DestinationFiles="@(PdfRendererFiles->'$(OutputPath)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyPdfRendererToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <PdfRendererPublishFiles Include="$(MSBuildThisFileDirectory)..\WechatRobot.PdfRenderer\bin\$(Configuration)\net10.0\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PdfRendererPublishFiles)"
+          DestinationFiles="@(PdfRendererPublishFiles->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>

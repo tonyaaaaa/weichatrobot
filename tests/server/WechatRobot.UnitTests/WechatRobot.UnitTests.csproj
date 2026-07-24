@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Api\WechatRobot.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Domain\WechatRobot.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Application\WechatRobot.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\server\WechatRobot.Infrastructure\WechatRobot.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

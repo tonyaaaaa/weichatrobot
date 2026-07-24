@@ -1,0 +1,58 @@
+# Release readiness evidence
+
+This page records Task 18 automated acceptance only. It is not the final technical-department checklist and does not declare the whole branch or MVP complete.
+
+## Reproducible default acceptance
+
+`npm test --prefix tests/e2e` builds the real Vue production bundle, serves it from `127.0.0.1:4178`, and exercises it through Playwright 1.61.1. Test state is reset and seeded through `POST /__e2e/reset`. The controlled server supplies safe API records; only external provider boundaries are fake.
+
+The browser suite rejects any request whose host is not `127.0.0.1` or `localhost`. The controlled API separately counts WorkTool-shaped requests and the final evidence assertion requires both `externalProviderCalls` and `workToolRequests` to equal zero.
+
+| Design acceptance condition | Task 18 automated evidence | Real/manual status |
+| --- | --- | --- |
+| Document upload, chunk approval, indexing | Safe Markdown upload through built UI; approved chunk and queued index asserted | TXT, PDFs, DOCX remain covered by server suites; real OSS/OCR run pending |
+| Exact/contains/regex/exclude group rules | Browser submits exact, contains, regex, and exclude rules; controlled API records all submitted modes and asserts preview/exclusion results | Real target pending |
+| Existing-group invitation and configuration | Runbook requires manual invitation and permission confirmation | Pending explicit approval |
+| New external group and contacts | Separately gated command 206/207 test | Pending separate explicit approval |
+| No-at answer using allowed knowledge/context | Sanitized recorded callback preserves `atMe=false`; server pipeline tests cover processing | Real target pending |
+| No source in group; full authorized audit evidence | Authenticated paged audit API and browser display retrieval, input summary, exact send, handoff transitions, and candidate evidence; signed URLs and secrets are removed, and only the audit page exposes sources | Real target pending |
+| Duplicate callback | Existing integration coverage plus real evidence key | Real target pending |
+| Rate limit, retry, dead letter | Existing server suites and operations acceptance | Real observation pending |
+| Transfer, employee notification, AI pause | API-seeded handoff reason, assignment, resolution, and transitions | Notification/real pause pending |
+| Human answer approval and later retrieval | Browser resolves handoff and approves resulting candidate | Later real semantic retrieval pending |
+| Three-role authorization | Admin, KnowledgeOperator, and HumanAgent direct-route and controlled API allow/deny matrices are asserted; server policy tests cover audit/robot endpoints | Final production page matrix remains outside Task 18 |
+
+The conversation-audit read path is a thin authorized HTTP mapper over an Application query contract implemented in Infrastructure. The implementation loads a page with a fixed maximum of seven set-based database reads and correlates sends only through `grounded-reply:{messageId}` or the handoff's exact start idempotency key; same-group time proximity is never used.
+
+Knowledge retrieval resolves one authoritative tag scope before search. The audit records sorted requested and effective tag IDs plus `tag_ids:any-of-effective-visible-tags`; the same effective list is sent to Qdrant. Disabled requested tags are removed and all enabled global-public tags are added.
+
+## Evidence handling
+
+- Default artifacts contain only deterministic fixture IDs and fake credentials.
+- Real runs may record UTC timestamps and audit GUIDs only.
+- Never commit robot IDs, callback secrets, member IDs, Authorization headers, raw provider responses, or group message bodies.
+- Failed Playwright traces and screenshots stay under ignored `tests/e2e/test-results/`; review and sanitize before sharing.
+
+## Task 18 command matrix
+
+Run from the repository root:
+
+```powershell
+dotnet test WechatRobot.slnx
+npm ci --prefix src/web/wechatrobot-admin
+npm run test --prefix src/web/wechatrobot-admin
+npm run typecheck --prefix src/web/wechatrobot-admin
+npm run build --prefix src/web/wechatrobot-admin
+npm ci --prefix tests/e2e
+npm test --prefix tests/e2e
+docker compose config
+```
+
+The real WorkTool and Alibaba Cloud OCR categories are expected to report skipped
+in an ordinary run. Follow
+[worktool-real-group-acceptance.md](worktool-real-group-acceptance.md) only after
+the required human approvals. OCR requires `RUN_ALIYUN_OCR_E2E=1` plus both
+dedicated Alibaba Cloud OCR credential variables; never enable it in routine
+verification. `docker compose config` proves interpolation and Compose topology
+only; with local secrets and port variables intentionally unset it does not
+prove image startup, dependency health, or production readiness.

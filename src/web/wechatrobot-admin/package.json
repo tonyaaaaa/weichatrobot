@@ -1,0 +1,31 @@
+{
+  "name": "wechatrobot-admin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && npm run typecheck:sfc",
+    "typecheck:sfc": "node scripts/run-vue-tsc.cjs --noEmit",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "6.0.8",
+    "axios": "1.18.1",
+    "element-plus": "2.14.3",
+    "pinia": "4.0.2",
+    "vue": "3.5.40",
+    "vue-router": "5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "@vue/test-utils": "2.4.11",
+    "jsdom": "29.1.1",
+    "typescript": "7.0.2",
+    "typescript-vue": "npm:typescript@5.9.3",
+    "vite": "8.1.5",
+    "vitest": "4.1.10",
+    "vue-tsc": "3.3.7"
+  }
+}

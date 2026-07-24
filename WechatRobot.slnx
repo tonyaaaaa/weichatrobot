@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/server/">
+    <Project Path="src/server/WechatRobot.Api/WechatRobot.Api.csproj" />
+    <Project Path="src/server/WechatRobot.Application/WechatRobot.Application.csproj" />
+    <Project Path="src/server/WechatRobot.Domain/WechatRobot.Domain.csproj" />
+    <Project Path="src/server/WechatRobot.Infrastructure/WechatRobot.Infrastructure.csproj" />
+    <Project Path="src/server/WechatRobot.PdfRenderer/WechatRobot.PdfRenderer.csproj" />
+    <Project Path="src/server/WechatRobot.Worker/WechatRobot.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/server/">
+    <Project Path="tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj" />
+    <Project Path="tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj" />
+    <Project Path="tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj" />
+  </Folder>
+</Solution>

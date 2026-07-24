@@ -1,0 +1,140 @@
+using System.Collections.Concurrent;
+using Microsoft.EntityFrameworkCore;
+using WechatRobot.Application.Knowledge;
+using WechatRobot.Application.Models;
+using WechatRobot.Application.Security;
+using WechatRobot.Infrastructure.Knowledge;
+using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
+
+namespace WechatRobot.UnitTests.Knowledge;
+
+public sealed class KnowledgeSearchFanoutTests
+{
+    [Fact]
+    public async Task Eligible_collections_each_receive_exactly_one_call_within_limit()
+    {
+        await using var database = Database();
+        var tag = Tag("产品");
+        database.Add(tag);
+        for (var index = 0; index < 4; index++) AddActiveDocument(database, tag.Id, $"kb_cosine_3_{index}");
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new EmptyRecordingVectorStore();
+        var service = Service(database, new KnowledgeIndexOptions(3, VectorDistance.Cosine, MaximumCollectionsPerSearch: 4));
+
+        var hits = await service.SearchVisibleAsync([1, 0, 0], [tag.Id], vectors, 10, TestContext.Current.CancellationToken);
+
+        Assert.Empty(hits);
+        Assert.Equal(4, vectors.CallCount);
+        Assert.Equal(["kb_cosine_3_0", "kb_cosine_3_1", "kb_cosine_3_2", "kb_cosine_3_3"],
+            vectors.Requests.Select(request => request.Collection.Name).Order().ToArray());
+    }
+
+    [Fact]
+    public async Task Capacity_overflow_fails_explicitly_before_any_vector_call()
+    {
+        await using var database = Database();
+        var tag = Tag("售后");
+        database.Add(tag);
+        for (var index = 0; index < 3; index++) AddActiveDocument(database, tag.Id, $"kb_cosine_3_{index}");
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new EmptyRecordingVectorStore();
+        var service = Service(database, new KnowledgeIndexOptions(3, VectorDistance.Cosine, MaximumCollectionsPerSearch: 2));
+
+        var exception = await Assert.ThrowsAsync<KnowledgeSearchCapacityException>(() =>
+            service.SearchVisibleAsync([1, 0, 0], [tag.Id], vectors, 10, TestContext.Current.CancellationToken));
+
+        Assert.Equal(3, exception.EligibleCollectionCount);
+        Assert.Equal(2, exception.MaximumCollections);
+        Assert.Equal(0, vectors.CallCount);
+    }
+
+    [Fact]
+    public async Task Unrelated_active_collections_are_filtered_before_fanout()
+    {
+        await using var database = Database();
+        var allowed = Tag("产品");
+        var unrelated = Tag("财务");
+        database.AddRange(allowed, unrelated);
+        AddActiveDocument(database, allowed.Id, "kb_cosine_3_allowed");
+        AddActiveDocument(database, unrelated.Id, "kb_cosine_3_unrelated");
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new EmptyRecordingVectorStore();
+        var service = Service(database, new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+
+        await service.SearchVisibleAsync([1, 0, 0], [allowed.Id], vectors, 10, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, vectors.CallCount);
+        Assert.Equal("kb_cosine_3_allowed", Assert.Single(vectors.Requests).Collection.Name);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(257)]
+    public void Search_collection_limit_must_be_between_one_and_256(int value)
+    {
+        var options = new KnowledgeIndexOptions(3, VectorDistance.Cosine, MaximumCollectionsPerSearch: value);
+        Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Fact]
+    public void Search_collection_limit_defaults_to_64_and_accepts_256()
+    {
+        var defaults = new KnowledgeIndexOptions(3, VectorDistance.Cosine);
+        Assert.Equal(64, defaults.MaximumCollectionsPerSearch);
+        defaults.Validate();
+        new KnowledgeIndexOptions(3, VectorDistance.Cosine, MaximumCollectionsPerSearch: 256).Validate();
+    }
+
+    private static WechatRobotDbContext Database() => new(new DbContextOptionsBuilder<WechatRobotDbContext>()
+        .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
+
+    private static KnowledgeTagEntity Tag(string name) => new() { Name = name, NormalizedName = name };
+
+    private static void AddActiveDocument(WechatRobotDbContext database, Guid tagId, string collection)
+    {
+        var document = new KnowledgeDocumentEntity
+        {
+            Status = "active", ActiveCollectionName = collection, ActiveEmbeddingDimension = 3, ActiveDistance = "cosine", ActiveIndexGeneration = 1
+        };
+        var version = new KnowledgeDocumentVersionEntity
+        {
+            KnowledgeDocumentId = document.Id, Version = 1, OriginalFileName = Guid.NewGuid() + ".txt", SafeFileName = "file.txt",
+            ContentType = "text/plain", Sha256 = Guid.NewGuid().ToString("N").PadLeft(64, '0'), ObjectKey = Guid.NewGuid().ToString("N"),
+            Status = "active", IsPublished = true
+        };
+        document.ActiveVersionId = version.Id;
+        var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "text", Status = "approved" };
+        database.AddRange(document, version, chunk, new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagId });
+    }
+
+    private static QdrantKnowledgeService Service(WechatRobotDbContext database, KnowledgeIndexOptions options) =>
+        new(database, new ModelConfigurationService(new PassThroughProtector()), options, TimeProvider.System);
+
+    private sealed class EmptyRecordingVectorStore : IVectorStore
+    {
+        private int _callCount;
+        public int CallCount => _callCount;
+        public ConcurrentBag<VectorSearchRequest> Requests { get; } = [];
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token)
+        {
+            Interlocked.Increment(ref _callCount);
+            Requests.Add(request);
+            return Task.FromResult<IReadOnlyList<VectorSearchHit>>([]);
+        }
+        public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
+        public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => Task.FromResult<VectorCollection?>(null);
+        public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
+    }
+
+    private sealed class PassThroughProtector : ISecretProtector
+    {
+        public string Protect(string plaintext) => plaintext;
+        public string Unprotect(string protectedValue) => protectedValue;
+    }
+}
