@@ -61,8 +61,8 @@ Only one phase may be `InProgress` at a time. Update the table whenever a phase 
 | Phase | State | Detailed plan | Depends on |
 |---|---|---|---|
 | P0 WorkTool contract correction | Completed | `docs/superpowers/plans/2026-07-24-worktool-contract-correction.md` | None |
-| P1 Knowledge tag closure | Planned | `docs/superpowers/plans/2026-07-24-knowledge-tag-closure.md` | P0 |
-| P1 Knowledge document management | NotStarted | Create after tag acceptance | Tags |
+| P1 Knowledge tag closure | Completed | `docs/superpowers/plans/2026-07-24-knowledge-tag-closure.md` | P0 |
+| P1 Knowledge document management | Planned | `docs/superpowers/plans/2026-07-24-knowledge-document-management.md` | Tags |
 | P1 Typed system settings | NotStarted | Create after document acceptance | None |
 | P1 Dashboard and operational summary | NotStarted | Create after settings acceptance | P0, settings |
 | P1 Full robot administration UI | NotStarted | Create after dashboard acceptance | P0 |
@@ -129,6 +129,29 @@ No real WorkTool or Enterprise WeChat mutation was claimed. The explicit real ga
 - Every mutation writes a sanitized `AdministrationAuditEntity`.
 
 **Acceptance gate:** tag unit tests, tag endpoint integration tests, group configuration regression tests, frontend tag-view tests, full server build, frontend typecheck/test/build.
+
+### P1 knowledge-tag completion record — 2026-07-24
+
+Implementation commits:
+
+- `d92cd5b`: approved detailed plan and roadmap entry.
+- `e2d83cb`, `16792f7`: paged query contracts, lifecycle mutations, normalized uniqueness, optimistic concurrency, and sanitized audits.
+- `6f0800f`: authorized HTTP routes and four-source referenced-delete protection.
+- `47c3bf5`, `7e35d03`: typed frontend client, reusable selector, and complete management page.
+- `d0e2775`: document indexing and knowledge review selectors; removed manual UUID parsing.
+
+Verified from the current source with isolated outputs while the running API and Worker remained untouched:
+
+- Tag, endpoint, MySQL-race, and group configuration integration tests: 24 passed, 0 skipped.
+- Full server unit tests: 206 passed, 0 skipped.
+- Full server contract tests: 57 passed, 0 skipped.
+- Full solution build: 0 warnings, 0 errors.
+- Frontend typecheck: passed.
+- Frontend tests: 73 passed across 19 files, 0 skipped.
+- Frontend production build: passed.
+- Production-view scan: no manual knowledge-tag ID field, UUID parser, or obsolete backend-placeholder copy remains.
+
+The first isolated unit and contract attempts used output layouts incompatible with repository-relative fixture discovery; both suites were rerun from repository-local isolated `net10.0` directories and passed in full. No product code was changed to mask those harness-path failures. API PID `18436` and Worker PID `32828` remained running throughout the gate.
 
 ## Phase 2: Knowledge Document Management
 
