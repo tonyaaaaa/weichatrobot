@@ -17,7 +17,7 @@ public sealed class GroupOperationsContractTests
             new HttpClient(handler) { BaseAddress = new Uri("https://api.worktool.test/") },
             new FixedCredentials());
 
-        var result = await sut.BindCallbackAsync(
+        var result = await sut.BindEventCallbackAsync(
             Guid.NewGuid(), 1, new Uri("https://robot.example.test/api/worktool/config-callback/opaque"),
             TestContext.Current.CancellationToken);
 
@@ -31,12 +31,13 @@ public sealed class GroupOperationsContractTests
     [Fact]
     public async Task Create_external_group_maps_to_command_206()
     {
-        using var handler = new CapturingHandler("{\"code\":0,\"message\":\"ok\"}");
+        using var handler = new CapturingHandler("{\"code\":0,\"message\":\"ok\",\"data\":\"group-command-1\"}");
         var sut = new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }, new FixedCredentials());
 
         var result = await sut.ExecuteGroupOperationAsync(new WorkToolGroupOperationRequest(Guid.NewGuid(), WorkToolGroupOperationKind.Create, "技术部", ["customer-1", "employee-1"], "欢迎来到技术部"), TestContext.Current.CancellationToken);
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Accepted);
+        Assert.NotNull(result.MessageId);
         Assert.Equal("/wework/sendRawMessage?robotId=robot-7", handler.RequestUri!.PathAndQuery);
         Assert.Contains("\"type\":206", handler.Body, StringComparison.Ordinal);
         Assert.Equal(JsonNode.Parse("""{"socketType":2,"list":[{"type":206,"groupName":"技术部","selectList":["customer-1","employee-1"],"groupAnnouncement":"欢迎来到技术部"}]}""")!.ToJsonString(), JsonNode.Parse(handler.Body)!.ToJsonString());
@@ -49,12 +50,12 @@ public sealed class GroupOperationsContractTests
     [InlineData(WorkToolGroupOperationKind.UpdateAnnouncement, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupName":null,"newGroupAnnouncement":"new value","selectList":[],"showMessageHistory":false,"removeList":[]}]}""")]
     public async Task Existing_group_operations_map_to_documented_command_207(WorkToolGroupOperationKind kind, string expected)
     {
-        using var handler = new CapturingHandler("{\"code\":0}");
+        using var handler = new CapturingHandler("{\"code\":0,\"data\":\"group-command-2\"}");
         var sut = new WorkToolClient(new HttpClient(handler) { BaseAddress = new Uri("https://fake.worktool.test/") }, new FixedCredentials());
 
         var result = await sut.ExecuteGroupOperationAsync(new WorkToolGroupOperationRequest(Guid.NewGuid(), kind, "group-name", ["member-1"], "new value"), TestContext.Current.CancellationToken);
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Accepted);
         Assert.Equal(JsonNode.Parse(expected)!.ToJsonString(), JsonNode.Parse(handler.Body)!.ToJsonString());
     }
 
