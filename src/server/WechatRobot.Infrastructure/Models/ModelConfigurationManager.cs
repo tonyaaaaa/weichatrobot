@@ -8,6 +8,8 @@ namespace WechatRobot.Infrastructure.Models;
 public sealed class ModelConfigurationManager(
     WechatRobotDbContext database,
     ModelConfigurationService service,
+    IChatCompletionClient chatClient,
+    IEmbeddingClient embeddingClient,
     TimeProvider timeProvider)
 {
     public Task<List<ModelConfigEntity>> ListAsync(CancellationToken cancellationToken) =>
@@ -94,10 +96,172 @@ public sealed class ModelConfigurationManager(
             return result;
         }
 
-        result.Entity!.IsEnabled = command.IsEnabled;
-        result.Entity.IsDefault = command.IsDefault;
-        await database.SaveChangesAsync(cancellationToken);
         return result;
+    }
+
+    public async Task<ModelConfigurationMutationResult> TestConnectionAsync(
+        Guid id,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.ModelConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (entity is null)
+        {
+            return ModelConfigurationMutationResult.NotFound();
+        }
+
+        try
+        {
+            var configuration = service.ToProviderConfiguration(ToRecord(entity));
+            if (entity.ConfigurationType.Equals("chat", StringComparison.OrdinalIgnoreCase))
+            {
+                await chatClient.CompleteAsync(
+                    configuration,
+                    new ChatCompletionRequest([new ChatMessage("user", "connection test")]),
+                    cancellationToken);
+            }
+            else if (entity.ConfigurationType.Equals("embedding", StringComparison.OrdinalIgnoreCase))
+            {
+                await embeddingClient.CreateEmbeddingsAsync(
+                    configuration,
+                    new EmbeddingBatchRequest(["connection test"]),
+                    cancellationToken);
+            }
+            else
+            {
+                return ModelConfigurationMutationResult.Invalid(
+                    new Dictionary<string, string[]>
+                    {
+                        ["configurationType"] = ["Configuration type must be chat or embedding."]
+                    });
+            }
+
+            entity.ConnectionStatus = ModelConnectionStatus.Succeeded;
+            entity.LastTestedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+            entity.LastTestFailureSummary = null;
+            entity.TestedConfigurationFingerprint = CurrentFingerprint(entity);
+            entity.Version++;
+            entity.UpdatedAtUtc = entity.LastTestedAtUtc.Value;
+            await database.SaveChangesAsync(cancellationToken);
+            return ModelConfigurationMutationResult.Succeeded(entity);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            entity.ConnectionStatus = ModelConnectionStatus.Failed;
+            entity.LastTestedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+            entity.LastTestFailureSummary = ClassifyFailure(exception);
+            entity.TestedConfigurationFingerprint = null;
+            entity.Version++;
+            entity.UpdatedAtUtc = entity.LastTestedAtUtc.Value;
+            await database.SaveChangesAsync(cancellationToken);
+            return ModelConfigurationMutationResult.ProviderFailure(entity);
+        }
+    }
+
+    public async Task<ModelConfigurationMutationResult> SetEnabledAsync(
+        Guid id,
+        bool enabled,
+        int version,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.ModelConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (entity is null)
+        {
+            return ModelConfigurationMutationResult.NotFound();
+        }
+
+        if (entity.Version != version)
+        {
+            return ModelConfigurationMutationResult.ConcurrencyConflict();
+        }
+
+        if (!enabled && entity.IsDefault)
+        {
+            return ModelConfigurationMutationResult.DefaultDisableForbidden();
+        }
+
+        if (enabled && !HasCurrentSuccessfulTest(entity))
+        {
+            return ModelConfigurationMutationResult.TestRequired();
+        }
+
+        entity.IsEnabled = enabled;
+        entity.Version++;
+        entity.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        await database.SaveChangesAsync(cancellationToken);
+        return ModelConfigurationMutationResult.Succeeded(entity);
+    }
+
+    public async Task<ModelConfigurationMutationResult> SetDefaultAsync(
+        Guid id,
+        bool isDefault,
+        int version,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.ModelConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (entity is null)
+        {
+            return ModelConfigurationMutationResult.NotFound();
+        }
+
+        if (entity.Version != version)
+        {
+            return ModelConfigurationMutationResult.ConcurrencyConflict();
+        }
+
+        if (isDefault && !HasCurrentSuccessfulTest(entity))
+        {
+            return ModelConfigurationMutationResult.TestRequired();
+        }
+
+        await using var transaction = database.Database.ProviderName?.Contains("InMemory", StringComparison.Ordinal) != true
+            ? await database.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
+        if (isDefault)
+        {
+            var currentDefaults = await database.ModelConfigs
+                .Where(item => item.Id != entity.Id &&
+                               item.ConfigurationType == entity.ConfigurationType &&
+                               item.IsDefault)
+                .ToListAsync(cancellationToken);
+            foreach (var current in currentDefaults)
+            {
+                current.IsDefault = false;
+                current.Version++;
+                current.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+            }
+
+            entity.IsEnabled = true;
+            entity.IsDefault = true;
+        }
+        else
+        {
+            entity.IsDefault = false;
+        }
+
+        entity.Version++;
+        entity.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return ModelConfigurationMutationResult.ConcurrencyConflict();
+        }
+        catch (DbUpdateException)
+        {
+            return ModelConfigurationMutationResult.DefaultConflict();
+        }
+
+        return ModelConfigurationMutationResult.Succeeded(entity);
     }
 
     public async Task<ModelConfigurationMutationResult> UpdateAsync(
@@ -184,6 +348,37 @@ public sealed class ModelConfigurationManager(
     }
 
     public static string NormalizeName(string name) => name.Trim().ToUpperInvariant();
+
+    private bool HasCurrentSuccessfulTest(ModelConfigEntity entity) =>
+        entity.ConnectionStatus == ModelConnectionStatus.Succeeded &&
+        string.Equals(
+            entity.TestedConfigurationFingerprint,
+            CurrentFingerprint(entity),
+            StringComparison.Ordinal);
+
+    private string CurrentFingerprint(ModelConfigEntity entity) =>
+        service.ComputeFingerprint(ToRecord(entity), entity.ConfigurationType, entity.ApiKeyVersion);
+
+    private static ModelConfigurationRecord ToRecord(ModelConfigEntity entity) =>
+        new(entity.Id, entity.Name, entity.Provider, entity.BaseUrl, entity.Model, entity.EncryptedApiKey,
+            entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault);
+
+    private static string ClassifyFailure(Exception exception)
+    {
+        if (exception is OperationCanceledException ||
+            exception is ModelUnavailableException { InnerException: OperationCanceledException })
+        {
+            return "timeout";
+        }
+
+        if (exception is HttpRequestException ||
+            exception is ModelUnavailableException { InnerException: HttpRequestException })
+        {
+            return "http_error";
+        }
+
+        return "invalid_response";
+    }
 
     private static Dictionary<string, string[]>? Validate(
         string? name,
@@ -272,7 +467,11 @@ public enum ModelConfigurationMutationStatus
     Invalid,
     NotFound,
     NameConflict,
-    ConcurrencyConflict
+    ConcurrencyConflict,
+    TestRequired,
+    DefaultDisableForbidden,
+    DefaultConflict,
+    ProviderFailure
 }
 
 public sealed record ModelConfigurationMutationResult(
@@ -294,4 +493,16 @@ public sealed record ModelConfigurationMutationResult(
 
     public static ModelConfigurationMutationResult ConcurrencyConflict() =>
         new(ModelConfigurationMutationStatus.ConcurrencyConflict);
+
+    public static ModelConfigurationMutationResult TestRequired() =>
+        new(ModelConfigurationMutationStatus.TestRequired);
+
+    public static ModelConfigurationMutationResult DefaultDisableForbidden() =>
+        new(ModelConfigurationMutationStatus.DefaultDisableForbidden);
+
+    public static ModelConfigurationMutationResult DefaultConflict() =>
+        new(ModelConfigurationMutationStatus.DefaultConflict);
+
+    public static ModelConfigurationMutationResult ProviderFailure(ModelConfigEntity entity) =>
+        new(ModelConfigurationMutationStatus.ProviderFailure, entity);
 }

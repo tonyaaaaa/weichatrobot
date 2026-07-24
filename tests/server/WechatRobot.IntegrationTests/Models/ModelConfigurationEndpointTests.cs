@@ -303,6 +303,210 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
         Assert.Equal("model_concurrency_conflict", document.RootElement.GetProperty("code").GetString());
     }
 
+    [Fact]
+    public async Task Enable_requires_a_current_successful_connection_test()
+    {
+        var entity = await SeedConfigurationAsync("enable-gate");
+        using var client = _factory.CreateClient();
+
+        var blocked = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{entity.Id}/enabled",
+            new { enabled = true, version = entity.Version },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
+        Assert.Equal("model_test_required", await ReadCodeAsync(blocked));
+
+        var tested = await client.PostAsync(
+            $"/api/admin/model-configurations/{entity.Id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+        tested.EnsureSuccessStatusCode();
+        var testedVersion = await ReadVersionAsync(tested);
+
+        var enabled = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{entity.Id}/enabled",
+            new { enabled = true, version = testedVersion },
+            TestContext.Current.CancellationToken);
+        enabled.EnsureSuccessStatusCode();
+        using var enabledJson = JsonDocument.Parse(
+            await enabled.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.True(enabledJson.RootElement.GetProperty("isEnabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Failed_connection_test_persists_only_a_stable_failure_summary()
+    {
+        var entity = await SeedConfigurationAsync("failed-test");
+        _factory.ChatClient.NextException = new HttpRequestException("secret provider body");
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsync(
+            $"/api/admin/model-configurations/{entity.Id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var stored = await database.ModelConfigs.SingleAsync(
+            item => item.Id == entity.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(ModelConnectionStatus.Failed, stored.ConnectionStatus);
+        Assert.Equal("http_error", stored.LastTestFailureSummary);
+        Assert.DoesNotContain("secret", stored.LastTestFailureSummary, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(stored.TestedConfigurationFingerprint);
+    }
+
+    [Fact]
+    public async Task Changing_model_invalidates_a_successful_connection_test()
+    {
+        var entity = await SeedConfigurationAsync("invalidate-test");
+        using var client = _factory.CreateClient();
+        var tested = await client.PostAsync(
+            $"/api/admin/model-configurations/{entity.Id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+        tested.EnsureSuccessStatusCode();
+        var version = await ReadVersionAsync(tested);
+
+        var updated = await client.PutAsJsonAsync(
+            $"/api/admin/model-configurations/{entity.Id}",
+            new
+            {
+                name = entity.Name,
+                provider = entity.Provider,
+                configurationType = entity.ConfigurationType,
+                baseUrl = entity.BaseUrl,
+                model = "changed-model",
+                apiKey = (string?)null,
+                timeoutSeconds = entity.TimeoutSeconds,
+                maxRetries = entity.MaxRetries,
+                version
+            },
+            TestContext.Current.CancellationToken);
+
+        updated.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(
+            await updated.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(ModelConnectionStatus.Untested, document.RootElement.GetProperty("connectionStatus").GetString());
+        Assert.False(document.RootElement.GetProperty("isEnabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Default_switches_within_type_and_default_cannot_be_disabled()
+    {
+        var first = await SeedConfigurationAsync("chat-default-one");
+        var second = await SeedConfigurationAsync("chat-default-two");
+        var embedding = await SeedConfigurationAsync("embedding-default", "embedding");
+        using var client = _factory.CreateClient();
+
+        var firstVersion = await TestAndReadVersionAsync(client, first.Id);
+        var secondVersion = await TestAndReadVersionAsync(client, second.Id);
+        var embeddingVersion = await TestAndReadVersionAsync(client, embedding.Id);
+        await SetDefaultAsync(client, first.Id, true, firstVersion);
+        await SetDefaultAsync(client, embedding.Id, true, embeddingVersion);
+        await SetDefaultAsync(client, second.Id, true, secondVersion);
+
+        using var scope = _factory.Services.CreateScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var stored = await database.ModelConfigs.AsNoTracking().ToDictionaryAsync(
+            item => item.Id,
+            TestContext.Current.CancellationToken);
+        Assert.False(stored[first.Id].IsDefault);
+        Assert.True(stored[second.Id].IsDefault);
+        Assert.True(stored[embedding.Id].IsDefault);
+
+        var disable = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{second.Id}/enabled",
+            new { enabled = false, version = stored[second.Id].Version },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, disable.StatusCode);
+        Assert.Equal("model_default_disable_forbidden", await ReadCodeAsync(disable));
+    }
+
+    [Fact]
+    public async Task Clearing_default_keeps_configuration_enabled()
+    {
+        var entity = await SeedConfigurationAsync("clear-default");
+        using var client = _factory.CreateClient();
+        var testedVersion = await TestAndReadVersionAsync(client, entity.Id);
+        await SetDefaultAsync(client, entity.Id, true, testedVersion);
+
+        int defaultVersion;
+        using (var readScope = _factory.Services.CreateScope())
+        {
+            var readDatabase = readScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            defaultVersion = (await readDatabase.ModelConfigs.AsNoTracking().SingleAsync(
+                item => item.Id == entity.Id,
+                TestContext.Current.CancellationToken)).Version;
+        }
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{entity.Id}/default",
+            new { isDefault = false, version = defaultVersion },
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.False(document.RootElement.GetProperty("isDefault").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("isEnabled").GetBoolean());
+    }
+
+    private async Task<ModelConfigEntity> SeedConfigurationAsync(string prefix, string type = "chat")
+    {
+        _factory.ChatClient.NextException = null;
+        _factory.EmbeddingClient.NextException = null;
+        var suffix = Guid.NewGuid().ToString("N");
+        var entity = new ModelConfigEntity
+        {
+            Name = $"{prefix}-{suffix}",
+            NormalizedName = $"{prefix}-{suffix}".ToUpperInvariant(),
+            Provider = "OpenAI compatible",
+            ConfigurationType = type,
+            BaseUrl = "https://provider.example.test",
+            Model = "model"
+        };
+        using var scope = _factory.Services.CreateScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        database.ModelConfigs.Add(entity);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return entity;
+    }
+
+    private static async Task<int> TestAndReadVersionAsync(HttpClient client, Guid id)
+    {
+        var response = await client.PostAsync(
+            $"/api/admin/model-configurations/{id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await ReadVersionAsync(response);
+    }
+
+    private static async Task SetDefaultAsync(HttpClient client, Guid id, bool isDefault, int version)
+    {
+        var response = await client.PostAsJsonAsync(
+            $"/api/admin/model-configurations/{id}/default",
+            new { isDefault, version },
+            TestContext.Current.CancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task<int> ReadVersionAsync(HttpResponseMessage response)
+    {
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        return document.RootElement.GetProperty("version").GetInt32();
+    }
+
+    private static async Task<string?> ReadCodeAsync(HttpResponseMessage response)
+    {
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        return document.RootElement.GetProperty("code").GetString();
+    }
+
     private static object CreateRequest(string name) => new
     {
         name,
@@ -356,6 +560,12 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
             foreach (var workTool in services.Where(service => service.ServiceType == typeof(IWorkToolClient)).ToArray()) services.Remove(workTool);
             services.AddSingleton<RecordingWorkToolClient>();
             services.AddSingleton<IWorkToolClient>(provider => provider.GetRequiredService<RecordingWorkToolClient>());
+            foreach (var chat in services.Where(service => service.ServiceType == typeof(IChatCompletionClient)).ToArray()) services.Remove(chat);
+            foreach (var embedding in services.Where(service => service.ServiceType == typeof(IEmbeddingClient)).ToArray()) services.Remove(embedding);
+            services.AddSingleton<RecordingChatCompletionClient>();
+            services.AddSingleton<IChatCompletionClient>(provider => provider.GetRequiredService<RecordingChatCompletionClient>());
+            services.AddSingleton<RecordingEmbeddingClient>();
+            services.AddSingleton<IEmbeddingClient>(provider => provider.GetRequiredService<RecordingEmbeddingClient>());
             services.AddAuthentication(options =>
                 {
                     options.DefaultAuthenticateScheme = "integration-admin";
@@ -365,6 +575,35 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
                 .AddScheme<AuthenticationSchemeOptions, IntegrationAdminAuthenticationHandler>("integration-admin", _ => { });
         });
     }
+
+    public RecordingChatCompletionClient ChatClient => Services.GetRequiredService<RecordingChatCompletionClient>();
+    public RecordingEmbeddingClient EmbeddingClient => Services.GetRequiredService<RecordingEmbeddingClient>();
+}
+
+public sealed class RecordingChatCompletionClient : IChatCompletionClient
+{
+    public Exception? NextException { get; set; }
+
+    public Task<ChatCompletionResponse> CompleteAsync(
+        ModelProviderConfiguration configuration,
+        ChatCompletionRequest request,
+        CancellationToken cancellationToken = default) =>
+        NextException is null
+            ? Task.FromResult(new ChatCompletionResponse("ok"))
+            : Task.FromException<ChatCompletionResponse>(NextException);
+}
+
+public sealed class RecordingEmbeddingClient : IEmbeddingClient
+{
+    public Exception? NextException { get; set; }
+
+    public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(
+        ModelProviderConfiguration configuration,
+        EmbeddingBatchRequest request,
+        CancellationToken cancellationToken = default) =>
+        NextException is null
+            ? Task.FromResult(new EmbeddingBatchResponse([[1f, 0f]]))
+            : Task.FromException<EmbeddingBatchResponse>(NextException);
 }
 
 public sealed class RecordingWorkToolClient : IWorkToolClient

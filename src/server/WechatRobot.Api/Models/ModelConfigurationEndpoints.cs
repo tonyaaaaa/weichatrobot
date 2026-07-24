@@ -15,6 +15,9 @@ public static class ModelConfigurationEndpoints
         group.MapGet("", ListAsync);
         group.MapPost("", CreateAsync);
         group.MapPut("{id:guid}", UpdateByIdAsync);
+        group.MapPost("{id:guid}/test-connection", TestConnectionByIdAsync);
+        group.MapPost("{id:guid}/enabled", SetEnabledAsync);
+        group.MapPost("{id:guid}/default", SetDefaultAsync);
         group.MapPut("{name}", UpsertAsync);
         group.MapPost("{name}/test-connection", TestConnectionAsync);
         return group;
@@ -64,6 +67,54 @@ public static class ModelConfigurationEndpoints
                 request.Version),
             cancellationToken);
 
+        return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
+    }
+
+    private static async Task<IResult> TestConnectionByIdAsync(
+        Guid id,
+        ModelConfigurationManager manager,
+        ModelConfigurationService service,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await manager.TestConnectionAsync(
+            id,
+            httpContext.User.Identity?.Name ?? "unknown",
+            cancellationToken);
+        return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)), service);
+    }
+
+    private static async Task<IResult> SetEnabledAsync(
+        Guid id,
+        SetEnabledRequest request,
+        ModelConfigurationManager manager,
+        ModelConfigurationService service,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await manager.SetEnabledAsync(
+            id,
+            request.Enabled,
+            request.Version,
+            httpContext.User.Identity?.Name ?? "unknown",
+            cancellationToken);
+        return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
+    }
+
+    private static async Task<IResult> SetDefaultAsync(
+        Guid id,
+        SetDefaultRequest request,
+        ModelConfigurationManager manager,
+        ModelConfigurationService service,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await manager.SetDefaultAsync(
+            id,
+            request.IsDefault,
+            request.Version,
+            httpContext.User.Identity?.Name ?? "unknown",
+            cancellationToken);
         return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
     }
 
@@ -129,7 +180,8 @@ public static class ModelConfigurationEndpoints
 
     private static IResult MapMutationResult(
         ModelConfigurationMutationResult result,
-        Func<ModelConfigEntity, IResult> onSuccess) =>
+        Func<ModelConfigEntity, IResult> onSuccess,
+        ModelConfigurationService? service = null) =>
         result.Status switch
         {
             ModelConfigurationMutationStatus.Success => onSuccess(result.Entity!),
@@ -145,6 +197,23 @@ public static class ModelConfigurationEndpoints
                 code = "model_concurrency_conflict",
                 message = "The model configuration was changed by another request."
             }),
+            ModelConfigurationMutationStatus.TestRequired => Results.Conflict(new
+            {
+                code = "model_test_required",
+                message = "A successful connection test is required for the current configuration."
+            }),
+            ModelConfigurationMutationStatus.DefaultDisableForbidden => Results.Conflict(new
+            {
+                code = "model_default_disable_forbidden",
+                message = "Select another default model before disabling this configuration."
+            }),
+            ModelConfigurationMutationStatus.DefaultConflict => Results.Conflict(new
+            {
+                code = "model_default_conflict",
+                message = "Another configuration became the default at the same time."
+            }),
+            ModelConfigurationMutationStatus.ProviderFailure when service is not null =>
+                Results.Json(ToResponse(result.Entity!, service), statusCode: StatusCodes.Status502BadGateway),
             _ => Results.Problem()
         };
 
@@ -165,6 +234,8 @@ public static class ModelConfigurationEndpoints
         string? ApiKey, int TimeoutSeconds, int MaxRetries);
     public sealed record UpdateModelConfigurationByIdRequest(string Name, string Provider, string ConfigurationType, string BaseUrl, string Model,
         string? ApiKey, int TimeoutSeconds, int MaxRetries, int Version);
+    public sealed record SetEnabledRequest(bool Enabled, int Version);
+    public sealed record SetDefaultRequest(bool IsDefault, int Version);
     public sealed record ModelConfigurationResponse(Guid Id, string Name, string Provider, string ConfigurationType, string BaseUrl, string Model,
         int TimeoutSeconds, int MaxRetries, bool IsEnabled, bool IsDefault, bool HasApiKey, string? LastFour,
         string ConnectionStatus, DateTime? LastTestedAtUtc, string? LastTestFailureSummary, int Version);
