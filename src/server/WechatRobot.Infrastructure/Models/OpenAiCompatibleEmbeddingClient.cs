@@ -50,7 +50,12 @@ public sealed class OpenAiCompatibleEmbeddingClient(HttpClient httpClient, ISecr
             {
                 Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
             };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secretProtector.Unprotect(configuration.EncryptedApiKey));
+            if (!string.IsNullOrWhiteSpace(configuration.EncryptedApiKey))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue(
+                    "Bearer",
+                    secretProtector.Unprotect(configuration.EncryptedApiKey));
+            }
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(configuration.Timeout);
             var response = await httpClient.SendAsync(request, timeout.Token);

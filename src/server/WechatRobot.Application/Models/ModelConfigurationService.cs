@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using WechatRobot.Application.Security;
 
 namespace WechatRobot.Application.Models;
@@ -16,10 +19,24 @@ public sealed class ModelConfigurationService(ISecretProtector secretProtector)
         return new ModelProviderConfiguration(
             record.BaseUrl,
             record.Model,
-            record.EncryptedApiKey ?? throw new InvalidOperationException($"Model configuration '{record.Name}' has no API key."),
+            record.EncryptedApiKey,
             TimeSpan.FromSeconds(record.TimeoutSeconds),
             record.MaxRetries);
     }
+
+    public string ComputeFingerprint(ModelConfigurationRecord record, string configurationType, int apiKeyVersion)
+    {
+        var canonical = string.Join(
+            '\n',
+            configurationType.Trim().ToUpperInvariant(),
+            record.Provider.Trim().ToUpperInvariant(),
+            record.BaseUrl.TrimEnd('/').ToUpperInvariant(),
+            record.Model.Trim(),
+            apiKeyVersion.ToString(CultureInfo.InvariantCulture));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    public string? ClearApiKey(string? existingEncryptedApiKey) => null;
 
     public ApiKeyMetadata GetApiKeyMetadata(string? encryptedApiKey)
     {

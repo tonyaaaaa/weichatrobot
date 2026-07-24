@@ -11,7 +11,7 @@ public interface IChatCompletionClient
 public sealed record ModelProviderConfiguration(
     string BaseUrl,
     string Model,
-    string EncryptedApiKey,
+    string? EncryptedApiKey,
     TimeSpan Timeout,
     int MaxRetries);
 
