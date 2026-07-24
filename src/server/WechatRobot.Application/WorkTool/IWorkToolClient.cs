@@ -42,6 +42,18 @@ public interface IWorkToolClient
         Guid robotConfigId,
         int type,
         CancellationToken cancellationToken);
+
+    [Obsolete("Use GetRobotAsync. This compatibility method is removed after P0 callers migrate.")]
+    Task<WorkToolSendResult> TestConnectionAsync(
+        Guid robotConfigId,
+        CancellationToken cancellationToken);
+
+    [Obsolete("Use BindEventCallbackAsync. This compatibility method is removed after P0 callers migrate.")]
+    Task<WorkToolSendResult> BindCallbackAsync(
+        Guid robotConfigId,
+        int type,
+        Uri callbackUrl,
+        CancellationToken cancellationToken);
 }
 
 public sealed record WorkToolSendRequest(
@@ -51,11 +63,25 @@ public sealed record WorkToolSendRequest(
     string IdempotencyKey,
     IReadOnlyList<string>? AtList = null);
 
+public record WorkToolSendResult(
+    bool Succeeded,
+    string? FailureReason,
+    bool DeliveryMayHaveOccurred = false)
+{
+    public static WorkToolSendResult Success() => new(true, null);
+
+    public static WorkToolSendResult Failed(
+        string reason,
+        bool deliveryMayHaveOccurred = false) =>
+        new(false, reason, deliveryMayHaveOccurred);
+}
+
 public sealed record WorkToolCommandSubmission(
     bool Accepted,
     string? MessageId,
     string? FailureCode,
-    bool DeliveryMayHaveOccurred);
+    bool DeliveryMayHaveOccurred)
+    : WorkToolSendResult(Accepted, FailureCode, DeliveryMayHaveOccurred);
 
 public sealed record WorkToolRobotSnapshot(
     bool Reachable,
@@ -101,4 +127,8 @@ public sealed record WorkToolGroupOperationRequest(
     WorkToolGroupOperationKind Kind,
     string GroupIdentifier,
     IReadOnlyList<string> MemberDisplayNames,
-    string? Value);
+    string? Value)
+{
+    [Obsolete("WorkTool selectList/removeList contain display names, not stable member IDs.")]
+    public IReadOnlyList<string> MemberIds => MemberDisplayNames;
+}

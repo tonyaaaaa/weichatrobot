@@ -215,6 +215,34 @@ public sealed class WorkToolClient(
         return await ReadMutationAsync(response, "delete_event_callback", cancellationToken);
     }
 
+    [Obsolete("Use GetRobotAsync.")]
+    public async Task<WorkToolSendResult> TestConnectionAsync(
+        Guid robotConfigId,
+        CancellationToken cancellationToken)
+    {
+        var result = await GetRobotAsync(robotConfigId, cancellationToken);
+        return result.Reachable
+            ? WorkToolSendResult.Success()
+            : WorkToolSendResult.Failed(result.FailureCode ?? "worktool_unreachable");
+    }
+
+    [Obsolete("Use BindEventCallbackAsync.")]
+    public async Task<WorkToolSendResult> BindCallbackAsync(
+        Guid robotConfigId,
+        int type,
+        Uri callbackUrl,
+        CancellationToken cancellationToken)
+    {
+        var result = await BindEventCallbackAsync(
+            robotConfigId,
+            type,
+            callbackUrl,
+            cancellationToken);
+        return result.Succeeded
+            ? WorkToolSendResult.Success()
+            : WorkToolSendResult.Failed(result.FailureCode ?? "worktool_callback_rejected");
+    }
+
     private async Task<WorkToolCommandSubmission> SendCommandAsync(
         string robotId,
         object command,
