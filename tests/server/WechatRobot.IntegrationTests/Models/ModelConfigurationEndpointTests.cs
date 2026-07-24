@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
@@ -16,6 +17,7 @@ using WechatRobot.Application.Models;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.IntegrationTests.Infrastructure;
 
 namespace WechatRobot.IntegrationTests.Models;
@@ -36,6 +38,8 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
             .ToArray();
 
         Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/");
+        Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/{id:guid}");
+        Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/{name}");
         Assert.All(routes, endpoint => Assert.Contains(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(), data => data.Policy == SystemRoles.Admin));
     }
 
@@ -128,6 +132,188 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
         Assert.True(document.RootElement.GetProperty("hasApiKey").GetBoolean());
         Assert.Equal("****", document.RootElement.GetProperty("lastFour").GetString());
     }
+
+    [Fact]
+    public async Task Create_trims_name_and_forces_disabled_untested_state()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"  Local Chat {suffix}  ",
+            provider = "OpenAI compatible",
+            configurationType = "CHAT",
+            baseUrl = "http://127.0.0.1:11434/",
+            model = "qwen",
+            apiKey = (string?)null,
+            timeoutSeconds = 30,
+            maxRetries = 0,
+            isEnabled = true,
+            isDefault = true
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var root = document.RootElement;
+        var id = root.GetProperty("id").GetGuid();
+        Assert.Equal($"Local Chat {suffix}", root.GetProperty("name").GetString());
+        Assert.Equal("chat", root.GetProperty("configurationType").GetString());
+        Assert.False(root.GetProperty("isEnabled").GetBoolean());
+        Assert.False(root.GetProperty("isDefault").GetBoolean());
+        Assert.Equal(ModelConnectionStatus.Untested, root.GetProperty("connectionStatus").GetString());
+        Assert.Equal(0, root.GetProperty("version").GetInt32());
+
+        using var scope = _factory.Services.CreateScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var stored = await database.ModelConfigs.SingleAsync(
+            item => item.Id == id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal($"LOCAL CHAT {suffix.ToUpperInvariant()}", stored.NormalizedName);
+    }
+
+    [Fact]
+    public async Task Update_by_id_can_rename_without_changing_identity()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var id = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.ModelConfigs.Add(new()
+            {
+                Id = id,
+                Name = $"before-{suffix}",
+                NormalizedName = $"BEFORE-{suffix.ToUpperInvariant()}",
+                Provider = "OpenAI compatible",
+                ConfigurationType = "chat",
+                BaseUrl = "https://provider.example.test",
+                Model = "old-model",
+                Version = 3
+            });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var response = await client.PutAsJsonAsync($"/api/admin/model-configurations/{id}", new
+        {
+            name = $"Renamed {suffix}",
+            provider = "OpenAI compatible",
+            configurationType = "chat",
+            baseUrl = "https://provider.example.test",
+            model = "new-model",
+            apiKey = (string?)null,
+            timeoutSeconds = 45,
+            maxRetries = 1,
+            version = 3
+        }, TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(id, document.RootElement.GetProperty("id").GetGuid());
+        Assert.Equal($"Renamed {suffix}", document.RootElement.GetProperty("name").GetString());
+        Assert.Equal(4, document.RootElement.GetProperty("version").GetInt32());
+    }
+
+    [Fact]
+    public async Task Create_rejects_normalized_name_conflict()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        using var client = _factory.CreateClient();
+        var first = await client.PostAsJsonAsync("/api/admin/model-configurations", CreateRequest($"Primary {suffix}"),
+            TestContext.Current.CancellationToken);
+        first.EnsureSuccessStatusCode();
+
+        var conflict = await client.PostAsJsonAsync("/api/admin/model-configurations", CreateRequest($" primary {suffix} "),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        using var document = JsonDocument.Parse(
+            await conflict.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("model_name_conflict", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Create_rejects_blank_name()
+    {
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/model-configurations",
+            CreateRequest(" "),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_rejects_name_longer_than_128_characters()
+    {
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/model-configurations",
+            CreateRequest(new string('x', 129)),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Update_rejects_stale_version()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var id = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.ModelConfigs.Add(new()
+            {
+                Id = id,
+                Name = $"stale-{suffix}",
+                NormalizedName = $"STALE-{suffix.ToUpperInvariant()}",
+                Provider = "OpenAI compatible",
+                ConfigurationType = "chat",
+                BaseUrl = "https://provider.example.test",
+                Model = "model",
+                Version = 2
+            });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var response = await client.PutAsJsonAsync($"/api/admin/model-configurations/{id}", new
+        {
+            name = $"stale-{suffix}",
+            provider = "OpenAI compatible",
+            configurationType = "chat",
+            baseUrl = "https://provider.example.test",
+            model = "model",
+            apiKey = (string?)null,
+            timeoutSeconds = 30,
+            maxRetries = 0,
+            version = 1
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("model_concurrency_conflict", document.RootElement.GetProperty("code").GetString());
+    }
+
+    private static object CreateRequest(string name) => new
+    {
+        name,
+        provider = "OpenAI compatible",
+        configurationType = "chat",
+        baseUrl = "https://provider.example.test",
+        model = "model",
+        apiKey = (string?)null,
+        timeoutSeconds = 30,
+        maxRetries = 0
+    };
 
 }
 

@@ -59,6 +59,7 @@ var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<RobotCredentialBackfillService>();
 builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddScoped<ModelConfigurationManager>();
 builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
