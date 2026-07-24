@@ -15,24 +15,25 @@ function Invoke-Captured([scriptblock]$Action) {
     finally { $InformationPreference = $oldPreference }
 }
 
-$robotId = "robot-secret-" + [Guid]::NewGuid().ToString("N")
+$robotConfigId = [Guid]::NewGuid()
+$bearerToken = "fake-operations-bearer-token"
 $preview = Invoke-Captured {
     & $callbackScript `
-        -TunnelUrl "https://example.trycloudflare.com" `
-        -CallbackToken "callback-secret" `
-        -WorkToolRobotId $robotId `
-        -WorkToolUpdateUri "http://127.0.0.1:1/fake"
+        -ApiBaseUrl "https://admin.example.test/" `
+        -RobotConfigId $robotConfigId `
+        -PublicBaseUrl "https://callbacks.example.test/" `
+        -BearerToken $bearerToken
 }
-Assert-True ($preview -notmatch [regex]::Escape($robotId)) "preview must never print the authoritative robot ID"
-Assert-True ($preview -match "\{robot-code\}") "preview must use a route placeholder"
-Assert-True ($preview -notmatch "callback-secret") "preview must redact the callback token"
+Assert-True ($preview -match [regex]::Escape($robotConfigId.ToString("D"))) "preview must identify only the internal robot configuration"
+Assert-True ($preview -match "configure message callback and command-result callback") "preview must name both callback actions"
+Assert-True ($preview -notmatch [regex]::Escape($bearerToken)) "preview must never print the bearer token"
 
-$badTunnelFailed = $false
+$badBaseFailed = $false
 try {
-    & $callbackScript -TunnelUrl "https://example.trycloudflare.com/base?x=1" -CallbackToken x `
-        -WorkToolRobotId $robotId -WorkToolUpdateUri "http://127.0.0.1:1/fake" | Out-Null
-} catch { $badTunnelFailed = $true }
-Assert-True $badTunnelFailed "tunnel URL with path/query must be rejected"
+    & $callbackScript -ApiBaseUrl "https://admin.example.test/base?x=1" -RobotConfigId $robotConfigId `
+        -PublicBaseUrl "https://callbacks.example.test/" -BearerToken $bearerToken | Out-Null
+} catch { $badBaseFailed = $true }
+Assert-True $badBaseFailed "API base URL with path/query must be rejected"
 
 $port = Get-Random -Minimum 22000 -Maximum 42000
 $listenerJob = Start-Job -ScriptBlock {
@@ -41,29 +42,41 @@ $listenerJob = Start-Job -ScriptBlock {
     $listener.Prefixes.Add("http://127.0.0.1:$Port/")
     $listener.Start()
     try {
-        $context = $listener.GetContext()
-        $reader = [IO.StreamReader]::new($context.Request.InputStream, $context.Request.ContentEncoding)
-        $body = $reader.ReadToEnd()
-        $payload = $body | ConvertFrom-Json
-        $responseBytes = [Text.Encoding]::UTF8.GetBytes('{"success":true}')
-        $context.Response.StatusCode = 200
-        $context.Response.ContentType = "application/json"
-        $context.Response.OutputStream.Write($responseBytes, 0, $responseBytes.Length)
-        $context.Response.Close()
-        [pscustomobject]@{ RobotId = $payload.robotId; CallbackUrl = $payload.callbackUrl }
+        1..2 | ForEach-Object {
+            $context = $listener.GetContext()
+            $reader = [IO.StreamReader]::new($context.Request.InputStream, $context.Request.ContentEncoding)
+            $body = $reader.ReadToEnd()
+            $reader.Dispose()
+            $path = $context.Request.Url.AbsolutePath
+            $authorization = $context.Request.Headers["Authorization"]
+            $responseBytes = [Text.Encoding]::UTF8.GetBytes('{"succeeded":true}')
+            $context.Response.StatusCode = 200
+            $context.Response.ContentType = "application/json"
+            $context.Response.OutputStream.Write($responseBytes, 0, $responseBytes.Length)
+            $context.Response.Close()
+            [pscustomobject]@{
+                Path = $path
+                Authorization = $authorization
+                Body = $body
+            }
+        }
     } finally { $listener.Stop() }
 } -ArgumentList $port
 try {
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 1000
     $applyOutput = Invoke-Captured {
-        & $callbackScript -TunnelUrl "https://example.trycloudflare.com" -CallbackToken "callback-secret" `
-            -WorkToolRobotId $robotId -WorkToolUpdateUri "http://127.0.0.1:$port/update" `
-            -Apply -Confirmation "UPDATE"
+        & $callbackScript -ApiBaseUrl "http://127.0.0.1:$port/" -RobotConfigId $robotConfigId `
+            -PublicBaseUrl "https://callbacks.example.test/" -BearerToken $bearerToken `
+            -Apply -Confirmation "APPLY"
     }
-    $received = Receive-Job -Job $listenerJob -Wait
-    Assert-True ($received.RobotId -eq $robotId) "fake endpoint must receive authoritative robot ID"
-    Assert-True ($received.CallbackUrl -match "/api/worktool/callback/$([regex]::Escape([uri]::EscapeDataString($robotId)))\?token=") "callback route must use authoritative robot ID"
-    Assert-True ($applyOutput -match "accepted") "business-success response must be accepted"
+    $received = @(Receive-Job -Job $listenerJob -Wait)
+    Assert-True ($received.Count -eq 2) "apply must call exactly two admin endpoints"
+    Assert-True ($received[0].Path -eq "/api/admin/worktool/robots/$($robotConfigId.ToString('D'))/message-callback/configure") "first call must configure the message callback"
+    Assert-True ($received[1].Path -eq "/api/admin/worktool/robots/$($robotConfigId.ToString('D'))/command-result-callback/configure") "second call must configure the command-result callback"
+    Assert-True (@($received | Where-Object { $_.Authorization -ne "Bearer $bearerToken" }).Count -eq 0) "bearer token must be sent only in the Authorization header"
+    Assert-True (@($received | Where-Object { $_.Body -match [regex]::Escape($bearerToken) }).Count -eq 0) "request bodies must not contain the bearer token"
+    Assert-True ($applyOutput -notmatch [regex]::Escape($bearerToken)) "apply output must not contain the bearer token"
+    Assert-True ($applyOutput -match "Command-result callback configuration accepted") "both callback configurations must be accepted"
 } finally {
     Remove-Job -Job $listenerJob -Force -ErrorAction SilentlyContinue
 }
@@ -76,20 +89,21 @@ $failureJob = Start-Job -ScriptBlock {
     $listener.Start()
     try {
         $context = $listener.GetContext()
-        $bytes = [Text.Encoding]::UTF8.GetBytes('{"success":false,"message":"rejected"}')
+        $bytes = [Text.Encoding]::UTF8.GetBytes('{"succeeded":false}')
         $context.Response.StatusCode = 200
+        $context.Response.ContentType = "application/json"
         $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
         $context.Response.Close()
     } finally { $listener.Stop() }
 } -ArgumentList $port
 try {
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 1000
     $rejected = $false
     try {
-        & $callbackScript -TunnelUrl "https://example.trycloudflare.com" -CallbackToken "callback-secret" `
-            -WorkToolRobotId $robotId -WorkToolUpdateUri "http://127.0.0.1:$port/update" `
-            -Apply -Confirmation "UPDATE" | Out-Null
-    } catch { $rejected = $_.Exception.Message -match "business success" }
+        & $callbackScript -ApiBaseUrl "http://127.0.0.1:$port/" -RobotConfigId $robotConfigId `
+            -PublicBaseUrl "https://callbacks.example.test/" -BearerToken $bearerToken `
+            -Apply -Confirmation "APPLY" | Out-Null
+    } catch { $rejected = $_.Exception.Message -match "did not report success" }
     Assert-True $rejected "HTTP 2xx without business success must be rejected"
     Receive-Job -Job $failureJob -Wait | Out-Null
 } finally {
