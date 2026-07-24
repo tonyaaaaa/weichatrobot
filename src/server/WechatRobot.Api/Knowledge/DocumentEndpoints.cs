@@ -1,4 +1,5 @@
 using WechatRobot.Application.Knowledge;
+using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Api.Security;
 
@@ -9,10 +10,45 @@ public static class DocumentEndpoints
     public static IEndpointRouteBuilder MapDocumentEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var documents = endpoints.MapGroup("/api/knowledge/documents").RequireAuthorization(SystemRoles.KnowledgeOperator);
+        documents.MapGet("", ListAsync);
+        documents.MapGet("/{documentId:guid}", DetailAsync);
+        documents.MapGet("/{documentId:guid}/versions", VersionsAsync);
         documents.MapPost("", UploadAsync).DisableAntiforgery().RequireRateLimiting(RateLimitPolicies.Upload);
         documents.MapPost("/{documentId:guid}/retry-upload", RetryAsync);
         documents.MapDelete("/{documentId:guid}/physical", RequestPhysicalDeleteAsync).RequireAuthorization(SystemRoles.Admin);
         return endpoints;
+    }
+
+    private static async Task<IResult> ListAsync(
+        KnowledgeDocumentAdministrationQuery queryService,
+        string? query,
+        string? status,
+        int page = 1,
+        int pageSize = 20,
+        CancellationToken cancellationToken = default) =>
+        Results.Ok(await queryService.ListAsync(
+            query,
+            status,
+            page,
+            pageSize,
+            cancellationToken));
+
+    private static async Task<IResult> DetailAsync(
+        Guid documentId,
+        KnowledgeDocumentAdministrationQuery queryService,
+        CancellationToken cancellationToken)
+    {
+        var detail = await queryService.GetAsync(documentId, cancellationToken);
+        return detail is null ? Results.NotFound() : Results.Ok(detail);
+    }
+
+    private static async Task<IResult> VersionsAsync(
+        Guid documentId,
+        KnowledgeDocumentAdministrationQuery queryService,
+        CancellationToken cancellationToken)
+    {
+        var detail = await queryService.GetAsync(documentId, cancellationToken);
+        return detail is null ? Results.NotFound() : Results.Ok(detail.Versions);
     }
 
     private static async Task<IResult> UploadAsync(HttpRequest request, DocumentUploadService service, CancellationToken cancellationToken)
