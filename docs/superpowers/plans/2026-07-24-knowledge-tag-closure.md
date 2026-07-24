@@ -52,6 +52,9 @@
 
 - Create `src/web/wechatrobot-admin/src/api/knowledgeTags.ts`
   - Typed management and selector API.
+  - Map UI filters to the backend query names `query`, `isEnabled`, and `isGlobalPublic`.
+- Create `src/web/wechatrobot-admin/src/api/knowledgeTags.spec.ts`
+  - Lock query-name mapping and versioned mutation routes.
 - Create `src/web/wechatrobot-admin/src/components/knowledge/KnowledgeTagSelector.vue`
   - Reusable enabled-tag multi-select.
 - Create `src/web/wechatrobot-admin/src/components/knowledge/KnowledgeTagSelector.spec.ts`
@@ -765,9 +768,13 @@ export const knowledgeTagApi: KnowledgeTagApi = {
   async list(params) {
     return (await apiClient.get<KnowledgeTagPage>('/api/knowledge/tags', {
       params: {
-        q: params.q || undefined,
-        state: params.state === 'all' ? undefined : params.state,
-        global: params.global === 'all' ? undefined : params.global,
+        query: params.q?.trim() || undefined,
+        isEnabled: params.state === 'all' || params.state === undefined
+          ? undefined
+          : params.state === 'enabled',
+        isGlobalPublic: params.global === 'all' || params.global === undefined
+          ? undefined
+          : params.global === 'global',
         page: params.page,
         pageSize: params.pageSize
       }
