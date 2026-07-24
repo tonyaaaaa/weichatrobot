@@ -33,8 +33,8 @@
 - Modify `src/server/WechatRobot.Application/Models/ModelConfigurationService.cs` to preserve/clear keys and calculate configuration fingerprints.
 - Modify `src/server/WechatRobot.Infrastructure/Models/OpenAiCompatibleChatClient.cs` to omit `Authorization` when no key exists.
 - Modify `src/server/WechatRobot.Infrastructure/Models/OpenAiCompatibleEmbeddingClient.cs` for the same optional-key behavior.
-- Modify `tests/server/WechatRobot.UnitTests/Models/OpenAiCompatibleModelClientTests.cs` with no-key request tests.
-- Modify `tests/server/WechatRobot.UnitTests/Models/ModelConfigurationServiceTests.cs` with fingerprint and key-version tests.
+- Create `tests/server/WechatRobot.UnitTests/Models/OpenAiCompatibleModelClientTests.cs` with no-key request tests.
+- Create `tests/server/WechatRobot.UnitTests/Models/ModelConfigurationServiceTests.cs` with fingerprint and key-version tests.
 
 ### Persistence
 
@@ -76,8 +76,8 @@
 - Modify: `src/server/WechatRobot.Application/Models/ModelConfigurationService.cs`
 - Modify: `src/server/WechatRobot.Infrastructure/Models/OpenAiCompatibleChatClient.cs`
 - Modify: `src/server/WechatRobot.Infrastructure/Models/OpenAiCompatibleEmbeddingClient.cs`
-- Modify: `tests/server/WechatRobot.UnitTests/Models/OpenAiCompatibleModelClientTests.cs`
-- Modify: `tests/server/WechatRobot.UnitTests/Models/ModelConfigurationServiceTests.cs`
+- Create: `tests/server/WechatRobot.UnitTests/Models/OpenAiCompatibleModelClientTests.cs`
+- Create: `tests/server/WechatRobot.UnitTests/Models/ModelConfigurationServiceTests.cs`
 
 **Interfaces:**
 
@@ -126,7 +126,7 @@ Use `ThrowingProtector` to prove the client does not attempt unprotect when the 
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-build -- --filter-class "*OpenAiCompatibleModelClientTests|*ModelConfigurationServiceTests"
+dotnet test --project tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --no-build -- --filter-class "WechatRobot.UnitTests.Models.OpenAiCompatibleModelClientTests" "WechatRobot.UnitTests.Models.ModelConfigurationServiceTests"
 ```
 
 Expected: FAIL because `EncryptedApiKey` is non-nullable, the clients always set `Authorization`, and `ComputeFingerprint` does not exist.
@@ -186,7 +186,7 @@ The fingerprint must not decrypt or include the API key.
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-class "*OpenAiCompatibleModelClientTests|*ModelConfigurationServiceTests"
+dotnet test --project tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-class "WechatRobot.UnitTests.Models.OpenAiCompatibleModelClientTests" "WechatRobot.UnitTests.Models.ModelConfigurationServiceTests"
 ```
 
 Expected: all selected tests PASS; recording handlers show no authorization header for null keys and unchanged bearer behavior for saved keys.
@@ -273,7 +273,7 @@ The first test intentionally proves names are globally unique across both types.
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*MigrationTests|*ModelConfigurationMySqlConstraintTests"
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Persistence.MigrationTests" "WechatRobot.IntegrationTests.Models.ModelConfigurationMySqlConstraintTests"
 ```
 
 Expected: FAIL because the new columns and constraints do not exist.
@@ -349,7 +349,7 @@ Rename the generated migration and its designer to the fixed
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*MigrationTests|*ModelConfigurationMySqlConstraintTests"
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Persistence.MigrationTests" "WechatRobot.IntegrationTests.Models.ModelConfigurationMySqlConstraintTests"
 ```
 
 Expected: all selected tests PASS on MySQL 8.4.
@@ -570,7 +570,7 @@ Also test:
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*ModelConfigurationEndpointTests|*ModelConfigurationMySqlConstraintTests"
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Models.ModelConfigurationEndpointTests" "WechatRobot.IntegrationTests.Models.ModelConfigurationMySqlConstraintTests"
 ```
 
 Expected: FAIL because connection state is not persisted and enable/default transition routes do not exist.
@@ -627,7 +627,7 @@ Retain `POST /{name}/test-connection` as a compatibility adapter.
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*ModelConfigurationEndpointTests|*ModelConfigurationMySqlConstraintTests"
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Models.ModelConfigurationEndpointTests" "WechatRobot.IntegrationTests.Models.ModelConfigurationMySqlConstraintTests"
 ```
 
 Expected: all selected tests PASS.
@@ -680,7 +680,7 @@ Assert.DoesNotContain(storedCiphertext, audit.SanitizedDetailJson, StringCompari
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*ModelConfigurationEndpointTests|*ConversationAuditQueryTests"
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Models.ModelConfigurationEndpointTests" "WechatRobot.IntegrationTests.Conversations.ConversationAuditQueryTests"
 ```
 
 Expected: FAIL because clear/delete endpoints, structured references, and model administration audits are absent.
@@ -741,7 +741,7 @@ group.MapDelete("{id:guid}", DeleteAsync);
 Run:
 
 ```powershell
-dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*ModelConfigurationEndpointTests|*ConversationAuditQueryTests"
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Models.ModelConfigurationEndpointTests" "WechatRobot.IntegrationTests.Conversations.ConversationAuditQueryTests"
 ```
 
 Expected: all selected tests PASS.
