@@ -20,7 +20,7 @@ public static class RealAcceptanceEvidenceVerifier
                 && root.TryGetProperty("kind", out var kind) && kind.GetString() == expected.Operation
                 && root.TryGetProperty("groupIdentifier", out var group) && group.GetString() == expected.GroupIdentifier
                 && root.TryGetProperty("memberCount", out var memberCount) && memberCount.GetInt32() == expected.MemberCount
-                && root.TryGetProperty("memberIdsHash", out var memberIdsHash) && memberIdsHash.GetString() == expected.MemberIdsHash
+                && root.TryGetProperty("memberDisplayNamesHash", out var memberDisplayNamesHash) && memberDisplayNamesHash.GetString() == expected.MemberDisplayNamesHash
                 && root.TryGetProperty("valueLength", out var valueLength) && valueLength.GetInt32() == expected.ValueLength
                 && root.TryGetProperty("valueHash", out var valueHash) && valueHash.GetString() == expected.ValueHash;
         }
@@ -99,7 +99,7 @@ public sealed record RealAcceptanceEvidenceSnapshot(
 
 public sealed record RealAcceptanceEvidence(string Condition, Guid AuditId, DateTime TimestampUtc);
 public sealed record RealOperationExpectation(Guid AuditId, string Status, int CommandNumber, Guid RobotConfigId,
-    string GroupIdentifier, string Operation, int MemberCount, string MemberIdsHash, int ValueLength, string ValueHash,
+    string GroupIdentifier, string Operation, int MemberCount, string MemberDisplayNamesHash, int ValueLength, string ValueHash,
     string OperatorName);
 
 public sealed class RealAcceptanceVerificationException(string code) : Exception(code)

@@ -80,7 +80,7 @@ public sealed class RealAcceptanceEvidenceVerifierTests
     }
 
     private static WorkToolOperationAuditEntity OperationAudit(Guid id, string operation, int command, string operatorName,
-        Guid robotId, string groupIdentifier, int memberCount, string memberIdsHash, int valueLength, string valueHash) => new()
+        Guid robotId, string groupIdentifier, int memberCount, string memberDisplayNamesHash, int valueLength, string valueHash) => new()
     {
         Id = id,
         Operation = operation,
@@ -88,7 +88,7 @@ public sealed class RealAcceptanceEvidenceVerifierTests
         OperatorName = operatorName,
         Status = "Succeeded",
         SanitizedRequestJson = $$"""
-            {"robotConfigId":"{{robotId:D}}","kind":"{{operation}}","groupIdentifier":"{{groupIdentifier}}","memberCount":{{memberCount}},"memberIdsHash":"{{memberIdsHash}}","valueLength":{{valueLength}},"valueHash":"{{valueHash}}"}
+            {"robotConfigId":"{{robotId:D}}","kind":"{{operation}}","groupIdentifier":"{{groupIdentifier}}","memberCount":{{memberCount}},"memberDisplayNamesHash":"{{memberDisplayNamesHash}}","valueLength":{{valueLength}},"valueHash":"{{valueHash}}"}
             """
     };
 

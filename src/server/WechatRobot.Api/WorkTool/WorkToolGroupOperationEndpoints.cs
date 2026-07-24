@@ -266,16 +266,42 @@ public static class WorkToolGroupOperationEndpoints
         });
 
     private static async Task<IResult> ListGroupsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) =>
-        Results.Ok(await database.GroupProfiles.AsNoTracking().OrderBy(group => group.Name).Select(group => new KnownGroupResponse(group.Id, group.RobotConfigId, group.ExternalGroupId, group.Name)).ToArrayAsync(cancellationToken));
+        Results.Ok(await database.GroupProfiles.AsNoTracking()
+            .OrderBy(group => group.Name)
+            .Select(group => new KnownGroupResponse(group.Id, group.RobotConfigId, group.Name, group.WorkToolGroupRemark))
+            .ToArrayAsync(cancellationToken));
 
     private static async Task<IResult> RegisterExistingGroupAsync(RegisterExistingGroupRequest request, WechatRobotDbContext database, CancellationToken cancellationToken)
     {
-        if (!request.ManualInvitationCompleted || string.IsNullOrWhiteSpace(request.ExternalGroupId) || string.IsNullOrWhiteSpace(request.Name))
+        var name = request.Name?.Trim();
+        var remark = string.IsNullOrWhiteSpace(request.WorkToolGroupRemark)
+            ? null
+            : request.WorkToolGroupRemark.Trim();
+        if (!request.ManualInvitationCompleted || string.IsNullOrWhiteSpace(name) ||
+            name.Length > 256 || remark?.Length > 256)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["group"] = ["A human must first invite the robot in Enterprise WeChat before registering an existing group."] });
         if (!await database.RobotConfigs.AnyAsync(robot => robot.Id == request.RobotConfigId && robot.IsEnabled, cancellationToken)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] });
-        var existing = await database.GroupProfiles.SingleOrDefaultAsync(group => group.RobotConfigId == request.RobotConfigId && group.ExternalGroupId == request.ExternalGroupId.Trim(), cancellationToken);
-        if (existing is null) { existing = new GroupProfileEntity { RobotConfigId = request.RobotConfigId, ExternalGroupId = request.ExternalGroupId.Trim(), Name = request.Name.Trim() }; database.GroupProfiles.Add(existing); await database.SaveChangesAsync(cancellationToken); }
-        return Results.Ok(new KnownGroupResponse(existing.Id, existing.RobotConfigId, existing.ExternalGroupId, existing.Name));
+        var matches = await database.GroupProfiles
+            .Where(group => group.RobotConfigId == request.RobotConfigId &&
+                            group.Name == name &&
+                            group.WorkToolGroupRemark == remark)
+            .Take(2)
+            .ToArrayAsync(cancellationToken);
+        if (matches.Length > 1)
+            return Results.Conflict(new { error = "More than one registered group has the same WorkTool name and remark." });
+        var existing = matches.SingleOrDefault();
+        if (existing is null)
+        {
+            existing = new GroupProfileEntity
+            {
+                RobotConfigId = request.RobotConfigId,
+                Name = name,
+                WorkToolGroupRemark = remark
+            };
+            database.GroupProfiles.Add(existing);
+            await database.SaveChangesAsync(cancellationToken);
+        }
+        return Results.Ok(new KnownGroupResponse(existing.Id, existing.RobotConfigId, existing.Name, existing.WorkToolGroupRemark));
     }
 
     private static async Task<IResult> ListOperationsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) => Results.Ok(await database.WorkToolOperationAudits.AsNoTracking().OrderByDescending(item => item.CreatedAtUtc).Take(100).Select(item => new AuditResponse(item.Id, item.Operation, item.WorkToolCommandNumber, item.Status, item.Result, item.CreatedAtUtc, item.SanitizedRequestJson)).ToArrayAsync(cancellationToken));
@@ -304,7 +330,7 @@ public static class WorkToolGroupOperationEndpoints
         var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(item => item.Id == request.Operation.RobotConfigId && item.IsEnabled, cancellationToken);
         if (robot is null) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Enabled robot was not found.")); await database.SaveChangesAsync(cancellationToken); return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] }); }
         confirmationRow!.ConsumedAtUtc = now; confirmationRow.Version++;
-        var audit = NewAudit(operatorName, operation.Kind, sanitized, "Queued", null);
+        var audit = NewAudit(operatorName, operation.Kind, sanitized, WorkToolCommandStatuses.Queued, null);
         audit.RobotConfigId = robot.Id;
         audit.EncryptedCommandJson = protector.Protect(JsonSerializer.Serialize(operation with { RobotConfigId = robot.Id }));
         database.WorkToolOperationAudits.Add(audit);
@@ -317,12 +343,12 @@ public static class WorkToolGroupOperationEndpoints
     private static bool TryBuild(GroupOperationRequest request, out WorkToolGroupOperationRequest operation, out string sanitized, out string? error)
     {
         operation = default!; sanitized = string.Empty; error = null;
-        if (!Enum.TryParse<WorkToolGroupOperationKind>(request.Kind, true, out var kind) || string.IsNullOrWhiteSpace(request.GroupIdentifier) || request.GroupIdentifier.Length > 256 || request.MemberIds.Count > 100 || request.MemberIds.Any(member => string.IsNullOrWhiteSpace(member) || member.Length > 128) || request.Value?.Length > 4000) { error = "Operation input is invalid."; return false; }
-        if (kind == WorkToolGroupOperationKind.Create && request.MemberIds.Count == 0) { error = "New groups require at least one member."; return false; }
-        if (kind is WorkToolGroupOperationKind.AddMembers or WorkToolGroupOperationKind.RemoveMembers && request.MemberIds.Count == 0) { error = "Member changes require at least one member."; return false; }
+        if (!Enum.TryParse<WorkToolGroupOperationKind>(request.Kind, true, out var kind) || string.IsNullOrWhiteSpace(request.GroupIdentifier) || request.GroupIdentifier.Length > 256 || request.MemberDisplayNames.Count > 100 || request.MemberDisplayNames.Any(member => string.IsNullOrWhiteSpace(member) || member.Length > 128) || request.Value?.Length > 4000) { error = "Operation input is invalid."; return false; }
+        if (kind == WorkToolGroupOperationKind.Create && request.MemberDisplayNames.Count == 0) { error = "New groups require at least one member."; return false; }
+        if (kind is WorkToolGroupOperationKind.AddMembers or WorkToolGroupOperationKind.RemoveMembers && request.MemberDisplayNames.Count == 0) { error = "Member changes require at least one member."; return false; }
         if (kind is WorkToolGroupOperationKind.Rename or WorkToolGroupOperationKind.UpdateAnnouncement && string.IsNullOrWhiteSpace(request.Value)) { error = "This operation requires a value."; return false; }
-        operation = new WorkToolGroupOperationRequest(request.RobotConfigId, kind, request.GroupIdentifier.Trim(), request.MemberIds.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
-        sanitized = JsonSerializer.Serialize(new { robotConfigId = request.RobotConfigId, kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberIds.Count, memberIdsHash = Hash(string.Join("\n", operation.MemberIds)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
+        operation = new WorkToolGroupOperationRequest(request.RobotConfigId, kind, request.GroupIdentifier.Trim(), request.MemberDisplayNames.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
+        sanitized = JsonSerializer.Serialize(new { robotConfigId = request.RobotConfigId, kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberDisplayNames.Count, memberDisplayNamesHash = Hash(string.Join("\n", operation.MemberDisplayNames)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
         return true;
     }
 
@@ -362,9 +388,12 @@ public static class WorkToolGroupOperationEndpoints
         bool ReplyAllEnabled,
         string? FailureCode);
     public sealed record RobotResponse(Guid Id, string Name, string RobotReference, bool IsEnabled);
-    public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string ExternalGroupId, string Name, bool ManualInvitationCompleted);
-    public sealed record KnownGroupResponse(Guid Id, Guid RobotConfigId, string ExternalGroupId, string Name);
-    public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberIds, string? Value) { public IReadOnlyList<string> MemberIds { get; init; } = MemberIds ?? []; }
+    public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string Name, string? WorkToolGroupRemark, bool ManualInvitationCompleted);
+    public sealed record KnownGroupResponse(Guid Id, Guid RobotConfigId, string Name, string? WorkToolGroupRemark);
+    public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberDisplayNames, string? Value)
+    {
+        public IReadOnlyList<string> MemberDisplayNames { get; init; } = MemberDisplayNames ?? [];
+    }
     public sealed record ExecuteOperationRequest(GroupOperationRequest Operation, string ConfirmationToken);
     public sealed record PreviewResponse(string SanitizedRequest, string ConfirmationToken, DateTime ExpiresAtUtc);
     public sealed record CommandStatusResponse(bool Succeeded, string Message, Guid? AuditId = null);

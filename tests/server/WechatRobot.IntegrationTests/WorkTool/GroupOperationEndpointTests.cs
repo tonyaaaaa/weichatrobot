@@ -18,6 +18,45 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
     public GroupOperationEndpointTests(ModelConfigurationApiFactory factory) => _factory = factory;
 
     [Fact]
+    public async Task Existing_group_registration_uses_name_and_optional_WorkTool_remark_without_a_fabricated_external_id()
+    {
+        var robot = new RobotConfigEntity
+        {
+            Name = $"robot-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"robot-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test"
+        };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.RobotConfigs.Add(robot);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        using var response = await client.PostAsJsonAsync("/api/admin/worktool/groups/register", new
+        {
+            robotConfigId = robot.Id,
+            name = "技术支持群",
+            workToolGroupRemark = "support-east",
+            manualInvitationCompleted = true
+        }, TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("技术支持群", document.RootElement.GetProperty("name").GetString());
+        Assert.Equal("support-east", document.RootElement.GetProperty("workToolGroupRemark").GetString());
+        Assert.False(document.RootElement.TryGetProperty("externalGroupId", out _));
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var saved = await verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().GroupProfiles
+            .SingleAsync(group => group.RobotConfigId == robot.Id && group.Name == "技术支持群",
+                TestContext.Current.CancellationToken);
+        Assert.Null(saved.ExternalGroupId);
+        Assert.Equal("support-east", saved.WorkToolGroupRemark);
+    }
+
+    [Fact]
     public async Task Changed_confirmation_payload_is_rejected_and_audited_without_raw_announcement()
     {
         var robot = new RobotConfigEntity { Name = $"robot-{Guid.NewGuid():N}", WorkToolRobotId = $"robot-{Guid.NewGuid():N}", CallbackSecretHash = "test" };
@@ -27,7 +66,7 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
             database.RobotConfigs.Add(robot);
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
-        var initial = new { robotConfigId = robot.Id, kind = "UpdateAnnouncement", groupIdentifier = "group-1", memberIds = Array.Empty<string>(), value = "first private announcement" };
+        var initial = new { robotConfigId = robot.Id, kind = "UpdateAnnouncement", groupIdentifier = "group-1", memberDisplayNames = Array.Empty<string>(), value = "first private announcement" };
         using var client = _factory.CreateClient();
         var robots = await client.GetStringAsync("/api/admin/worktool/robots", TestContext.Current.CancellationToken);
         Assert.DoesNotContain(robot.WorkToolRobotId, robots, StringComparison.Ordinal);
@@ -39,7 +78,7 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
 
         var execute = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new
         {
-            operation = new { robotConfigId = robot.Id, kind = "UpdateAnnouncement", groupIdentifier = "group-1", memberIds = Array.Empty<string>(), value = "changed private announcement" }, confirmationToken
+            operation = new { robotConfigId = robot.Id, kind = "UpdateAnnouncement", groupIdentifier = "group-1", memberDisplayNames = Array.Empty<string>(), value = "changed private announcement" }, confirmationToken
         }, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, execute.StatusCode);
@@ -82,9 +121,9 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         failed.EnsureSuccessStatusCode();
         using var verifyScope = _factory.Services.CreateScope();
         var audits = await verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().WorkToolOperationAudits.OrderBy(item => item.CreatedAtUtc).ToArrayAsync(TestContext.Current.CancellationToken);
-        Assert.Contains(audits, item => item.Id == successAuditId && item.Status == "Queued"
+        Assert.Contains(audits, item => item.Id == successAuditId && item.Status == WorkToolCommandStatuses.Queued
             && item.OperatorName == "model-admin" && item.WorkToolCommandNumber == 207);
-        Assert.Contains(audits, item => item.Status == "Queued" && item.EncryptedCommandJson != null);
+        Assert.Contains(audits, item => item.Status == WorkToolCommandStatuses.Queued && item.EncryptedCommandJson != null);
         Assert.Contains(audits, item => item.Status == "Rejected");
         var auditResponse = await client.GetStringAsync("/api/admin/worktool/group-operations", TestContext.Current.CancellationToken);
         Assert.Contains("\"workToolCommandNumber\":207", auditResponse, StringComparison.Ordinal);
@@ -142,12 +181,12 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         var create = new
         {
             robotConfigId = robot.Id, kind = "Create", groupIdentifier = "group-exact",
-            memberIds = new[] { "member-b", "member-a" }, value = "private announcement"
+            memberDisplayNames = new[] { "member-b", "member-a" }, value = "private announcement"
         };
         var rename = new
         {
             robotConfigId = robot.Id, kind = "Rename", groupIdentifier = "group-exact",
-            memberIds = Array.Empty<string>(), value = "renamed exact"
+            memberDisplayNames = Array.Empty<string>(), value = "renamed exact"
         };
 
         var createAuditId = await ExecuteAsync(client, create);
@@ -168,7 +207,7 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         Assert.DoesNotContain("renamed exact", renameAudit.SanitizedRequestJson, StringComparison.Ordinal);
     }
 
-    private static object Operation(Guid robotId, string kind, string value) => new { robotConfigId = robotId, kind, groupIdentifier = "group-1", memberIds = Array.Empty<string>(), value };
+    private static object Operation(Guid robotId, string kind, string value) => new { robotConfigId = robotId, kind, groupIdentifier = "group-1", memberDisplayNames = Array.Empty<string>(), value };
     private static async Task<string> PreviewAsync(HttpClient client, Guid robotId, string kind, string value)
     {
         var response = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/preview", Operation(robotId, kind, value), TestContext.Current.CancellationToken);
@@ -188,9 +227,9 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         return executeDocument.RootElement.GetProperty("auditId").GetGuid();
     }
     private static void AssertAudit(WorkToolOperationAuditEntity audit, string operation, int command, Guid robotId,
-        string groupIdentifier, int memberCount, string memberIdsHash, string value)
+        string groupIdentifier, int memberCount, string memberDisplayNamesHash, string value)
     {
-        Assert.Equal("Queued", audit.Status);
+        Assert.Equal(WorkToolCommandStatuses.Queued, audit.Status);
         Assert.Equal("model-admin", audit.OperatorName);
         Assert.Equal(operation, audit.Operation);
         Assert.Equal(command, audit.WorkToolCommandNumber);
@@ -200,7 +239,7 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         Assert.Equal(operation, root.GetProperty("kind").GetString());
         Assert.Equal(groupIdentifier, root.GetProperty("groupIdentifier").GetString());
         Assert.Equal(memberCount, root.GetProperty("memberCount").GetInt32());
-        Assert.Equal(memberIdsHash, root.GetProperty("memberIdsHash").GetString());
+        Assert.Equal(memberDisplayNamesHash, root.GetProperty("memberDisplayNamesHash").GetString());
         Assert.Equal(value.Length, root.GetProperty("valueLength").GetInt32());
         Assert.Equal(Hash(value), root.GetProperty("valueHash").GetString());
     }
