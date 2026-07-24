@@ -143,6 +143,8 @@ builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"));
 builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
 builder.Services.AddScoped<RobotCallbackConfigurationService>();
+builder.Services.AddScoped<IWorkToolCommandResultStore, EfWorkToolCommandResultStore>();
+builder.Services.AddScoped<WorkToolCommandResultProcessor>();
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
     {

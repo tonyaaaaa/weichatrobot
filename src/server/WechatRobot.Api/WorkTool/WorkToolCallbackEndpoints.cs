@@ -17,7 +17,55 @@ public static class WorkToolCallbackEndpoints
         endpoints.MapPost("/api/worktool/config-callback/{robotCode}", HandleConfigurationCallbackAsync)
             .AllowAnonymous()
             .RequireRateLimiting(WorkToolCallbackRateLimitPolicy.Name);
+        endpoints.MapPost("/api/worktool/command-results/{robotCode}", HandleCommandResultAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting(WorkToolCallbackRateLimitPolicy.Name);
         return endpoints;
+    }
+
+    private static async Task<IResult> HandleCommandResultAsync(
+        string robotCode,
+        string? token,
+        WorkToolCommandResultDto result,
+        WechatRobotDbContext database,
+        WorkToolCommandResultProcessor processor,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("WorkToolCommandResultCallback");
+        if (!WorkToolCallbackDto.IsIdentifierWithinLimit(robotCode))
+            return Results.BadRequest();
+
+        var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(
+            config => config.CallbackRouteCode == robotCode && config.IsEnabled,
+            cancellationToken);
+        if (robot is null || !WorkToolCallbackSecretVerifier.Matches(
+                token,
+                robot.CallbackSecretHash,
+                robot.PreviousCallbackSecretHash,
+                robot.PreviousCallbackSecretExpiresAtUtc,
+                DateTime.UtcNow))
+        {
+            logger.LogWarning("WorkTool command-result callback rejected: authentication failed.");
+            return Results.Unauthorized();
+        }
+
+        if (!result.IsValid(out var reason))
+        {
+            logger.LogWarning("WorkTool command-result callback rejected: {Reason}.", reason);
+            return Results.BadRequest();
+        }
+
+        try
+        {
+            await processor.ProcessAsync(robot.Id, result, cancellationToken);
+            return Results.Json(new WorkToolCallbackAcceptedResponse());
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogError("WorkTool command-result callback persistence failed.");
+            return Results.StatusCode(StatusCodes.Status500InternalServerError);
+        }
     }
 
     private static async Task<IResult> HandleConfigurationCallbackAsync(
