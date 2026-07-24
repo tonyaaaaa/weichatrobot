@@ -810,16 +810,46 @@ public sealed class RecordingWorkToolClient : IWorkToolClient
 {
     public int GroupOperationCalls { get; private set; }
     public WorkToolCommandSubmission NextGroupOperationResult { get; set; } = Accepted("fake-group-command");
+    public WorkToolMessageCallbackConfiguration NextMessageCallbackResult { get; set; } = new(true, true, true, null);
+    public WorkToolCallbackMutationResult NextCallbackMutationResult { get; set; } = new(true, null);
+    public WorkToolMessageCallbackRequest? LastMessageCallbackRequest { get; private set; }
+    public Uri? LastEventCallbackUrl { get; private set; }
+    public int? LastEventCallbackType { get; private set; }
     public Task<WorkToolCommandSubmission> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => Task.FromResult(Accepted("fake-send-command"));
     public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
     public Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
     public Task<WorkToolCommandSubmission> ExecuteGroupOperationAsync(WorkToolGroupOperationRequest request, CancellationToken cancellationToken) { GroupOperationCalls++; return Task.FromResult(NextGroupOperationResult); }
+    public Task<WorkToolMessageCallbackConfiguration> ConfigureMessageCallbackAsync(Guid robotConfigId, WorkToolMessageCallbackRequest request, CancellationToken cancellationToken)
+    {
+        LastMessageCallbackRequest = request;
+        return Task.FromResult(NextMessageCallbackResult);
+    }
+    public Task<WorkToolCallbackMutationResult> BindEventCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken)
+    {
+        LastEventCallbackType = type;
+        LastEventCallbackUrl = callbackUrl;
+        return Task.FromResult(NextCallbackMutationResult);
+    }
+    public Task<IReadOnlyList<WorkToolEventCallbackRegistration>> ListEventCallbacksAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<WorkToolEventCallbackRegistration>>(
+            LastEventCallbackUrl is null ? [] : [new(LastEventCallbackType ?? 1, LastEventCallbackUrl.AbsoluteUri)]);
+    public Task<WorkToolCallbackMutationResult> DeleteEventCallbackAsync(Guid robotConfigId, int type, CancellationToken cancellationToken) =>
+        Task.FromResult(NextCallbackMutationResult);
+    public Task<WorkToolRobotSnapshot> GetRobotAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
+        Task.FromResult(new WorkToolRobotSnapshot(true, "fake-robot-id", true, true, null));
+    public Task<WorkToolOnlineSnapshot> GetOnlineAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
+        Task.FromResult(new WorkToolOnlineSnapshot(null, null));
     public void Reset(WorkToolSendResult? next = null)
     {
         GroupOperationCalls = 0;
         NextGroupOperationResult = next is null || next.Succeeded
             ? Accepted("fake-group-command")
             : new(false, null, next.FailureReason, next.DeliveryMayHaveOccurred);
+        NextMessageCallbackResult = new(true, true, true, null);
+        NextCallbackMutationResult = new(true, null);
+        LastMessageCallbackRequest = null;
+        LastEventCallbackUrl = null;
+        LastEventCallbackType = null;
     }
     private static WorkToolCommandSubmission Accepted(string messageId) => new(true, messageId, null, false);
 }

@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -62,7 +60,12 @@ public static class WorkToolCallbackEndpoints
         try
         {
             var robot = await database.RobotConfigs.SingleOrDefaultAsync(config => config.CallbackRouteCode == robotCode && config.IsEnabled, ingestionToken);
-            if (robot is null || !SecretMatches(token, robot.CallbackSecretHash))
+            if (robot is null || !WorkToolCallbackSecretVerifier.Matches(
+                    token,
+                    robot.CallbackSecretHash,
+                    robot.PreviousCallbackSecretHash,
+                    robot.PreviousCallbackSecretExpiresAtUtc,
+                    DateTime.UtcNow))
             {
                 logger.LogWarning("WorkTool callback rejected: authentication failed.");
                 return Results.Unauthorized();
@@ -88,25 +91,6 @@ public static class WorkToolCallbackEndpoints
         }
 
         return Results.Json(new WorkToolCallbackAcceptedResponse());
-    }
-
-    private static bool SecretMatches(string? submittedSecret, string storedHash)
-    {
-        if (string.IsNullOrWhiteSpace(submittedSecret) || string.IsNullOrWhiteSpace(storedHash))
-        {
-            return false;
-        }
-
-        try
-        {
-            var submittedHash = SHA256.HashData(Encoding.UTF8.GetBytes(submittedSecret));
-            var configuredHash = Convert.FromHexString(storedHash);
-            return configuredHash.Length == submittedHash.Length && CryptographicOperations.FixedTimeEquals(submittedHash, configuredHash);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
     }
 
     private sealed class WorkToolCallbackAcceptedResponse

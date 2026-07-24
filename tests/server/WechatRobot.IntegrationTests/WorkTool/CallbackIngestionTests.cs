@@ -58,6 +58,12 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         Assert.DoesNotContain(marker, stored.WorkToolRobotId, StringComparison.Ordinal);
         Assert.NotEqual(marker, stored.CallbackRouteCode);
         Assert.Equal(48, stored.CallbackRouteCode!.Length);
+        Assert.Null(stored.EncryptedCallbackSecret);
+        Assert.Equal("test", stored.CallbackSecretHash);
+        Assert.Equal(1, await verifyDatabase.AdministrationAudits.AsNoTracking().CountAsync(
+            audit => audit.TargetId == robotId.ToString("D") &&
+                     audit.Action == "worktool.callback-credential.rotation-required",
+            TestContext.Current.CancellationToken));
     }
 
     [Fact]
