@@ -2,9 +2,18 @@
 import { computed, onMounted, ref } from 'vue';
 import { ElAlert, ElButton, ElEmpty, ElInput, ElSkeleton, ElTag } from 'element-plus';
 import { knowledgeApi, type IndexStatus, type KnowledgeApi, type PreviewItem, type PreviewSet } from '../../api/knowledge';
-import { parseKnowledgeTagIds } from '../../utils/knowledgeTagIds';
+import { knowledgeTagApi, type KnowledgeTagApi } from '../../api/knowledgeTags';
+import KnowledgeTagSelector from '../../components/knowledge/KnowledgeTagSelector.vue';
 
-const props = withDefaults(defineProps<{ documentId: string; versionId: string; api?: KnowledgeApi }>(), { api: () => knowledgeApi });
+const props = withDefaults(defineProps<{
+  documentId: string;
+  versionId: string;
+  api?: KnowledgeApi;
+  tagApi?: Pick<KnowledgeTagApi, 'options'>;
+}>(), {
+  api: () => knowledgeApi,
+  tagApi: () => knowledgeTagApi
+});
 const loading = ref(true);
 const busy = ref(false);
 const error = ref('');
@@ -13,7 +22,7 @@ const revision = ref(0);
 const previews = ref<PreviewItem[]>([]);
 const drafts = ref<Record<string, string>>({});
 const selected = ref<string[]>([]);
-const tagText = ref('');
+const selectedTagIds = ref<string[]>([]);
 const tagError = ref('');
 const indexStatus = ref<IndexStatus>({
   documentId: props.documentId, documentStatus: 'unknown', approvedChunkCount: 0,
@@ -100,15 +109,21 @@ async function approve() {
   catch { error.value = '批准失败，可能存在并发修改，请刷新后重试。'; } finally { busy.value = false; }
 }
 async function queueIndex() {
-  const parsed = parseKnowledgeTagIds(tagText.value, '建立索引时至少填写一个有效的知识标签 ID。');
-  tagError.value = parsed.error;
-  if (tagError.value) return;
+  if (selectedTagIds.value.length === 0) {
+    tagError.value = '建立索引时至少选择一个已启用的知识标签。';
+    return;
+  }
   busy.value = true; error.value = '';
   try {
-    await props.api.queueIndex(props.documentId, props.versionId, parsed.tagIds, isActive.value);
+    await props.api.queueIndex(
+      props.documentId,
+      props.versionId,
+      selectedTagIds.value,
+      isActive.value
+    );
     indexStatus.value = await props.api.getIndexStatus(props.documentId);
     notice.value = '索引任务已排队。';
-  } catch { error.value = '索引任务提交失败，请检查标签 ID 和文档状态。'; } finally { busy.value = false; }
+  } catch { error.value = '索引任务提交失败，请检查所选标签和文档状态。'; } finally { busy.value = false; }
 }
 onMounted(load);
 </script>
@@ -123,9 +138,15 @@ onMounted(load);
         <div class="section-heading"><div><h2>索引状态</h2><p>文档状态：<ElTag effect="plain">{{ indexStatus.documentStatus }}</ElTag> · 一致性：{{ indexStatus.consistency }}</p><p v-if="latestFailedJob" class="helper">最近失败任务：{{ latestFailedJob.operation }}，已尝试 {{ latestFailedJob.attemptCount }} 次<span v-if="latestFailedJob.failureReason"> · {{ latestFailedJob.failureReason }}</span></p></div>
           <div class="actions"><ElButton v-if="latestFailedJob" data-testid="retry-index" :disabled="busy" @click="retry">重试索引</ElButton><ElButton data-testid="queue-index" type="primary" :loading="busy" @click="queueIndex">{{ isActive ? '重新索引' : '建立索引' }}</ElButton></div>
         </div>
-        <label for="index-tag-ids">知识标签 ID（必填）</label>
-        <ElInput id="index-tag-ids" v-model="tagText" :aria-invalid="Boolean(tagError)" aria-describedby="index-tag-help index-tag-error" @input="tagError = ''" />
-        <p id="index-tag-help" class="helper">当前页面尚未提供标签列表，请手动填写已启用标签的 UUID；多个标签用逗号分隔，重复 ID 会自动去除。</p>
+        <label>知识标签（必填）</label>
+        <KnowledgeTagSelector
+          v-model="selectedTagIds"
+          :api="tagApi"
+          required
+          aria-label="索引知识标签"
+          @update:model-value="tagError = ''"
+        />
+        <p class="helper">可选择一个或多个已启用标签，多个标签按任一匹配（OR）参与检索。</p>
         <p v-if="tagError" id="index-tag-error" data-testid="index-tag-error" class="field-error" role="alert">{{ tagError }}</p>
       </section>
       <section class="panel">

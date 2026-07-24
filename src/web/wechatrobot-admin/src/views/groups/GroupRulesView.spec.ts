@@ -96,4 +96,24 @@ describe('GroupRulesView', () => {
     expect(wrapper.text()).toContain('已禁用，移除后不可重新添加');
     expect(api.updateConfiguration).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ boundTagIds: [] }));
   });
+
+  it('keeps a disabled bound tag removable but prevents selecting a disabled unbound tag', async () => {
+    api.getConfiguration.mockResolvedValue({
+      rules: { include: [], exclude: [] },
+      boundTagIds: ['disabled-bound'],
+      availableTags: [
+        { id: 'disabled-bound', name: '历史标签', isGlobalPublic: false, isEnabled: false, isBound: true },
+        { id: 'disabled-unbound', name: '停用标签', isGlobalPublic: false, isEnabled: false, isBound: false }
+      ],
+      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
+    });
+    const wrapper = mount(GroupRulesView, {
+      props: { groupId: '00000000-0000-0000-0000-000000000801', api }
+    });
+    await Promise.resolve();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="tag-disabled-bound"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.get('[data-testid="tag-disabled-unbound"]').attributes('disabled')).toBeDefined();
+  });
 });
