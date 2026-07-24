@@ -15,10 +15,11 @@ public sealed class RobotCredentialBackfillService(
             ? await database.Database.BeginTransactionAsync(cancellationToken)
             : null;
         var robots = await database.RobotConfigs
-            .Where(robot =>
-                robot.EncryptedWorkToolRobotId == null ||
-                robot.CallbackRouteCode == null ||
-                robot.EncryptedCallbackSecret == null)
+            .Where(robot => robot.EncryptedWorkToolRobotId == null || robot.CallbackRouteCode == null)
+            .ToArrayAsync(cancellationToken);
+        var callbackRotationCandidates = await database.RobotConfigs
+            .Where(robot => robot.EncryptedCallbackSecret == null)
+            .Select(robot => robot.Id)
             .ToArrayAsync(cancellationToken);
         var alreadyFlagged = (await database.AdministrationAudits.AsNoTracking()
                 .Where(audit => audit.Action == "worktool.callback-credential.rotation-required")
@@ -36,15 +37,17 @@ public sealed class RobotCredentialBackfillService(
             }
 #pragma warning restore CS0618
             robot.CallbackRouteCode ??= Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(robot.EncryptedCallbackSecret) &&
-                alreadyFlagged.Add(robot.Id.ToString("D")))
+        }
+        foreach (var robotId in callbackRotationCandidates)
+        {
+            if (alreadyFlagged.Add(robotId.ToString("D")))
             {
                 database.AdministrationAudits.Add(new()
                 {
                     Actor = "system",
                     Action = "worktool.callback-credential.rotation-required",
                     TargetType = "RobotConfig",
-                    TargetId = robot.Id.ToString("D"),
+                    TargetId = robotId.ToString("D"),
                     SanitizedDetailJson = "{}"
                 });
             }
