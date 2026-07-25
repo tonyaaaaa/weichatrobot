@@ -3,7 +3,76 @@ import { apiClient } from './http';
 export interface Page<T> { items: T[]; total: number; page: number; pageSize: number }
 export interface UploadResult {
   documentId: string; versionId: string; version: number; state: string; safeFileName: string;
-  publicUrl: string; publicReadWarning: string;
+  publicUrl: string | null; publicReadWarning: string;
+}
+export interface KnowledgeDocumentSummary {
+  id: string;
+  title: string;
+  status: string;
+  stateVersion: number;
+  activeVersionId: string | null;
+  versionCount: number;
+  latestVersionId: string | null;
+  latestVersion: number | null;
+  latestVersionStatus: string | null;
+  latestFailureReason: string | null;
+  canRetryUpload: boolean;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+export interface KnowledgeDocumentPage {
+  items: KnowledgeDocumentSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+export interface KnowledgeDocumentJobSummary {
+  id: string;
+  jobType: string;
+  status: string;
+  attemptCount: number;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+export interface KnowledgeDocumentIndexJobSummary {
+  id: string;
+  operation: string;
+  status: string;
+  attemptCount: number;
+  hasFailure: boolean;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+export interface KnowledgeDocumentVersionSummary {
+  id: string;
+  version: number;
+  originalFileName: string;
+  safeFileName: string;
+  contentType: string;
+  sizeBytes: number;
+  status: string;
+  failureReason: string | null;
+  isPublished: boolean;
+  hasPublicObject: boolean;
+  previewRevision: number;
+  previewCount: number;
+  approvedChunkCount: number;
+  ocrPageCount: number;
+  ocrFailedPageCount: number;
+  uploadAndParseJobs: KnowledgeDocumentJobSummary[];
+  indexJobs: KnowledgeDocumentIndexJobSummary[];
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+export interface KnowledgeDocumentDetail {
+  document: KnowledgeDocumentSummary;
+  versions: KnowledgeDocumentVersionSummary[];
+}
+export interface KnowledgeDocumentListRequest {
+  query?: string;
+  status?: string;
+  page: number;
+  pageSize: number;
 }
 export interface PreviewItem { id: string; sequence: number; text: string; pageNumber?: number; status?: string }
 export interface PreviewSet { versionId: string; revision: number; items: PreviewItem[] }
@@ -31,6 +100,12 @@ export interface CandidateDetail extends CandidateSummary { answer: string; evid
 
 export interface KnowledgeApi {
   upload(file: File, onProgress: (value: number) => void): Promise<UploadResult>;
+  listDocuments(request: KnowledgeDocumentListRequest): Promise<KnowledgeDocumentPage>;
+  getDocument(documentId: string): Promise<KnowledgeDocumentDetail>;
+  getDocumentVersions(documentId: string): Promise<KnowledgeDocumentVersionSummary[]>;
+  retryDocumentUpload(documentId: string, expectedStateVersion: number): Promise<UploadResult>;
+  disableDocument(documentId: string, expectedStateVersion: number): Promise<void>;
+  requestPhysicalDelete(documentId: string, expectedStateVersion: number): Promise<void>;
   getPreviews(versionId: string): Promise<PreviewSet | PreviewItem[]>;
   generatePreviews(versionId: string, revision: number): Promise<PreviewSet>;
   editPreview(versionId: string, previewId: string, text: string, revision: number): Promise<PreviewSet>;
@@ -50,6 +125,44 @@ export const knowledgeApi: KnowledgeApi = {
       onUploadProgress: event => onProgress(event.total ? Math.round(event.loaded * 100 / event.total) : 0)
     });
     return response.data;
+  },
+  async listDocuments(request) {
+    return (await apiClient.get<KnowledgeDocumentPage>('/api/knowledge/documents', {
+      params: {
+        query: request.query || undefined,
+        status: request.status || undefined,
+        page: request.page,
+        pageSize: request.pageSize
+      }
+    })).data;
+  },
+  async getDocument(documentId) {
+    return (await apiClient.get<KnowledgeDocumentDetail>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}`
+    )).data;
+  },
+  async getDocumentVersions(documentId) {
+    return (await apiClient.get<KnowledgeDocumentVersionSummary[]>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}/versions`
+    )).data;
+  },
+  async retryDocumentUpload(documentId, expectedStateVersion) {
+    return (await apiClient.post<UploadResult>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}/retry-upload`,
+      { expectedStateVersion }
+    )).data;
+  },
+  async disableDocument(documentId, expectedStateVersion) {
+    await apiClient.post(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}/disable`,
+      { expectedStateVersion }
+    );
+  },
+  async requestPhysicalDelete(documentId, expectedStateVersion) {
+    await apiClient.delete(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}/physical`,
+      { params: { expectedStateVersion } }
+    );
   },
   async getPreviews(versionId) { return (await apiClient.get(`/api/knowledge/versions/${versionId}/previews`)).data; },
   async generatePreviews(versionId, expectedRevision) {

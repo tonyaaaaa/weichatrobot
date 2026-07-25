@@ -24,6 +24,17 @@ function createTagOptionsApi(ids: string[]) {
   };
 }
 
+function createDocumentAdministrationApiStubs() {
+  return {
+    listDocuments: vi.fn(),
+    getDocument: vi.fn(),
+    getDocumentVersions: vi.fn(),
+    retryDocumentUpload: vi.fn(),
+    disableDocument: vi.fn(),
+    requestPhysicalDelete: vi.fn()
+  };
+}
+
 describe('Task 16 operational pages', () => {
   it('shows upload progress, upload errors, DOC conversion guidance and the public OSS warning', async () => {
     const api = {
@@ -84,6 +95,7 @@ describe('Task 16 operational pages', () => {
       ]
     };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ revision: 3, items: [preview, secondPreview] }),
       getIndexStatus: vi.fn().mockResolvedValue(failedStatus),
@@ -137,6 +149,7 @@ describe('Task 16 operational pages', () => {
     const firstTag = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const secondTag = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ revision: 1, items: [] }),
       getIndexStatus: vi.fn().mockResolvedValue({
@@ -175,6 +188,7 @@ describe('Task 16 operational pages', () => {
     const second = { id: 'p2', sequence: 2, text: 'second', status: 'draft' };
     const third = { id: 'p3', sequence: 3, text: 'third', status: 'draft' };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ revision: 2, items: [first, second, third] }),
       getIndexStatus: vi.fn().mockResolvedValue({
@@ -418,6 +432,7 @@ describe('Task 16 operational pages', () => {
       approvedChunkCount: 0, activePointCount: 0, consistency: 'inactive', driftDetails: [], jobs: []
     };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ versionId: 'ver-1', revision: 2, items: [original] }),
       getIndexStatus: vi.fn().mockResolvedValue(status),
@@ -441,6 +456,7 @@ describe('Task 16 operational pages', () => {
     const first = { id: 'p1', sequence: 1, text: 'first', status: 'draft' };
     const second = { id: 'p2', sequence: 2, text: 'second', status: 'draft' };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ versionId: 'ver-1', revision: 2, items: [first, second] }),
       getIndexStatus: vi.fn().mockResolvedValue({
