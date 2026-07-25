@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: Superseded by product decision on 2026-07-25. Do not execute this database/UI plan unless the user explicitly reactivates database-backed runtime settings. Conversation parameters remain in `src/server/WechatRobot.Worker/appsettings.json`; changes take effect after restarting the Worker.**
+
 **Goal:** Replace the placeholder system-settings page with a typed, versioned, auditable settings surface whose saved values are consumed by the running conversation pipeline.
 
 **Architecture:** A code-owned allowlist defines every editable key, JSON type, default, validation range, UI control, runtime consumer, and restart behavior. `system_setting` remains the current-value projection; a new append-only history table records every successful update and rollback. The Worker loads one typed conversation-settings snapshot from MySQL for each leased inbound message, then passes that immutable snapshot through retrieval-query construction, summarization, and grounded-answer generation.

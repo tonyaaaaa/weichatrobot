@@ -63,8 +63,8 @@ Only one phase may be `InProgress` at a time. Update the table whenever a phase 
 | P0 WorkTool contract correction | Completed | `docs/superpowers/plans/2026-07-24-worktool-contract-correction.md` | None |
 | P1 Knowledge tag closure | Completed | `docs/superpowers/plans/2026-07-24-knowledge-tag-closure.md` | P0 |
 | P1 Knowledge document management | Completed | `docs/superpowers/plans/2026-07-24-knowledge-document-management.md` | Tags |
-| P1 Typed system settings | Planned | `docs/superpowers/plans/2026-07-24-typed-system-settings.md` | None |
-| P1 Dashboard and operational summary | NotStarted | Create after settings acceptance | P0, settings |
+| P1 Typed system settings | Superseded | Keep conversation parameters in Worker `appsettings.json`; database/UI plan retained for reference only | Product decision |
+| P1 Dashboard and operational summary | NotStarted | Create next | P0 |
 | P1 Full robot administration UI | NotStarted | Create after dashboard acceptance | P0 |
 | P2 User and role administration | NotStarted | Create after robot acceptance | None |
 | P2 Remaining knowledge, group concurrency, and audits | NotStarted | Create after user-role acceptance | Tags, documents, P0 |
