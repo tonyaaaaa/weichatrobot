@@ -1,71 +1,67 @@
-# Production Environment Script Design
+# Shared Production .env Design
 
 ## Objective
 
-Provide `deploy/windows/configure-production-environment.ps1` for configuring
-the Windows IIS test server used by `wxrobot.aavisa.com`.
+Make `WechatRobot.Api` and `WechatRobot.Worker` load the same production `.env`
+file directly whenever either process starts. No PowerShell import step is
+required.
 
-The script writes the values required by both `WechatRobot.Api` and
-`WechatRobot.Worker` into Windows machine-level environment variables. ASP.NET
-Core and the Worker then receive those values whenever their processes start.
-The application will not be changed to load `.env` files.
+## File Location and Resolution
 
-## Configuration Covered
+The deployment location is:
 
-The script contains a clearly marked editable section with detailed Chinese
-comments for:
+```text
+C:\wxrobot\config\.env
+```
 
-- API `ASPNETCORE_ENVIRONMENT`, Worker `DOTNET_ENVIRONMENT`, and the
-  `wechatrobot` MySQL connection string.
-- The permanent 32-byte Base64 master encryption key.
-- JWT issuer, audience, and signing key.
-- The exact frontend CORS origin `https://wxrobot.aavisa.com`.
-- Qdrant base URL and API key.
-- Alibaba Cloud OSS endpoint, bucket, credentials, optional public base URL,
-  and the explicit public-read risk switch.
-- Alibaba Cloud OCR credentials.
-- Initial bootstrap administrator details.
-- The first-start database migration switch.
+The loader uses that exact fixed path by default. `WECHATROBOT_ENV_FILE` may
+specify a different absolute file path. An explicitly configured path that does
+not exist is a startup error; an absent default file is allowed so development
+and tests can continue using ordinary environment variables.
 
-`Oss__PublicBaseUrl` may be empty. When empty, the current storage
-implementation builds the public URL from the bucket and OSS endpoint. When
-specified, it must be an absolute HTTPS base URL for an OSS custom domain or
-CDN domain.
+## Loading and Precedence
 
-## Behavior and Safety
+The loader runs before `WebApplication.CreateBuilder` or
+`Host.CreateApplicationBuilder`. It adds `.env` values only when the process
+does not already contain that variable. Therefore the precedence is:
 
-- Require an elevated Administrator PowerShell session.
-- Validate required values before changing the machine environment.
-- Reject unchanged example placeholders.
-- Validate URI fields and require HTTPS for `Oss__PublicBaseUrl` when present.
-- Validate that `WECHATROBOT_MASTER_KEY_BASE64` decodes to exactly 32 bytes.
-- Write variables with
-  `[Environment]::SetEnvironmentVariable(..., "Machine")`; do not use `setx`.
-- Be idempotent: running the script again updates the same variables.
-- Never print secret values to the terminal.
-- Do not automatically restart IIS or the Worker because that interrupts
-  running processes. Print the exact restart commands after successful setup.
-- Explain that the filled script contains plaintext secrets, must remain only
-  on the server in an access-controlled directory, and must never be committed.
+```text
+process/machine environment > .env > appsettings JSON defaults
+```
 
-## Deployment Packaging
+API and Worker use the same union of settings. Each process ignores settings it
+does not consume. Both `ASPNETCORE_ENVIRONMENT=Production` and
+`DOTNET_ENVIRONMENT=Production` are included because the API and generic Worker
+host use different environment names.
 
-The release ZIP includes the script under `deployment/`. The repository also
-ignores the server-local filled copy if it is created with a `.local.ps1`
-suffix. The deployment runbook links to the script and documents the required
-restart order:
+## Parser Contract
 
-1. Run the environment script as Administrator.
-2. Restart IIS so the API receives the new machine environment.
-3. Complete the first API migration successfully.
-4. Start or restart the Worker scheduled task.
+- UTF-8 text, with or without BOM.
+- Blank lines and lines whose first non-space character is `#` are ignored.
+- Each setting is `NAME=VALUE`; split at the first `=`.
+- Names must match `[A-Za-z_][A-Za-z0-9_]*`.
+- Single-quoted and double-quoted values are supported.
+- Unquoted values retain `#`, `;`, and additional `=` characters.
+- Duplicate names, malformed lines, or unmatched quotes fail startup.
+- No shell execution, interpolation, variable expansion, or secret logging.
+
+## Security and Deployment
+
+Commit only `deploy/windows/wechatrobot.env.example`, with detailed Chinese
+comments and non-secret placeholders. The real `.env` remains ignored by Git
+and is copied to `C:\wxrobot\config\.env`. On Windows, administrators and
+the API/Worker identities receive read access; ordinary users do not.
+
+The example covers MySQL, the permanent master key, JWT, CORS, Qdrant, OSS,
+OCR, bootstrap administrator, and migration startup. `Oss__PublicBaseUrl` may
+be empty; when present it is an HTTPS OSS custom domain or CDN base URL.
 
 ## Verification
 
-- Parse the script with the PowerShell parser without executing it.
-- Add a safe current-user test mode so automated verification can prove the
-  variable mapping without modifying machine-level state.
-- Verify placeholder rejection, Base64 master-key validation, URI validation,
-  and secret redaction.
-- Rebuild the release ZIP and verify that the script and updated runbook are
-  present.
+- Unit tests cover parsing, quoting, precedence, duplicate rejection, malformed
+  input, explicit missing paths, and the fixed default deployment path.
+- Contract tests confirm both API and Worker call the loader before constructing
+  their hosts.
+- API and Worker publish outputs include no real `.env`.
+- The release ZIP contains `config/.env.example` and the updated deployment
+  runbook.

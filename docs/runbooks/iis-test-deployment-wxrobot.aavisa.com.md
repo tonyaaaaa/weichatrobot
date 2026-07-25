@@ -39,10 +39,12 @@ iisreset
 Copy the verified release into:
 
 ```text
-C:\WechatRobot\
+C:\wxrobot\
   frontend\
   api\
   worker\
+  config\
+    .env.example
   logs\
 ```
 
@@ -69,13 +71,13 @@ Create sites after confirming the physical directories:
 
 ```powershell
 New-Website -Name "WechatRobot-Frontend" `
-  -PhysicalPath "C:\WechatRobot\frontend" `
+  -PhysicalPath "C:\wxrobot\frontend" `
   -ApplicationPool "WechatRobot-Frontend" `
   -Port 80 `
   -HostHeader "wxrobot.aavisa.com"
 
 New-Website -Name "WechatRobot-Api" `
-  -PhysicalPath "C:\WechatRobot\api" `
+  -PhysicalPath "C:\wxrobot\api" `
   -ApplicationPool "WechatRobot-Api" `
   -IPAddress "127.0.0.1" `
   -Port 5268
@@ -91,48 +93,62 @@ Enable ARR proxy at the IIS server level:
   set config -section:system.webServer/proxy /enabled:"True" /commit:apphost
 ```
 
-## Machine Environment
+## Shared .env Configuration
 
-Set secrets as machine environment variables, not in `appsettings.json` or
-`web.config`. Values below are names only; obtain the real values through the
-server's secure administration channel.
+The API and Worker directly load the same file on every process start:
 
 ```text
-ASPNETCORE_ENVIRONMENT=Production
-ConnectionStrings__WechatRobot
-WECHATROBOT_MASTER_KEY_BASE64
-Jwt__Issuer
-Jwt__Audience
-Jwt__SigningKey
-Cors__AllowedOrigins__0=https://wxrobot.aavisa.com
-Qdrant__BaseUrl
-Qdrant__ApiKey
-Oss__AccessKeyId
-Oss__AccessKeySecret
-Oss__Bucket
-Oss__Endpoint
-Oss__PublicBaseUrl
-Oss__PublicReadRiskAccepted=true
-ALIBABA_CLOUD_OCR_ACCESS_KEY_ID
-ALIBABA_CLOUD_OCR_ACCESS_KEY_SECRET
-BootstrapAdmin__Email
-BootstrapAdmin__Password
-BootstrapAdmin__DisplayName
-Database__ApplyMigrationsOnStartup=true
+C:\wxrobot\config\.env
 ```
 
-The API and Worker read the same connection string, master key, Qdrant, OCR, and
-OSS values. After the first successful start has applied migrations and created
-the bootstrap administrator, set `Database__ApplyMigrationsOnStartup=false` and
-remove `BootstrapAdmin__Password` from the machine environment.
+Create it from the packaged example and edit every `REPLACE_` value:
+
+```powershell
+New-Item -ItemType Directory -Force "C:\wxrobot\config" | Out-Null
+Copy-Item "C:\wxrobot\config\.env.example" "C:\wxrobot\config\.env"
+notepad "C:\wxrobot\config\.env"
+```
+
+Restrict access before starting either process:
+
+```powershell
+icacls "C:\wxrobot\config" /inheritance:r
+icacls "C:\wxrobot\config" /grant:r `
+  "Administrators:(OI)(CI)F" `
+  "SYSTEM:(OI)(CI)R" `
+  "IIS AppPool\WechatRobot-Api:(OI)(CI)R"
+```
+
+The `.env` file is plaintext secret material. Do not place it under the frontend
+directory, commit it, send it through chat, or include it in backups without
+encryption. Existing process or machine environment variables take precedence
+over values from `.env`. `WECHATROBOT_ENV_FILE` may override the fixed path, but
+normally should not be set.
+
+The API and Worker share MySQL, master key, Qdrant, OCR, and OSS settings. The
+API ignores Worker-only settings and the Worker ignores API-only JWT/CORS
+settings. The file includes both `ASPNETCORE_ENVIRONMENT=Production` and
+`DOTNET_ENVIRONMENT=Production`.
+
+For Qdrant on Linux, use its private address such as
+`http://10.0.0.20:6333/`, not `127.0.0.1`. Keep `Oss__PublicBaseUrl` empty to
+use the standard Alibaba OSS bucket URL, or set an HTTPS custom/CDN base such as
+`https://files.aavisa.com`.
+
+After the first successful API start has applied migrations and created the
+bootstrap administrator:
+
+1. Set `Database__ApplyMigrationsOnStartup=false`.
+2. Set `BootstrapAdmin__Password=` to an empty value.
+3. Restart the API and Worker so both processes reload `.env`.
 
 Keep `WECHATROBOT_MASTER_KEY_BASE64` permanently stable and back it up through
 the server's secret-management process. Replacing it makes previously encrypted
 robot identifiers and model credentials unreadable. Use a rotated Qdrant API key
 that has not been shared through chat or committed to source control.
 
-Use `Oss__AccessKeyId` and `Oss__AccessKeySecret` as the actual machine
-environment names. Do not put either value in source-controlled JSON.
+Use `Oss__AccessKeyId` and `Oss__AccessKeySecret` as the exact `.env` names.
+Do not put either real value in source-controlled JSON or the example file.
 
 ## Worker Startup Task
 
@@ -140,11 +156,11 @@ Run the Worker as Local System at machine startup:
 
 ```powershell
 $dotnet = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
-$worker = "C:\WechatRobot\worker\WechatRobot.Worker.dll"
+$worker = "C:\wxrobot\worker\WechatRobot.Worker.dll"
 $action = New-ScheduledTaskAction `
   -Execute $dotnet `
   -Argument "`"$worker`"" `
-  -WorkingDirectory "C:\WechatRobot\worker"
+  -WorkingDirectory "C:\wxrobot\worker"
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet `
   -ExecutionTimeLimit ([TimeSpan]::Zero) `

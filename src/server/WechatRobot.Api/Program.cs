@@ -40,7 +40,9 @@ using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Infrastructure.Health;
 using WechatRobot.Infrastructure.Logging;
+using WechatRobot.Infrastructure.Configuration;
 
+DotEnvFileLoader.Load();
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddRedactingConsole();
 StartupConfigurationValidator.Validate(builder.Configuration, requireCors: true);

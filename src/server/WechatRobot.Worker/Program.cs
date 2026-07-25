@@ -23,7 +23,9 @@ using WechatRobot.Infrastructure.Health;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Worker.Jobs;
 using WechatRobot.Infrastructure.Logging;
+using WechatRobot.Infrastructure.Configuration;
 
+DotEnvFileLoader.Load();
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddRedactingConsole();
 StartupConfigurationValidator.Validate(builder.Configuration, requireCors: false);
