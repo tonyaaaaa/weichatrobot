@@ -34,6 +34,7 @@ export const routes: RouteRecordRaw[] = [
     children: [
       { path: '', name: 'dashboard', component: DashboardView, meta: { roles: ['Admin', 'KnowledgeOperator', 'HumanAgent'] } },
       { path: 'knowledge/documents', name: 'knowledge-documents', component: () => import('../views/knowledge/KnowledgeDocumentsView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
+      { path: 'knowledge/documents/:documentId', name: 'knowledge-document-management', component: () => import('../views/knowledge/KnowledgeDocumentManagementView.vue'), props: true, meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/documents/:documentId/versions/:versionId', name: 'knowledge-document-detail', component: () => import('../views/knowledge/DocumentDetailView.vue'), props: true, meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/tags', name: 'knowledge-tags', component: () => import('../views/knowledge/KnowledgeTagsView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/review', name: 'knowledge-review', component: () => import('../views/knowledge/KnowledgeReviewView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },

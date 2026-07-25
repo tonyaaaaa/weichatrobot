@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, expect, it } from 'vitest';
-import { getVisibleNavigation, router } from './index';
+import { getVisibleNavigation, router, routes } from './index';
 import { useAuthStore } from '../stores/auth';
 
 describe('role-aware navigation', () => {
@@ -31,5 +31,18 @@ describe('role-aware navigation', () => {
     setActivePinia(createPinia());
     await router.push('/knowledge/review');
     expect(router.currentRoute.value.name).toBe('login');
+  });
+
+  it('registers document management separately from the version chunk workflow', () => {
+    const admin = routes.find(route => route.path === '/');
+    const management = admin?.children?.find(
+      route => route.path === 'knowledge/documents/:documentId');
+    const chunks = admin?.children?.find(
+      route => route.path === 'knowledge/documents/:documentId/versions/:versionId');
+
+    expect(management?.name).toBe('knowledge-document-management');
+    expect(management?.props).toBe(true);
+    expect(management?.meta?.roles).toEqual(['Admin', 'KnowledgeOperator']);
+    expect(chunks?.name).toBe('knowledge-document-detail');
   });
 });
