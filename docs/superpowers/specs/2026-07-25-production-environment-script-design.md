@@ -15,7 +15,8 @@ The application will not be changed to load `.env` files.
 The script contains a clearly marked editable section with detailed Chinese
 comments for:
 
-- ASP.NET Core environment and the `wechatrobot` MySQL connection string.
+- API `ASPNETCORE_ENVIRONMENT`, Worker `DOTNET_ENVIRONMENT`, and the
+  `wechatrobot` MySQL connection string.
 - The permanent 32-byte Base64 master encryption key.
 - JWT issuer, audience, and signing key.
 - The exact frontend CORS origin `https://wxrobot.aavisa.com`.
