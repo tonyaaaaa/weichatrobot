@@ -294,9 +294,36 @@ public sealed class QdrantKnowledgeService(
     public async Task DisableAsync(Guid documentId, CancellationToken token)
     {
         database.ChangeTracker.Clear();
+        var current = await database.KnowledgeDocuments.AsNoTracking().SingleOrDefaultAsync(
+            item => item.Id == documentId,
+            token) ?? throw new KeyNotFoundException();
+        await DisableCoreAsync(documentId, current.StateVersion, null, token);
+    }
+
+    public Task DisableAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        string actor,
+        CancellationToken token) =>
+        DisableCoreAsync(documentId, expectedStateVersion, actor, token);
+
+    private async Task DisableCoreAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        string? actor,
+        CancellationToken token)
+    {
+        database.ChangeTracker.Clear();
         var document = await database.KnowledgeDocuments.AsNoTracking().SingleOrDefaultAsync(item => item.Id == documentId, token) ?? throw new KeyNotFoundException();
-        if (document.IsDeleteRequested) throw new InvalidOperationException("A document pending physical deletion cannot be disabled.");
+        if (document.StateVersion != expectedStateVersion)
+            throw Concurrency(document);
+        if (document.IsDeleteRequested) throw new DocumentDeleteRequestedException();
         if (document.Status == "disabled") return;
+        if (IsInMemory)
+        {
+            await DisableTrackedAsync(documentId, expectedStateVersion, actor, token);
+            return;
+        }
         await using var transaction = await BeginTransactionAsync(token);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         if (document.ActiveVersionId is { } versionId && document.ActiveCollectionName is { } collection)
@@ -311,11 +338,15 @@ public sealed class QdrantKnowledgeService(
             await AddCleanupJobAsync(documentId, staged.KnowledgeDocumentVersionId, staged.CollectionName, staged.Dimension,
                 ParseDistance(staged.Distance), staged.Generation, now, staged.Id, staged.LeaseExpiresAtUtc, staged.IsCollectionExclusive, token);
         var documentChanged = await database.KnowledgeDocuments.Where(item => item.Id == documentId && !item.IsDeleteRequested &&
-                item.Status == document.Status && item.ActiveVersionId == document.ActiveVersionId && item.StateVersion == document.StateVersion)
+                item.Status == document.Status && item.ActiveVersionId == document.ActiveVersionId && item.StateVersion == expectedStateVersion)
             .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, "disabled").SetProperty(item => item.ActiveVersionId, (Guid?)null)
                 .SetProperty(item => item.StateVersion, item => item.StateVersion + 1)
                 .SetProperty(item => item.UpdatedAtUtc, now), token);
-        if (documentChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); throw new InvalidOperationException("The document changed while it was being disabled."); }
+        if (documentChanged != 1)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(token);
+            await ThrowDisableConflictAsync(documentId, token);
+        }
         await database.KnowledgeDocumentVersions.Where(version => version.KnowledgeDocumentId == documentId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(version => version.Status, "disabled").SetProperty(version => version.IsPublished, false)
                 .SetProperty(version => version.UpdatedAtUtc, now), token);
@@ -323,8 +354,73 @@ public sealed class QdrantKnowledgeService(
                 (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased" || job.Status == "activating"))
             .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "cancelled").SetProperty(job => job.LeaseOwner, (string?)null)
                 .SetProperty(job => job.Version, job => job.Version + 1).SetProperty(job => job.UpdatedAtUtc, now), token);
+        AddDocumentAudit(
+            actor,
+            "knowledge-document.disable",
+            documentId,
+            new
+            {
+                before = new { status = document.Status, stateVersion = expectedStateVersion },
+                after = new { status = "disabled", stateVersion = expectedStateVersion + 1 }
+            });
         await database.SaveChangesAsync(token);
         if (transaction is not null) await transaction.CommitAsync(token);
+    }
+
+    private async Task DisableTrackedAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        string? actor,
+        CancellationToken token)
+    {
+        database.ChangeTracker.Clear();
+        var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(
+            item => item.Id == documentId,
+            token) ?? throw new KeyNotFoundException();
+        if (document.StateVersion != expectedStateVersion) throw Concurrency(document);
+        if (document.IsDeleteRequested) throw new DocumentDeleteRequestedException();
+        if (document.Status == "disabled") return;
+
+        var priorStatus = document.Status;
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        document.Status = "disabled";
+        document.ActiveVersionId = null;
+        document.StateVersion++;
+        document.UpdatedAtUtc = now;
+        foreach (var version in await database.KnowledgeDocumentVersions
+                     .Where(item => item.KnowledgeDocumentId == documentId)
+                     .ToArrayAsync(token))
+        {
+            version.Status = "disabled";
+            version.IsPublished = false;
+            version.UpdatedAtUtc = now;
+        }
+
+        foreach (var job in await database.KnowledgeIndexJobs
+                     .Where(job => job.KnowledgeDocumentId == documentId &&
+                                   job.Operation != "cleanup" &&
+                                   (job.Status == "pending" ||
+                                    job.Status == "retrying" ||
+                                    job.Status == "leased" ||
+                                    job.Status == "activating"))
+                     .ToArrayAsync(token))
+        {
+            job.Status = "cancelled";
+            job.LeaseOwner = null;
+            job.UpdatedAtUtc = now;
+            job.Version++;
+        }
+
+        AddDocumentAudit(
+            actor,
+            "knowledge-document.disable",
+            documentId,
+            new
+            {
+                before = new { status = priorStatus, stateVersion = expectedStateVersion },
+                after = new { status = "disabled", stateVersion = document.StateVersion }
+            });
+        await database.SaveChangesAsync(token);
     }
 
     public async Task CompleteCleanupAsync(Guid jobId, string owner, CancellationToken token) => await database.KnowledgeIndexJobs
@@ -530,8 +626,40 @@ public sealed class QdrantKnowledgeService(
         });
     }
 
+    private void AddDocumentAudit(string? actor, string action, Guid documentId, object detail)
+    {
+        if (actor is null) return;
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
+        {
+            Actor = actor,
+            Action = action,
+            TargetType = "knowledge-document",
+            TargetId = documentId.ToString("D"),
+            SanitizedDetailJson = JsonSerializer.Serialize(detail)
+        });
+    }
+
+    private async Task ThrowDisableConflictAsync(Guid documentId, CancellationToken token)
+    {
+        database.ChangeTracker.Clear();
+        var current = await database.KnowledgeDocuments.AsNoTracking().SingleOrDefaultAsync(
+            document => document.Id == documentId,
+            token);
+        if (current is null) throw new KeyNotFoundException();
+        if (current.IsDeleteRequested) throw new DocumentDeleteRequestedException();
+        throw Concurrency(current);
+    }
+
+    private static DocumentConcurrencyException Concurrency(KnowledgeDocumentEntity document) =>
+        new(new KnowledgeDocumentCurrentState(document.Id, document.Status, document.StateVersion));
+
+    private bool IsInMemory =>
+        database.Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true;
+
     private async Task<IDbContextTransaction?> BeginTransactionAsync(CancellationToken token) =>
-        database.Database.IsRelational() ? await database.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, token) : null;
+        IsInMemory || !database.Database.IsRelational()
+            ? null
+            : await database.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, token);
     private static Guid StableJobId(Guid versionId) => HashGuid($"index:{versionId:N}");
     private static Guid CleanupJobId(Guid versionId, string collection) => HashGuid($"cleanup-index:{versionId:N}:{collection}");
     private static Guid HashGuid(string input) => new(SHA256.HashData(Encoding.UTF8.GetBytes(input)).AsSpan(0, 16));

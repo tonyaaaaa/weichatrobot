@@ -65,6 +65,43 @@ public sealed class KnowledgeDocumentConcurrencyTests : IClassFixture<MySqlFixtu
         Assert.Single(await verify.DurableJobs.Where(item => item.JobType == "CleanupKnowledgeDocument" && item.PayloadJson.Contains(seeded.DocumentId.ToString())).ToArrayAsync(TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Physical_delete_management_contract_is_versioned_and_audited_on_mysql()
+    {
+        var seeded = await SeedUploadingAsync();
+        await using (var staleContext = CreateContext())
+        {
+            var staleStore = new KnowledgeDocumentStore(staleContext);
+            var conflict = await Assert.ThrowsAsync<DocumentConcurrencyException>(() =>
+                staleStore.RequestPhysicalDeleteAsync(
+                    seeded.DocumentId,
+                    1,
+                    "mysql-admin",
+                    TestContext.Current.CancellationToken));
+            Assert.Equal(0, conflict.Current.StateVersion);
+        }
+
+        await using (var currentContext = CreateContext())
+        {
+            var currentStore = new KnowledgeDocumentStore(currentContext);
+            Assert.True(await currentStore.RequestPhysicalDeleteAsync(
+                seeded.DocumentId,
+                0,
+                "mysql-admin",
+                TestContext.Current.CancellationToken));
+        }
+
+        await using var verify = CreateContext();
+        var audit = await verify.AdministrationAudits.AsNoTracking().SingleAsync(
+            item => item.TargetId == seeded.DocumentId.ToString("D") &&
+                    item.Action == "knowledge-document.request-physical-delete",
+            TestContext.Current.CancellationToken);
+        Assert.Equal("mysql-admin", audit.Actor);
+        Assert.DoesNotContain("objectKey", audit.SanitizedDetailJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("payloadJson", audit.SanitizedDetailJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stagedContent", audit.SanitizedDetailJson, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<SeededUpload> SeedUploadingAsync()
     {
         await using var database = CreateContext();

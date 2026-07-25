@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Identity;
@@ -74,25 +75,50 @@ public static class DocumentEndpoints
         catch (InvalidOperationException) { return Results.Conflict(new { error = "document-not-writable" }); }
     }
 
-    private static async Task<IResult> RetryAsync(Guid documentId, DocumentUploadService service, CancellationToken cancellationToken)
+    private static async Task<IResult> RetryAsync(
+        Guid documentId,
+        KnowledgeDocumentStateRequest request,
+        ClaimsPrincipal principal,
+        DocumentUploadService service,
+        CancellationToken cancellationToken)
     {
+        if (!TryGetActor(principal, out var actor)) return Results.Unauthorized();
         try
         {
-            var result = await service.RetryAsync(documentId, cancellationToken);
+            var result = await service.RetryAsync(
+                documentId,
+                request.ExpectedStateVersion,
+                actor,
+                cancellationToken);
             return result.ProviderSucceeded ? Results.Ok(ToResponse(result)) : Results.Json(ToResponse(result), statusCode: StatusCodes.Status503ServiceUnavailable);
         }
-        catch (DocumentDeletedException) { return Results.Conflict(new { error = "document-deleted" }); }
-        catch (DocumentNotRetryableException) { return Results.NotFound(); }
+        catch (DocumentNotFoundException) { return Results.NotFound(); }
+        catch (DocumentConcurrencyException exception) { return ConcurrencyConflict(exception); }
+        catch (DocumentDeleteRequestedException) { return Results.Conflict(new { error = "document-delete-requested" }); }
+        catch (DocumentDeletedException) { return Results.Conflict(new { error = "document-state-conflict" }); }
+        catch (DocumentNotRetryableException) { return Results.Conflict(new { error = "document-not-retryable" }); }
     }
 
-    private static async Task<IResult> RequestPhysicalDeleteAsync(Guid documentId, DocumentUploadService service, CancellationToken cancellationToken)
+    private static async Task<IResult> RequestPhysicalDeleteAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        ClaimsPrincipal principal,
+        DocumentUploadService service,
+        CancellationToken cancellationToken)
     {
+        if (!TryGetActor(principal, out var actor)) return Results.Unauthorized();
         try
         {
-            await service.RequestPhysicalDeleteAsync(documentId, cancellationToken);
+            await service.RequestPhysicalDeleteAsync(
+                documentId,
+                expectedStateVersion,
+                actor,
+                cancellationToken);
             return Results.Accepted($"/api/knowledge/documents/{documentId}", new { documentId, state = "disabled" });
         }
         catch (DocumentNotFoundException) { return Results.NotFound(); }
+        catch (DocumentConcurrencyException exception) { return ConcurrencyConflict(exception); }
+        catch (DocumentDeleteRequestedException) { return Results.Conflict(new { error = "document-delete-requested" }); }
     }
 
     private static object ToResponse(DocumentUploadResult result) => new
@@ -104,4 +130,17 @@ public static class DocumentEndpoints
     private static IResult MissingFile() => Results.ValidationProblem(Problem("file", "A multipart file is required."));
     private static IResult Duplicate() => Results.Conflict(new { error = "duplicate-content", message = "This document content already exists." });
     private static Dictionary<string, string[]> Problem(string key, string message) => new() { [key] = [message] };
+    private static IResult ConcurrencyConflict(DocumentConcurrencyException exception) => Results.Conflict(new
+    {
+        error = "document-concurrency-conflict",
+        current = exception.Current
+    });
+    private static bool TryGetActor(ClaimsPrincipal principal, out string actor)
+    {
+        actor = principal.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? principal.Identity?.Name
+            ?? string.Empty;
+        actor = actor.Trim();
+        return actor.Length > 0;
+    }
 }

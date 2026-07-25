@@ -64,3 +64,8 @@ public sealed record KnowledgeDocumentDetail(
     IReadOnlyList<KnowledgeDocumentVersionSummary> Versions);
 
 public sealed record KnowledgeDocumentStateRequest(int ExpectedStateVersion);
+
+public sealed record KnowledgeDocumentCurrentState(
+    Guid Id,
+    string Status,
+    int StateVersion);
