@@ -14,16 +14,24 @@ The backend remains the sole creator of `GroupProfileEntity.Id`. The existing
 group registration flow continues to create a group profile whose `Id` is
 initialized with `Guid.NewGuid()`.
 
-The group configuration page will:
+Group management will use two routes:
 
-1. Load registered groups from the existing
-   `GET /api/admin/worktool/groups` endpoint.
-2. Present those groups by name in a selector.
-3. Keep the selected group's system-generated `id` as internal UI state.
-4. Use that `id` for configuration GET and PUT requests.
-5. Disable configuration actions when no registered group is selected.
+1. `/groups` is the registered-group list.
+2. `/groups/:id/configuration` is the configuration detail for one group.
 
-The page will not add name-based backend routes, generate GUIDs in the browser,
+The list loads registered groups from the existing
+`GET /api/admin/worktool/groups` endpoint. That response will be extended with
+the robot name, group enabled state, and group update time so each row can
+display the group name, robot, status, and last update. The primary row action
+is `配置`, which navigates with the system-generated group ID. A page-level
+`群操作` action links to the existing registration and group-operation page.
+
+The detail page reads the ID only from the route. It displays the group name,
+provides a `返回群列表` action, and preserves the existing matching-rule,
+knowledge-tag, context-policy, preview, clear-context, and save features. The
+internal GUID is never presented as an editable field.
+
+The UI will not add name-based backend routes, generate GUIDs in the browser,
 or permit a free-form group identifier.
 
 ## Data Flow
@@ -32,27 +40,31 @@ or permit a free-form group identifier.
    flow.
 2. The backend creates or finds the group profile and returns its generated
    internal ID.
-3. The configuration page lists registered groups.
-4. Selecting a group loads its configuration by internal ID.
-5. Saving sends the configuration to the same GUID-constrained backend route.
+3. The group list renders the registered group by name.
+4. Clicking `配置` navigates to `/groups/{id}/configuration`.
+5. The detail page loads and saves configuration with that route ID.
 
 ## Error Handling
 
-- An empty registered-group list shows an actionable empty state directing the
+- An empty group list shows an actionable empty state directing the
   administrator to register a group first.
-- A list or configuration request failure leaves saving disabled and displays
-  an error notice.
-- Changing the selected group reloads configuration before editing or saving.
+- A list request failure displays an error state without rendering stale rows.
+- A missing, malformed, or unknown detail route ID shows `群不存在或已删除`,
+  provides a return-to-list action, and does not render an editable form.
+- A configuration request failure keeps saving disabled and displays an error
+  notice.
 
 ## Testing
 
-Frontend component tests will prove that:
+Frontend route and component tests will prove that:
 
-- registered groups render by name while their GUID is used for API calls;
-- selecting `技术群` never sends `技术群` as the route identifier;
-- no free-form GUID input remains;
-- saving stays disabled when no group is available or selected;
-- loading failures are visible and do not enable saving.
+- `/groups` renders registered groups by name;
+- clicking the `技术群` row's `配置` action navigates with its generated GUID;
+- `/groups/:id/configuration` uses the route GUID for GET and PUT requests;
+- neither page contains a free-form GUID input;
+- empty and failed list states are visible;
+- an invalid or unknown group ID does not render an editable form;
+- configuration loading failures are visible and do not enable saving.
 
 Existing backend GUID route tests remain unchanged because the backend
 contract is correct.
