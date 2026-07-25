@@ -62,8 +62,8 @@ Only one phase may be `InProgress` at a time. Update the table whenever a phase 
 |---|---|---|---|
 | P0 WorkTool contract correction | Completed | `docs/superpowers/plans/2026-07-24-worktool-contract-correction.md` | None |
 | P1 Knowledge tag closure | Completed | `docs/superpowers/plans/2026-07-24-knowledge-tag-closure.md` | P0 |
-| P1 Knowledge document management | Planned | `docs/superpowers/plans/2026-07-24-knowledge-document-management.md` | Tags |
-| P1 Typed system settings | NotStarted | Create after document acceptance | None |
+| P1 Knowledge document management | Completed | `docs/superpowers/plans/2026-07-24-knowledge-document-management.md` | Tags |
+| P1 Typed system settings | Planned | `docs/superpowers/plans/2026-07-24-typed-system-settings.md` | None |
 | P1 Dashboard and operational summary | NotStarted | Create after settings acceptance | P0, settings |
 | P1 Full robot administration UI | NotStarted | Create after dashboard acceptance | P0 |
 | P2 User and role administration | NotStarted | Create after robot acceptance | None |
@@ -165,6 +165,30 @@ The first isolated unit and contract attempts used output layouts incompatible w
 - Public OSS risk copy remains visible.
 
 **Acceptance gate:** repository query tests, endpoint pagination and authorization tests, lifecycle mutation tests, document-list/detail frontend tests, full build and frontend verification.
+
+### P1 knowledge-document completion record — 2026-07-25
+
+Implementation commits:
+
+- `6645f95`, `ad2a4a8`: safe paginated document queries, detail and version projections, and authorized read endpoints.
+- `748a1f9`: versioned retry, disable, and asynchronous physical-delete request with sanitized administration audits.
+- `b65f119`: typed document administration client.
+- `9f8de55`: persisted document list, filters, pagination, failed-upload retry, and conflict recovery.
+- `5f6ff5a`: document management detail, newest-first version history, disable, Admin-only delete request, and existing chunk-review navigation.
+- `dee5fb1`: upload responses no longer expose object-storage keys or content hashes.
+
+Verified from the current source with isolated server outputs while the running API and Worker remained untouched:
+
+- Document repository, endpoint, lifecycle, cleanup, and MySQL concurrency integration tests: 27 passed, 0 skipped.
+- Full server unit tests: 206 passed, 0 skipped.
+- Full server contract tests: 57 passed, 0 skipped.
+- Full solution build: 0 warnings, 0 errors.
+- Frontend typecheck: passed.
+- Frontend tests: 85 passed across 22 files, 0 skipped.
+- Frontend production build: passed.
+- Management response/view scan: no staged bytes, object keys, raw job payloads, signed secret query strings, credential fields, manual tag UUID controls, or false “physical deletion completed” wording is exposed.
+
+The default server output directories remained locked by API PID `18436` and Worker PID `32828`, so server builds/tests used isolated artifacts. Both long-running processes remained alive throughout acceptance.
 
 ## Phase 3: Typed System Settings
 
