@@ -123,8 +123,8 @@ public static class DocumentEndpoints
 
     private static object ToResponse(DocumentUploadResult result) => new
     {
-        result.DocumentId, result.VersionId, result.Version, result.State, result.PublicUrl, result.ObjectKey,
-        result.SafeFileName, result.Sha256, result.SizeBytes, result.PublicReadRiskAccepted,
+        result.DocumentId, result.VersionId, result.Version, result.State, result.PublicUrl,
+        result.SafeFileName, result.SizeBytes, result.PublicReadRiskAccepted,
         publicReadWarning = "Document tags restrict robot retrieval only; this public object URL is not access control."
     };
     private static IResult MissingFile() => Results.ValidationProblem(Problem("file", "A multipart file is required."));

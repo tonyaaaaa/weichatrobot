@@ -71,7 +71,9 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         using var first = await UploadTextAsync(client, "../../client supplied.txt", "same-content");
         first.EnsureSuccessStatusCode();
         var body = await first.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        var key = body.GetProperty("objectKey").GetString()!;
+        Assert.False(body.TryGetProperty("objectKey", out _));
+        Assert.False(body.TryGetProperty("sha256", out _));
+        var key = Assert.Single(_factory.Storage.ObjectKeys);
         Assert.Matches(@"^wechatrobot/knowledge/[0-9a-f]{32}/1/source/source\.txt$", key);
         Assert.DoesNotContain("client", key, StringComparison.OrdinalIgnoreCase);
 
