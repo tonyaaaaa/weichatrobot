@@ -111,6 +111,12 @@ public sealed class HealthTests
         Assert.Equal(ComponentHealthState.Healthy,
             (await healthy.CheckAsync(TestContext.Current.CancellationToken)).State);
 
+        values["Oss:PublicBaseUrl"] = "";
+        var generatedPublicUrlProbe = new OssConfigurationHealthProbe(
+            new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        Assert.Equal(ComponentHealthState.Healthy,
+            (await generatedPublicUrlProbe.CheckAsync(TestContext.Current.CancellationToken)).State);
+
         values["Oss:PublicBaseUrl"] = "http://bucket.example.test/";
         var unsafeProbe = new OssConfigurationHealthProbe(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         Assert.Equal(ComponentHealthState.Failed,

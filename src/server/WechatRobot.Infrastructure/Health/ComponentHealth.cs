@@ -103,13 +103,12 @@ public sealed class OssConfigurationHealthProbe(IConfiguration configuration)
             configuration[$"{OssOptions.SectionName}:AccessKeyId"],
             configuration[$"{OssOptions.SectionName}:AccessKeySecret"],
             configuration[$"{OssOptions.SectionName}:Bucket"],
-            configuration[$"{OssOptions.SectionName}:Endpoint"],
-            configuration[$"{OssOptions.SectionName}:PublicBaseUrl"]
+            configuration[$"{OssOptions.SectionName}:Endpoint"]
         };
-        var publicBaseUrlIsHttps = Uri.TryCreate(
-            configuration[$"{OssOptions.SectionName}:PublicBaseUrl"],
-            UriKind.Absolute,
-            out var publicBaseUrl) && publicBaseUrl.Scheme == Uri.UriSchemeHttps;
+        var configuredPublicBaseUrl = configuration[$"{OssOptions.SectionName}:PublicBaseUrl"];
+        var publicBaseUrlIsHttps = string.IsNullOrWhiteSpace(configuredPublicBaseUrl) ||
+            Uri.TryCreate(configuredPublicBaseUrl, UriKind.Absolute, out var publicBaseUrl) &&
+            publicBaseUrl.Scheme == Uri.UriSchemeHttps;
         var riskAccepted = configuration.GetValue<bool>($"{OssOptions.SectionName}:PublicReadRiskAccepted");
         return Task.FromResult(
             required.All(value => !string.IsNullOrWhiteSpace(value)) &&

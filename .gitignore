@@ -1,5 +1,6 @@
 .worktrees/
 .env
+.local/
 .superpowers/
 
 **/bin/
