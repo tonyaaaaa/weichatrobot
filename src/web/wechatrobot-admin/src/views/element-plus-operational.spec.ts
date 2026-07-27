@@ -29,6 +29,7 @@ describe('Task 16 Element Plus operational surfaces', () => {
     expect(review.findComponent({ name: 'ElPagination' }).exists()).toBe(true);
 
     const handoffApi = {
+      assignees: vi.fn().mockResolvedValue([]),
       list: vi.fn().mockResolvedValue({
         items: [{ id: 'h1', state: 'WaitingHuman', reasonCode: 'manual', version: 1, updatedAtUtc: '2026-07-22T00:00:00Z' }],
         total: 1,

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +17,57 @@ namespace WechatRobot.IntegrationTests.Handoffs;
 
 public sealed class HandoffReadEndpointTests
 {
+    [Fact]
+    public async Task Assignee_options_return_only_enabled_human_agents_and_admins()
+    {
+        await using var factory = new ReadApiFactory();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var roles = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            foreach (var role in SystemRoles.All)
+                if (!await roles.RoleExistsAsync(role))
+                    Assert.True((await roles.CreateAsync(new IdentityRole<Guid>(role))).Succeeded);
+
+            await CreateUserAsync(users, "agent@example.test", "客服甲", true, SystemRoles.HumanAgent);
+            await CreateUserAsync(users, "admin@example.test", "管理员", true, SystemRoles.Admin);
+            await CreateUserAsync(users, "disabled@example.test", "停用客服", false, SystemRoles.HumanAgent);
+            await CreateUserAsync(users, "knowledge@example.test", "知识运营", true, SystemRoles.KnowledgeOperator);
+        }
+
+        using var client = factory.CreateClient();
+        using var document = JsonDocument.Parse(await client.GetStringAsync(
+            "/api/handoffs/assignees",
+            TestContext.Current.CancellationToken));
+        var options = document.RootElement.EnumerateArray().ToArray();
+
+        Assert.Equal(2, options.Length);
+        Assert.Equal(["管理员", "客服甲"], options.Select(item => item.GetProperty("displayName").GetString()));
+        Assert.All(options, item => Assert.True(item.GetProperty("isEnabled").GetBoolean()));
+        Assert.All(options, item => Assert.Equal(
+            ["displayName", "email", "id", "isEnabled", "roles"],
+            item.EnumerateObject().Select(property => property.Name).Order().ToArray()));
+    }
+
+    private static async Task CreateUserAsync(
+        UserManager<ApplicationUser> users,
+        string email,
+        string displayName,
+        bool enabled,
+        string role)
+    {
+        var user = new ApplicationUser
+        {
+            Id = Guid.NewGuid(),
+            UserName = email,
+            Email = email,
+            DisplayName = displayName,
+            IsEnabled = enabled
+        };
+        Assert.True((await users.CreateAsync(user)).Succeeded);
+        Assert.True((await users.AddToRoleAsync(user, role)).Succeeded);
+    }
+
     [Fact]
     public async Task Messages_and_transitions_are_paged_capped_and_stably_ordered()
     {

@@ -18,7 +18,15 @@ export interface HandoffTransition {
   id: string; actorUserId?: string | null; sequence: number; fromState: string; toState: string;
   reasonCode: string; createdAtUtc: string;
 }
+export interface HandoffAssigneeOption {
+  id: string;
+  displayName: string;
+  email: string;
+  roles: string[];
+  isEnabled: boolean;
+}
 export interface HandoffApi {
+  assignees(): Promise<HandoffAssigneeOption[]>;
   list(state: string, page: number, pageSize: number): Promise<Page<HandoffSummary>>;
   detail(id: string): Promise<HandoffDetail>;
   messages(id: string, page: number, pageSize: number): Promise<Page<HandoffMessage>>;
@@ -28,6 +36,7 @@ export interface HandoffApi {
   restore(id: string, expectedVersion: number): Promise<HandoffRecord>;
 }
 export const handoffApi: HandoffApi = {
+  async assignees() { return (await apiClient.get<HandoffAssigneeOption[]>('/api/handoffs/assignees')).data; },
   async list(state, page, pageSize) { return (await apiClient.get('/api/handoffs/', { params: { state: state || undefined, page, pageSize } })).data; },
   async detail(id) { return (await apiClient.get(`/api/handoffs/${id}`)).data; },
   async messages(id, page, pageSize) { return (await apiClient.get(`/api/handoffs/${id}/messages`, { params: { page, pageSize } })).data; },

@@ -14,6 +14,7 @@ public static class HandoffEndpoints
     {
         var group = endpoints.MapGroup("/api/handoffs").RequireAuthorization(SystemRoles.HumanAgent);
         group.MapGet("/", ListAsync);
+        group.MapGet("/assignees", AssigneesAsync);
         group.MapGet("/{id:guid}", DetailAsync);
         group.MapGet("/{id:guid}/messages", MessagesAsync);
         group.MapGet("/{id:guid}/transitions", TransitionsAsync);
@@ -22,6 +23,41 @@ public static class HandoffEndpoints
         group.MapPost("/{id:guid}/resolve", ResolveAsync);
         group.MapPost("/{id:guid}/restore-ai", RestoreAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> AssigneesAsync(
+        UserManager<ApplicationUser> users,
+        CancellationToken token)
+    {
+        var candidates = new Dictionary<Guid, ApplicationUser>();
+        foreach (var role in new[] { SystemRoles.HumanAgent, SystemRoles.Admin })
+        {
+            foreach (var user in await users.GetUsersInRoleAsync(role).WaitAsync(token))
+                if (user.IsEnabled)
+                    candidates[user.Id] = user;
+        }
+
+        var options = new List<object>(candidates.Count);
+        foreach (var user in candidates.Values
+                     .OrderBy(item => item.DisplayName)
+                     .ThenBy(item => item.Email)
+                     .ThenBy(item => item.Id))
+        {
+            var assignedRoles = await users.GetRolesAsync(user).WaitAsync(token);
+            options.Add(new
+            {
+                user.Id,
+                user.DisplayName,
+                user.Email,
+                Roles = assignedRoles
+                    .Where(role => role is SystemRoles.HumanAgent or SystemRoles.Admin)
+                    .Order()
+                    .ToArray(),
+                user.IsEnabled
+            });
+        }
+
+        return TypedResults.Ok(options);
     }
 
     private static async Task<IResult> ListAsync(string? state, int page, int pageSize, WechatRobotDbContext db, CancellationToken token)

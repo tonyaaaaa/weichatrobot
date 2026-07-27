@@ -362,6 +362,7 @@ describe('Task 16 operational pages', () => {
 
     const handoff = { id: 'h1', state: 'WaitingHuman', reasonCode: 'low_confidence', evidenceJson: '{"authorization":"Bearer handoff-secret","score":0.5}', version: 1, updatedAtUtc: '2026-07-22T00:00:00Z' };
     const handoffApi = {
+      assignees: vi.fn().mockResolvedValue([]),
       list: vi.fn().mockResolvedValue({ items: [handoff], total: 1, page: 1, pageSize: 20 }),
       detail: vi.fn().mockResolvedValue(handoff),
       messages: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
@@ -493,6 +494,13 @@ describe('Task 16 operational pages', () => {
     const handling = { ...handoff, state: 'HumanHandling', version: 2 };
     const resolved = { ...handoff, state: 'Resolved', version: 3, finalAnswer: '人工答案' };
     const api = {
+      assignees: vi.fn().mockResolvedValue([{
+        id: '11111111-1111-1111-1111-111111111111',
+        displayName: '客服甲',
+        email: 'agent@example.test',
+        roles: ['HumanAgent'],
+        isEnabled: true
+      }]),
       list: vi.fn().mockResolvedValue({ items: [handoff], total: 1, page: 1, pageSize: 20 }),
       detail: vi.fn()
         .mockResolvedValueOnce(handoff)
@@ -509,7 +517,11 @@ describe('Task 16 operational pages', () => {
     await flushPromises();
     await wrapper.get('[data-testid="handoff-h1"]').trigger('click');
     await flushPromises();
-    await wrapper.get('[data-testid="assignee"]').setValue('11111111-1111-1111-1111-111111111111');
+    const assigneeSelector = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find(component => component.attributes('data-testid') === 'assignee');
+    expect(assigneeSelector).toBeDefined();
+    assigneeSelector!.vm.$emit('update:modelValue', '11111111-1111-1111-1111-111111111111');
+    await wrapper.vm.$nextTick();
     await wrapper.get('[data-testid="assign-handoff"]').trigger('click');
     await flushPromises();
     await wrapper.get('[data-testid="final-answer"]').setValue('人工答案');
@@ -525,6 +537,7 @@ describe('Task 16 operational pages', () => {
   it('paginates handoff messages and transitions independently with complete metadata', async () => {
     const handoff = { id: 'h1', state: 'HumanHandling', reasonCode: 'manual', version: 2, updatedAtUtc: '2026-07-22T00:00:00Z' };
     const api = {
+      assignees: vi.fn().mockResolvedValue([]),
       list: vi.fn().mockResolvedValue({ items: [handoff], total: 1, page: 1, pageSize: 20 }),
       detail: vi.fn().mockResolvedValue(handoff),
       messages: vi.fn()
