@@ -2,6 +2,15 @@ import { apiClient } from './http';
 
 export interface AuditApi {
   capability(request?: AuditQuery): Promise<AuditPage>;
+  groupOptions(): Promise<AuditGroupOption[]>;
+}
+
+export interface AuditGroupOption {
+  id: string;
+  name: string;
+  workToolGroupRemark?: string | null;
+  robotName: string;
+  isEnabled: boolean;
 }
 
 export interface AuditQuery {
@@ -33,5 +42,8 @@ export const auditApi: AuditApi = {
       }
     });
     return { available: true, ...response.data };
+  },
+  async groupOptions() {
+    return (await apiClient.get<AuditGroupOption[]>('/api/audit/group-options')).data;
   }
 };

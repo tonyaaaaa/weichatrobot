@@ -32,4 +32,21 @@ describe('auditApi filters', () => {
       }
     });
   });
+
+  it('loads readable group filter options', async () => {
+    apiClient.get.mockResolvedValueOnce({
+      data: [{
+        id: 'group-1',
+        name: '技术部',
+        workToolGroupRemark: 'tech',
+        robotName: '客服机器人',
+        isEnabled: true
+      }]
+    });
+
+    await expect(auditApi.groupOptions()).resolves.toEqual([
+      expect.objectContaining({ id: 'group-1', name: '技术部' })
+    ]);
+    expect(apiClient.get).toHaveBeenCalledWith('/api/audit/group-options');
+  });
 });

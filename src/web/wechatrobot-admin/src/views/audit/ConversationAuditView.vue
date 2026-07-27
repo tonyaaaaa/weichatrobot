@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElAlert, ElButton, ElEmpty, ElPagination, ElSkeleton, ElTag } from 'element-plus';
-import { auditApi, type AuditApi, type AuditPage } from '../../api/audit';
+import { ElAlert, ElButton, ElEmpty, ElOption, ElPagination, ElSelect, ElSkeleton, ElTag } from 'element-plus';
+import { auditApi, type AuditApi, type AuditGroupOption, type AuditPage } from '../../api/audit';
 import { formatBeijingTime } from '../../utils/beijingTime';
 import { safeEvidence, safeEvidenceText } from '../../utils/evidenceRedaction';
 
 const props = withDefaults(defineProps<{ api?: AuditApi }>(), { api: () => auditApi });
 const loading = ref(true); const error = ref('');
 const capability = ref<AuditPage>({ available: false, items: [], total: 0, page: 1, pageSize: 20 });
+const groupOptions = ref<AuditGroupOption[]>([]);
 const groupId = ref('');
 const fromLocal = ref('');
 const toLocal = ref('');
@@ -31,13 +32,26 @@ function toUtc(value: string): string | undefined {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 onMounted(load);
+onMounted(async () => {
+  try { groupOptions.value = await props.api.groupOptions(); }
+  catch { error.value = '群筛选选项加载失败，请刷新页面重试。'; }
+});
 </script>
 
 <template>
   <section class="ops-page" aria-labelledby="audit-title">
     <header class="page-header"><div><p class="eyebrow">授权证据视图</p><h1 id="audit-title">会话审计</h1><p>此页面可展示检索来源和回答证据，但会递归过滤密钥、令牌和认证头。</p></div><ElButton @click="() => load()">刷新</ElButton></header>
     <section class="panel audit-filters">
-      <label>群 ID<input v-model="groupId" data-testid="audit-group-id" placeholder="可选，群配置 UUID"></label>
+      <label>群
+        <ElSelect v-model="groupId" data-testid="audit-group-select" filterable clearable placeholder="全部群">
+          <ElOption
+            v-for="group in groupOptions"
+            :key="group.id"
+            :value="group.id"
+            :label="`${group.name}${group.workToolGroupRemark ? `（${group.workToolGroupRemark}）` : ''} · ${group.robotName}${group.isEnabled ? '' : ' · 已停用'}`"
+          />
+        </ElSelect>
+      </label>
       <label>开始时间<input v-model="fromLocal" data-testid="audit-from" type="datetime-local"></label>
       <label>结束时间<input v-model="toLocal" data-testid="audit-to" type="datetime-local"></label>
       <ElButton data-testid="apply-audit-filters" type="primary" @click="applyFilters">查询</ElButton>

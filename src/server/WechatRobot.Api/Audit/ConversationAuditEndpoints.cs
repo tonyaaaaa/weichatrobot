@@ -1,7 +1,9 @@
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using WechatRobot.Application.Audit;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Logging;
+using WechatRobot.Infrastructure.Persistence;
 
 namespace WechatRobot.Api.Audit;
 
@@ -11,7 +13,30 @@ public static class ConversationAuditEndpoints
     {
         endpoints.MapGet("/api/audit/conversations", ListAsync)
             .RequireAuthorization(SystemRoles.KnowledgeOperator);
+        endpoints.MapGet("/api/audit/group-options", GroupOptionsAsync)
+            .RequireAuthorization(SystemRoles.KnowledgeOperator);
         return endpoints;
+    }
+
+    private static async Task<IResult> GroupOptionsAsync(
+        WechatRobotDbContext database,
+        CancellationToken token)
+    {
+        var options = await (
+            from profile in database.GroupProfiles.AsNoTracking()
+            join robot in database.RobotConfigs.AsNoTracking()
+                on profile.RobotConfigId equals robot.Id
+            orderby profile.Name, profile.Id
+            select new
+            {
+                profile.Id,
+                profile.Name,
+                profile.WorkToolGroupRemark,
+                RobotName = robot.Name,
+                profile.IsEnabled
+            })
+            .ToArrayAsync(token);
+        return TypedResults.Ok(options);
     }
 
     private static async Task<IResult> ListAsync(

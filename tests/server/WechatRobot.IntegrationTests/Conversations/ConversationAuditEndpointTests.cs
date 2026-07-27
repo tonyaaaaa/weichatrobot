@@ -36,6 +36,47 @@ public sealed class ConversationAuditEndpointTests : IClassFixture<ConversationA
         Assert.Equal(expected, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData(SystemRoles.Admin, HttpStatusCode.OK)]
+    [InlineData(SystemRoles.KnowledgeOperator, HttpStatusCode.OK)]
+    [InlineData(SystemRoles.HumanAgent, HttpStatusCode.Forbidden)]
+    public async Task Audit_group_options_enforce_roles(string role, HttpStatusCode expected)
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Role", role);
+
+        var response = await client.GetAsync(
+            "/api/audit/group-options",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Audit_group_options_include_disabled_groups_without_secrets()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Role", SystemRoles.KnowledgeOperator);
+
+        var response = await client.GetAsync(
+            "/api/audit/group-options",
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var options = document.RootElement.EnumerateArray().ToArray();
+        Assert.Equal(2, options.Length);
+        Assert.Equal(["技术部", "停用群"], options.Select(item => item.GetProperty("name").GetString()));
+        Assert.Contains(options, item => item.GetProperty("isEnabled").GetBoolean());
+        Assert.Contains(options, item => !item.GetProperty("isEnabled").GetBoolean());
+        Assert.All(options, item => Assert.Equal(
+            ["id", "isEnabled", "name", "robotName", "workToolGroupRemark"],
+            item.EnumerateObject().Select(property => property.Name).Order().ToArray()));
+    }
+
     [Fact]
     public async Task Audit_read_correlates_complete_evidence_and_redacts_secrets_and_signed_urls()
     {
@@ -110,6 +151,14 @@ public sealed class ConversationAuditApiFactory : WebApplicationFactory<Program>
         var at = new DateTime(2026, 7, 23, 1, 2, 3, DateTimeKind.Utc);
         var robot = new RobotConfigEntity { Name = "audit-robot", WorkToolRobotId = "secret-robot-id", CallbackSecretHash = "hash" };
         var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = "audit-group", Name = "技术部" };
+        var disabledGroup = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = "disabled-audit-group",
+            Name = "停用群",
+            WorkToolGroupRemark = "disabled-remark",
+            IsEnabled = false
+        };
         var inbound = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, Direction = "inbound", Role = "user",
             WorkToolMessageId = "audit-message", FallbackHash = "audit-in", FallbackWindowStartUtc = at, GroupName = group.Name,
             SenderDisplayName = "测试用户", Text = "如何重置密码？", ReceivedAtUtc = at, CreatedAtUtc = at };
@@ -130,7 +179,7 @@ public sealed class ConversationAuditApiFactory : WebApplicationFactory<Program>
             ReasonCode = "explicit_transfer", IdempotencyKey = "transition-audit", CreatedAtUtc = at.AddSeconds(3) };
         var candidate = new KnowledgeCandidateEntity { HandoffCaseId = handoff.Id, QuestionMessageId = inbound.Id, Question = inbound.Text,
             Answer = "人工答案", EvidenceJson = "{}", Status = "approved_pending_index", CreatedAtUtc = at.AddSeconds(5), UpdatedAtUtc = at.AddSeconds(6) };
-        db.AddRange(robot, group, inbound, outbound, audit, send, handoff, transition, candidate);
+        db.AddRange(robot, group, disabledGroup, inbound, outbound, audit, send, handoff, transition, candidate);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         _seed = new(group.Id);
         _seeded = true;

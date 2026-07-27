@@ -305,6 +305,7 @@ describe('Task 16 operational pages', () => {
 
   it('renders authorized audit sources but strips secrets from full evidence', async () => {
     const api = {
+      groupOptions: vi.fn().mockResolvedValue([]),
       capability: vi.fn().mockResolvedValue({
         available: true,
         items: [{
