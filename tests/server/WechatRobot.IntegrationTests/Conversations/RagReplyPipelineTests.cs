@@ -26,6 +26,8 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         Guid robotId;
         Guid groupId;
         Guid otherGroupId;
+        Guid inboundMessageId;
+        var workToolMessageId = $"rag-message-{Guid.NewGuid():N}";
         await using (var scope = services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
@@ -42,8 +44,12 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
             });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(
-                new(robot.Id, $"rag-message-{Guid.NewGuid():N}", $"rag-fallback-{Guid.NewGuid():N}", DateTime.UtcNow,
+                new(robot.Id, workToolMessageId, $"rag-fallback-{Guid.NewGuid():N}", DateTime.UtcNow,
                     "Support", null, "alice", "How long is the warranty?", DateTime.UtcNow, null, true), TestContext.Current.CancellationToken);
+            inboundMessageId = await db.ConversationMessages
+                .Where(item => item.WorkToolMessageId == workToolMessageId)
+                .Select(item => item.Id)
+                .SingleAsync(TestContext.Current.CancellationToken);
             robotId = robot.Id;
             groupId = group.Id;
             otherGroupId = other.Id;
@@ -65,7 +71,9 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         Assert.Contains("stable_sender_id_unavailable", audit.InputSummaryJson, StringComparison.Ordinal);
         Assert.DoesNotContain("fake.test", audit.InputSummaryJson, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, await database.SendCommands.CountAsync(item => item.GroupProfileId == groupId && item.Status == "pending", TestContext.Current.CancellationToken));
-        Assert.Equal(1, await database.DurableJobs.CountAsync(item => item.Status == "completed", TestContext.Current.CancellationToken));
+        Assert.Equal(1, await database.DurableJobs.CountAsync(
+            item => item.RelatedConversationMessageId == inboundMessageId && item.Status == "completed",
+            TestContext.Current.CancellationToken));
         var repository = verify.ServiceProvider.GetRequiredService<IGroundedConversationRepository>();
         Assert.Equal(2, (await repository.GetHistoryAsync(groupId, 1, 20, TestContext.Current.CancellationToken)).Total);
         Assert.Equal(0, (await repository.GetHistoryAsync(otherGroupId, 1, 20, TestContext.Current.CancellationToken)).Total);

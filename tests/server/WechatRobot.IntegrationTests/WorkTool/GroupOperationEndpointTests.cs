@@ -114,6 +114,11 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
         preview.EnsureSuccessStatusCode();
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         var confirmationToken = previewDocument.RootElement.GetProperty("confirmationToken").GetString();
+        using var beforeExecuteScope = _factory.Services.CreateScope();
+        var existingAuditIds = await beforeExecuteScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>()
+            .WorkToolOperationAudits
+            .Select(item => item.Id)
+            .ToArrayAsync(TestContext.Current.CancellationToken);
 
         var execute = await client.PostAsJsonAsync("/api/admin/worktool/group-operations/execute", new
         {
@@ -122,7 +127,10 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
 
         Assert.Equal(HttpStatusCode.BadRequest, execute.StatusCode);
         using var verifyScope = _factory.Services.CreateScope();
-        var audits = await verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().WorkToolOperationAudits.OrderBy(item => item.CreatedAtUtc).ToArrayAsync(TestContext.Current.CancellationToken);
+        var audits = await verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().WorkToolOperationAudits
+            .Where(item => !existingAuditIds.Contains(item.Id))
+            .OrderBy(item => item.CreatedAtUtc)
+            .ToArrayAsync(TestContext.Current.CancellationToken);
         Assert.Contains(audits, item => item.Status == "Rejected");
         Assert.All(audits, item => Assert.Equal(207, item.WorkToolCommandNumber));
         Assert.DoesNotContain(audits.Select(item => item.SanitizedRequestJson), value => value.Contains("private announcement", StringComparison.Ordinal));
