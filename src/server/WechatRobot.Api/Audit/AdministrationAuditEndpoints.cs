@@ -14,8 +14,71 @@ public static class AdministrationAuditEndpoints
     {
         endpoints.MapGet("/api/admin/administration-audits", ListAsync)
             .RequireAuthorization(SystemRoles.Admin);
+        endpoints.MapGet("/api/admin/administration-audits/filter-options", FilterOptionsAsync)
+            .RequireAuthorization(SystemRoles.Admin);
         return endpoints;
     }
+
+    private static async Task<IResult> FilterOptionsAsync(
+        string? targetType,
+        string? q,
+        WechatRobotDbContext database,
+        CancellationToken cancellationToken)
+    {
+        if (targetType?.Length > 256 || q?.Length > 256)
+            return TypedResults.BadRequest(new { error = "Administration audit option filter is too long." });
+
+        var audits = database.AdministrationAudits.AsNoTracking();
+        var actors = await audits
+            .Select(item => item.Actor)
+            .Distinct()
+            .Order()
+            .Take(100)
+            .ToArrayAsync(cancellationToken);
+        var actions = await audits
+            .Select(item => item.Action)
+            .Distinct()
+            .Order()
+            .Take(100)
+            .ToArrayAsync(cancellationToken);
+        var targetTypes = await audits
+            .Select(item => item.TargetType)
+            .Distinct()
+            .Order()
+            .Take(100)
+            .ToArrayAsync(cancellationToken);
+
+        var targets = Array.Empty<object>();
+        if (!string.IsNullOrWhiteSpace(targetType))
+        {
+            var normalizedType = targetType.Trim();
+            var targetQuery = audits.Where(item => item.TargetType == normalizedType);
+            if (!string.IsNullOrWhiteSpace(q))
+            {
+                var search = q.Trim();
+                targetQuery = targetQuery.Where(item => item.TargetId.Contains(search));
+            }
+            var targetIds = await targetQuery
+                .Select(item => item.TargetId)
+                .Distinct()
+                .Order()
+                .Take(50)
+                .ToArrayAsync(cancellationToken);
+            targets = targetIds
+                .Select(targetId => (object)new
+                {
+                    TargetType = normalizedType,
+                    TargetId = targetId,
+                    Label = $"{normalizedType} · {ShortId(targetId)}"
+                })
+                .ToArray();
+        }
+
+        return TypedResults.Ok(new { actors, actions, targetTypes, targets });
+    }
+
+    private static string ShortId(string value) =>
+        value.Length <= 28 ? value : $"{value[..14]}…{value[^10..]}";
 
     private static async Task<IResult> ListAsync(
         string? actor,

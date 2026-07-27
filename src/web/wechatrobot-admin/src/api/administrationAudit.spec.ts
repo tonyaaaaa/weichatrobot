@@ -35,4 +35,26 @@ describe('administrationAuditApi', () => {
       }
     });
   });
+
+  it('loads bounded filter options with linked target search', async () => {
+    apiClient.get.mockResolvedValueOnce({
+      data: {
+        actors: ['admin@example.test'],
+        actions: ['user_created'],
+        targetTypes: ['ApplicationUser'],
+        targets: [{
+          targetType: 'ApplicationUser',
+          targetId: 'user-1',
+          label: 'ApplicationUser · user-1'
+        }]
+      }
+    });
+
+    await administrationAuditApi.filterOptions('ApplicationUser', 'user');
+
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/api/admin/administration-audits/filter-options',
+      { params: { targetType: 'ApplicationUser', q: 'user' } }
+    );
+  });
 });

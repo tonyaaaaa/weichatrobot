@@ -27,6 +27,46 @@ public sealed class AdministrationAuditEndpointTests : IClassFixture<UserAdminis
         knowledge.DefaultRequestHeaders.Add("X-Test-Role", SystemRoles.KnowledgeOperator);
         Assert.Equal(HttpStatusCode.Forbidden,
             (await knowledge.GetAsync("/api/admin/administration-audits", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await knowledge.GetAsync("/api/admin/administration-audits/filter-options", TestContext.Current.CancellationToken)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Filter_options_are_distinct_bounded_and_keep_historical_targets()
+    {
+        await _factory.ResetAsync();
+        var admin = await _factory.CreateUserAsync(
+            "options-admin@example.test", "Options Admin", "Temporary1!Password", [SystemRoles.Admin]);
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var at = new DateTime(2026, 7, 24, 0, 0, 0, DateTimeKind.Utc);
+            database.AdministrationAudits.AddRange(
+                Enumerable.Range(0, 55).Select(index =>
+                    Audit("user_created", "ApplicationUser", $"historical-user-{index:00}", at.AddMinutes(index), """{"email":"not-returned@example.test"}""")));
+            database.AdministrationAudits.Add(
+                Audit("model_configuration_created", "ModelConfig", "model-1", at.AddHours(2), "{}"));
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateAdminClient(admin);
+        var response = await client.GetAsync(
+            "/api/admin/administration-audits/filter-options?targetType=ApplicationUser&q=historical",
+            TestContext.Current.CancellationToken);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.DoesNotContain("not-returned@example.test", json, StringComparison.Ordinal);
+
+        using var document = JsonDocument.Parse(json);
+        Assert.Equal(["audit-admin@example.test"], document.RootElement.GetProperty("actors").EnumerateArray().Select(item => item.GetString()!).ToArray());
+        Assert.Equal(["model_configuration_created", "user_created"], document.RootElement.GetProperty("actions").EnumerateArray().Select(item => item.GetString()!).ToArray());
+        Assert.Equal(["ApplicationUser", "ModelConfig"], document.RootElement.GetProperty("targetTypes").EnumerateArray().Select(item => item.GetString()!).ToArray());
+        var targets = document.RootElement.GetProperty("targets").EnumerateArray().ToArray();
+        Assert.Equal(50, targets.Length);
+        Assert.All(targets, target => Assert.Equal("ApplicationUser", target.GetProperty("targetType").GetString()));
+        Assert.All(targets, target => Assert.Equal(
+            ["label", "targetId", "targetType"],
+            target.EnumerateObject().Select(property => property.Name).Order().ToArray()));
     }
 
     [Fact]

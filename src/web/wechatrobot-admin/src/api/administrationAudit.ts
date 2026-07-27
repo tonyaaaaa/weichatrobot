@@ -28,11 +28,36 @@ export interface AdministrationAuditQuery {
   pageSize: number;
 }
 
+export interface AdministrationAuditTargetOption {
+  targetType: string;
+  targetId: string;
+  label: string;
+}
+
+export interface AdministrationAuditFilterOptions {
+  actors: string[];
+  actions: string[];
+  targetTypes: string[];
+  targets: AdministrationAuditTargetOption[];
+}
+
 export interface AdministrationAuditApi {
   list(request: AdministrationAuditQuery): Promise<AdministrationAuditPage>;
+  filterOptions(targetType?: string, q?: string): Promise<AdministrationAuditFilterOptions>;
 }
 
 export const administrationAuditApi: AdministrationAuditApi = {
+  async filterOptions(targetType, q) {
+    return (await apiClient.get<AdministrationAuditFilterOptions>(
+      '/api/admin/administration-audits/filter-options',
+      {
+        params: {
+          targetType: targetType?.trim() || undefined,
+          q: q?.trim() || undefined
+        }
+      }
+    )).data;
+  },
   async list(request) {
     return (await apiClient.get<AdministrationAuditPage>(
       '/api/admin/administration-audits',

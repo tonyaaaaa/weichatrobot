@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
-import { ElAlert, ElButton, ElEmpty, ElPagination, ElSkeleton, ElTag } from 'element-plus';
+import { ElAlert, ElButton, ElEmpty, ElOption, ElPagination, ElSelect, ElSkeleton, ElTag } from 'element-plus';
 import {
   administrationAuditApi,
   type AdministrationAuditApi,
+  type AdministrationAuditFilterOptions,
   type AdministrationAuditPage
 } from '../../api/administrationAudit';
 import { formatBeijingTime } from '../../utils/beijingTime';
@@ -28,6 +29,12 @@ const page = ref<AdministrationAuditPage>({
 });
 const loading = ref(true);
 const error = ref('');
+const options = ref<AdministrationAuditFilterOptions>({
+  actors: [],
+  actions: [],
+  targetTypes: [],
+  targets: []
+});
 
 async function load(requestedPage = page.value.page): Promise<void> {
   loading.value = true;
@@ -54,13 +61,30 @@ async function applyFilters(): Promise<void> {
   await load(1);
 }
 
+async function loadFilterOptions(targetType = filters.targetType, q = ''): Promise<void> {
+  try {
+    options.value = await props.api.filterOptions(targetType || undefined, q || undefined);
+  } catch {
+    error.value = '管理审计筛选选项加载失败，请刷新页面重试。';
+  }
+}
+
+async function changeTargetType(): Promise<void> {
+  filters.targetId = '';
+  await loadFilterOptions();
+}
+
+async function searchTargets(query: string): Promise<void> {
+  if (filters.targetType) await loadFilterOptions(filters.targetType, query);
+}
+
 function utc(value: string): string | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
-onMounted(load);
+onMounted(() => Promise.all([load(), loadFilterOptions()]));
 </script>
 
 <template>
@@ -75,10 +99,35 @@ onMounted(load);
     </header>
 
     <section class="panel filter-grid">
-      <label>操作人<input v-model="filters.actor" data-testid="administration-audit-actor"></label>
-      <label>动作<input v-model="filters.action" placeholder="例如 user_created"></label>
-      <label>目标类型<input v-model="filters.targetType" placeholder="例如 ApplicationUser"></label>
-      <label>目标 ID<input v-model="filters.targetId"></label>
+      <label>操作人
+        <ElSelect v-model="filters.actor" data-testid="administration-audit-actor" filterable clearable placeholder="全部操作人">
+          <ElOption v-for="actor in options.actors" :key="actor" :value="actor" :label="actor" />
+        </ElSelect>
+      </label>
+      <label>动作
+        <ElSelect v-model="filters.action" data-testid="administration-audit-action" filterable clearable placeholder="全部动作">
+          <ElOption v-for="action in options.actions" :key="action" :value="action" :label="action" />
+        </ElSelect>
+      </label>
+      <label>目标类型
+        <ElSelect v-model="filters.targetType" data-testid="administration-audit-target-type" filterable clearable placeholder="全部类型" @change="changeTargetType">
+          <ElOption v-for="targetType in options.targetTypes" :key="targetType" :value="targetType" :label="targetType" />
+        </ElSelect>
+      </label>
+      <label>目标
+        <ElSelect
+          v-model="filters.targetId"
+          data-testid="administration-audit-target"
+          filterable
+          remote
+          clearable
+          :disabled="!filters.targetType"
+          :remote-method="searchTargets"
+          placeholder="先选择目标类型"
+        >
+          <ElOption v-for="target in options.targets" :key="`${target.targetType}:${target.targetId}`" :value="target.targetId" :label="target.label" />
+        </ElSelect>
+      </label>
       <label>开始时间<input v-model="filters.fromLocal" type="datetime-local"></label>
       <label>结束时间<input v-model="filters.toLocal" type="datetime-local"></label>
       <ElButton data-testid="apply-administration-audit-filters" type="primary" @click="applyFilters">查询</ElButton>
