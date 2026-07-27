@@ -9,6 +9,11 @@ export interface KnownGroup {
   isEnabled: boolean;
   updatedAtUtc: string;
 }
+export interface WorkToolRobotOption {
+  id: string;
+  name: string;
+  isEnabled: boolean;
+}
 export interface GroupOperation { robotConfigId: string; kind: 'Create' | 'AddMembers' | 'RemoveMembers' | 'Rename' | 'UpdateAnnouncement'; groupIdentifier: string; memberDisplayNames: string[]; value?: string; }
 export type WorkToolOperationStatus =
   | 'queued'
@@ -30,6 +35,7 @@ export interface WorkToolOperationAudit {
   createdAtUtc: string;
 }
 export interface WorkToolOperationsApi {
+  listRobots(): Promise<WorkToolRobotOption[]>;
   listGroups(): Promise<KnownGroup[]>;
   registerExistingGroup(request: { robotConfigId: string; name: string; workToolGroupRemark?: string; manualInvitationCompleted: boolean }): Promise<KnownGroup>;
   preview(operation: GroupOperation): Promise<{ sanitizedRequest: string; confirmationToken: string; expiresAtUtc: string }>;
@@ -38,6 +44,7 @@ export interface WorkToolOperationsApi {
   getAuditScope(): Promise<{ scope: string }>;
 }
 export const workToolOperationsApi: WorkToolOperationsApi = {
+  async listRobots() { return (await apiClient.get<WorkToolRobotOption[]>('/api/admin/worktool/robots')).data; },
   async listGroups() { return (await apiClient.get<KnownGroup[]>('/api/admin/worktool/groups')).data; },
   async registerExistingGroup(request) { return (await apiClient.post<KnownGroup>('/api/admin/worktool/groups/register', request)).data; },
   async preview(operation) { return (await apiClient.post<{ sanitizedRequest: string; confirmationToken: string; expiresAtUtc: string }>('/api/admin/worktool/group-operations/preview', operation)).data; },

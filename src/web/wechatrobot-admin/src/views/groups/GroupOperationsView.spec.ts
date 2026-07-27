@@ -1,17 +1,38 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
+import { ElOption, ElSelect } from 'element-plus';
 import GroupOperationsView from './GroupOperationsView.vue';
 
 describe('GroupOperationsView', () => {
   it('requires an explicit manual invitation acknowledgement before registering an existing group', async () => {
-    const api = { listGroups: vi.fn().mockResolvedValue([]), registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([]), getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端审计范围' }) };
+    const api = {
+      listGroups: vi.fn().mockResolvedValue([]),
+      listRobots: vi.fn().mockResolvedValue([
+        { id: 'robot-config-1', name: '客服机器人', isEnabled: true },
+        { id: 'robot-config-2', name: '停用机器人', isEnabled: false }
+      ]),
+      registerExistingGroup: vi.fn(),
+      preview: vi.fn(),
+      execute: vi.fn(),
+      listOperations: vi.fn().mockResolvedValue([]),
+      getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端审计范围' })
+    };
     const wrapper = mount(GroupOperationsView, { props: { api } });
+    await flushPromises();
+    const robotSelectors = wrapper.findAllComponents(ElSelect);
+    expect(robotSelectors).toHaveLength(2);
+    const robotOptions = wrapper.findAllComponents(ElOption);
+    expect(robotOptions.map(option => option.props('label'))).toContain('客服机器人');
+    expect(robotOptions.filter(option => option.props('label') === '停用机器人').every(option => option.props('disabled'))).toBe(true);
+    expect(wrapper.find('[data-testid="operation-robot-config-id"]').exists()).toBe(false);
     await wrapper.get('[data-testid="register-existing-group"]').trigger('click');
     expect(wrapper.text()).toContain('先由人工在企业微信中邀请机器人入群');
+    robotSelectors[0].vm.$emit('update:modelValue', 'robot-config-1');
+    await wrapper.vm.$nextTick();
     await wrapper.get('[data-testid="manual-invitation-completed"]').setValue(true);
     await wrapper.get('[data-testid="register-existing-group"]').trigger('click');
     expect(api.registerExistingGroup).toHaveBeenCalledWith({
-      robotConfigId: '',
+      robotConfigId: 'robot-config-1',
       name: '',
       workToolGroupRemark: '',
       manualInvitationCompleted: true
@@ -22,6 +43,7 @@ describe('GroupOperationsView', () => {
   it('loads registered groups and selecting one populates the operation form', async () => {
     const api = {
       listGroups: vi.fn().mockResolvedValue([{ id: 'known-1', robotConfigId: 'robot-config-1', name: '技术支持群', workToolGroupRemark: 'support-east' }]),
+      listRobots: vi.fn().mockResolvedValue([{ id: 'robot-config-1', name: '客服机器人', isEnabled: true }]),
       registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([]), getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端审计范围' })
     };
     const wrapper = mount(GroupOperationsView, { props: { api } });
@@ -29,7 +51,7 @@ describe('GroupOperationsView', () => {
 
     expect(wrapper.text()).toContain('技术支持群');
     await wrapper.get('[data-testid="select-known-group-known-1"]').trigger('click');
-    expect((wrapper.get('[data-testid="operation-robot-config-id"]').element as HTMLInputElement).value).toBe('robot-config-1');
+    expect(wrapper.findAllComponents(ElSelect)[1].props('modelValue')).toBe('robot-config-1');
     expect((wrapper.get('[data-testid="operation-group-name"]').element as HTMLInputElement).value).toBe('support-east');
     expect(wrapper.text()).toContain('成员显示名');
     expect(wrapper.text()).toContain('不是稳定 ID');
@@ -46,6 +68,7 @@ describe('GroupOperationsView', () => {
     ];
     const api = {
       listGroups: vi.fn().mockResolvedValue([]),
+      listRobots: vi.fn().mockResolvedValue([]),
       registerExistingGroup: vi.fn(),
       preview: vi.fn(),
       execute: vi.fn(),

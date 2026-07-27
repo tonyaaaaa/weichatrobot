@@ -19,4 +19,15 @@ describe('workToolOperationsApi audit scope', () => {
     expect(apiClient.get).toHaveBeenCalledWith(
       '/api/admin/worktool/group-operations/audit-scope');
   });
+
+  it('loads robot options for group forms', async () => {
+    apiClient.get.mockResolvedValueOnce({
+      data: [{ id: 'robot-1', name: '客服机器人', isEnabled: true }]
+    });
+
+    await expect(workToolOperationsApi.listRobots()).resolves.toEqual([
+      expect.objectContaining({ id: 'robot-1', name: '客服机器人' })
+    ]);
+    expect(apiClient.get).toHaveBeenCalledWith('/api/admin/worktool/robots');
+  });
 });

@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
-import { workToolOperationsApi, type GroupOperation, type KnownGroup, type WorkToolOperationAudit, type WorkToolOperationsApi } from '../../api/worktool';
+import { ElOption, ElSelect } from 'element-plus';
+import {
+  workToolOperationsApi,
+  type GroupOperation,
+  type KnownGroup,
+  type WorkToolOperationAudit,
+  type WorkToolOperationsApi,
+  type WorkToolRobotOption
+} from '../../api/worktool';
 
 const props = withDefaults(defineProps<{ api?: WorkToolOperationsApi }>(), { api: () => workToolOperationsApi });
 const notice = ref(''); const confirmationToken = ref(''); const audit = ref<WorkToolOperationAudit[]>([]);
 const auditScope = ref('正在读取服务端审计范围…');
 const knownGroups = ref<KnownGroup[]>([]);
+const robots = ref<WorkToolRobotOption[]>([]);
 const registration = reactive({ robotConfigId: '', name: '', workToolGroupRemark: '', manualInvitationCompleted: false });
 const operation = reactive<GroupOperation>({ robotConfigId: '', kind: 'Create', groupIdentifier: '', memberDisplayNames: [], value: '' });
 async function register() {
@@ -16,6 +25,7 @@ async function preview() { const result = await props.api.preview({ ...operation
 async function execute() { if (!confirmationToken.value) { notice.value = '请先预览，再确认执行。'; return; } const result = await props.api.execute({ ...operation, memberDisplayNames: operation.memberDisplayNames }, confirmationToken.value); notice.value = result.message; confirmationToken.value = ''; await loadAudit(); }
 async function loadAudit() { audit.value = await props.api.listOperations(); }
 async function loadKnownGroups() { knownGroups.value = await props.api.listGroups(); }
+async function loadRobots() { robots.value = await props.api.listRobots(); }
 async function loadAuditScope() {
   try { auditScope.value = (await props.api.getAuditScope()).scope; }
   catch { auditScope.value = '审计范围读取失败，请刷新页面重试。'; }
@@ -38,19 +48,28 @@ function statusCopy(status: string) {
   };
   return copies[status] || status;
 }
-onMounted(() => Promise.all([loadAudit(), loadKnownGroups(), loadAuditScope()]));
+onMounted(() => Promise.all([loadAudit(), loadKnownGroups(), loadRobots(), loadAuditScope()]));
 </script>
 
 <template>
   <section class="group-operations-view">
     <h1>群操作</h1>
     <section><h2>登记已有群</h2><p>第一步必须由人工在企业微信中邀请机器人入群；系统不能替代该邀请。</p>
-      <label>机器人配置 ID <input v-model="registration.robotConfigId" aria-label="已有群机器人配置 ID"></label><label>群名称 <input v-model="registration.name"></label><label>WorkTool 群备注（可选）<input v-model="registration.workToolGroupRemark"></label>
+      <label>机器人
+        <ElSelect v-model="registration.robotConfigId" data-testid="registration-robot-select" filterable placeholder="选择启用机器人">
+          <ElOption v-for="robot in robots" :key="robot.id" :value="robot.id" :label="robot.name" :disabled="!robot.isEnabled" />
+        </ElSelect>
+      </label><label>群名称 <input v-model="registration.name"></label><label>WorkTool 群备注（可选）<input v-model="registration.workToolGroupRemark"></label>
+      <p v-if="!robots.some(robot => robot.isEnabled)">暂无启用机器人，请先到机器人设置中创建并启用机器人。</p>
       <label><input v-model="registration.manualInvitationCompleted" data-testid="manual-invitation-completed" type="checkbox"> 我已由人工在企业微信中完成机器人入群邀请</label><button data-testid="register-existing-group" type="button" @click="register">登记已有群</button>
     </section>
     <section><h2>已登记群</h2><p>选择后自动带入 WorkTool 群备注（如有）或群名称，以及机器人配置。</p><p v-if="!knownGroups.length">暂无已登记群。</p><ul v-else><li v-for="group in knownGroups" :key="group.id"><button type="button" :data-testid="`select-known-group-${group.id}`" @click="selectKnownGroup(group)">{{ group.name }}<template v-if="group.workToolGroupRemark">（{{ group.workToolGroupRemark }}）</template></button></li></ul></section>
     <section><h2>新建或调整群</h2><p>先预览，再使用两分钟内有效、且与当前内容绑定的确认令牌执行。</p>
-      <label>机器人配置 ID <input v-model="operation.robotConfigId" data-testid="operation-robot-config-id"></label><label>操作 <select v-model="operation.kind"><option value="Create">新建外部群</option><option value="AddMembers">添加成员</option><option value="RemoveMembers">移除成员</option><option value="Rename">改群名</option><option value="UpdateAnnouncement">更新群公告</option></select></label>
+      <label>机器人
+        <ElSelect v-model="operation.robotConfigId" data-testid="operation-robot-select" filterable placeholder="选择启用机器人">
+          <ElOption v-for="robot in robots" :key="robot.id" :value="robot.id" :label="robot.name" :disabled="!robot.isEnabled" />
+        </ElSelect>
+      </label><label>操作 <select v-model="operation.kind"><option value="Create">新建外部群</option><option value="AddMembers">添加成员</option><option value="RemoveMembers">移除成员</option><option value="Rename">改群名</option><option value="UpdateAnnouncement">更新群公告</option></select></label>
       <label>群名称（如已设置群备注，请填备注名）<input v-model="operation.groupIdentifier" data-testid="operation-group-name"></label><label>成员显示名（每行一个）<textarea :value="operation.memberDisplayNames.join('\n')" @input="operation.memberDisplayNames = ($event.target as HTMLTextAreaElement).value.split('\n').map(item => item.trim()).filter(Boolean)" /></label><p>成员显示名由 WorkTool 按名称执行，不是稳定 ID；重名或改名可能导致操作目标不唯一，请在预览时复核。</p><label>新值 <textarea v-model="operation.value" /></label>
       <button type="button" @click="preview">预览操作</button><button type="button" :disabled="!confirmationToken" @click="execute">确认执行</button>
     </section>
