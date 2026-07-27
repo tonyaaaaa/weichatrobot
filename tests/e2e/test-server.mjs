@@ -32,7 +32,11 @@ async function readJson(request) {
 
 async function handleApi(request, response, url) {
   const classification = classifyRequest(url.pathname);
-  if (classification === 'worktool') {
+  const isControlledApplicationRoute =
+    url.pathname === '/api/admin/worktool/robots'
+    || url.pathname === '/api/admin/worktool/groups'
+    || url.pathname === '/api/admin/worktool/robots/robot-e2e';
+  if (classification === 'worktool' && !isControlledApplicationRoute) {
     state.workToolRequests += 1;
     return sendJson(response, 500, { error: 'Default E2E forbids WorkTool requests.' });
   }
@@ -83,11 +87,18 @@ async function handleApi(request, response, url) {
     state.models.push(created);
     return sendJson(response, 201, created);
   }
-  if (url.pathname === '/api/admin/robots/' && request.method === 'GET') return sendJson(response, 200, [state.robot]);
-  if (url.pathname === '/api/admin/robots/robot-e2e' && request.method === 'PUT') {
+  if (url.pathname === '/api/admin/worktool/robots' && request.method === 'GET') return sendJson(response, 200, [state.robot]);
+  if (url.pathname === '/api/admin/worktool/robots/robot-e2e' && request.method === 'PUT') {
     const body = await readJson(request);
     state.robot = { ...state.robot, ...body, updatedAtUtc: '2026-07-23T00:01:00Z' };
     return sendJson(response, 200, state.robot);
+  }
+  if (url.pathname === '/api/admin/worktool/groups' && request.method === 'GET') {
+    return sendJson(response, 200, [{
+      id: 'group-e2e', robotConfigId: 'robot-e2e', name: '技术部',
+      workToolGroupRemark: '技术支持', robotName: state.robot.name, isEnabled: true,
+      updatedAtUtc: '2026-07-23T00:00:00Z'
+    }]);
   }
   const modelRoute = url.pathname.match(/^\/api\/admin\/model-configurations\/([^/]+)(?:\/(test-connection|enabled|default|api-key))?$/);
   if (modelRoute) {
@@ -189,6 +200,18 @@ async function handleApi(request, response, url) {
   if (url.pathname === '/api/audit/conversations' && request.method === 'GET') {
     return sendJson(response, 200, auditPage(state, Number(url.searchParams.get('page') ?? 1), Number(url.searchParams.get('pageSize') ?? 20)));
   }
+  if (url.pathname === '/api/audit/group-options' && request.method === 'GET') {
+    return sendJson(response, 200, [{
+      id: 'group-e2e', name: '技术部', remark: '技术支持',
+      robotName: state.robot.name, isEnabled: true
+    }]);
+  }
+  if (url.pathname === '/api/knowledge/tags/options' && request.method === 'GET') {
+    return sendJson(response, 200, [{
+      id: '11111111-1111-1111-1111-111111111111',
+      name: '安全测试', isGlobalPublic: false
+    }]);
+  }
 
   if (url.pathname === '/api/knowledge/documents' && request.method === 'POST') {
     return sendJson(response, 200, {
@@ -222,6 +245,13 @@ async function handleApi(request, response, url) {
 
   if (url.pathname === '/api/handoffs/' && request.method === 'GET') {
     return sendJson(response, 200, page([{ id: 'handoff-e2e', state: state.handoffState, reasonCode: 'explicit-transfer', version: state.handoffVersion, updatedAtUtc: '2026-07-23T00:00:00Z' }]));
+  }
+  if (url.pathname === '/api/handoffs/assignees' && request.method === 'GET') {
+    return sendJson(response, 200, [{
+      id: '22222222-2222-2222-2222-222222222222',
+      displayName: 'E2E 人工客服', email: 'human@e2e.local',
+      roles: ['HumanAgent'], isEnabled: true
+    }]);
   }
   if (url.pathname === '/api/handoffs/handoff-e2e' && request.method === 'GET') {
     return sendJson(response, 200, { id: 'handoff-e2e', state: state.handoffState, reasonCode: 'explicit-transfer', version: state.handoffVersion, updatedAtUtc: '2026-07-23T00:00:00Z', evidenceJson: '{"reason":"用户明确要求人工"}', finalAnswer: state.handoffState === 'Resolved' ? state.finalAnswer : '' });

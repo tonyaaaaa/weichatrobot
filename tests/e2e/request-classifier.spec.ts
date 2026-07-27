@@ -15,11 +15,17 @@ test('request classifier fails closed for WorkTool and external-provider shaped 
 
 test('controlled server rejects representative forbidden paths and derives counters from requests', async ({ request }) => {
   await request.post('/__e2e/reset');
-  expect((await request.get('/api/admin/worktool/robots')).status()).toBe(500);
+  const login = await request.post('/api/auth/login', {
+    data: { email: 'admin@e2e.local', password: 'Safe-E2E-Admin-1!' }
+  });
+  const { accessToken } = await login.json();
+  expect((await request.get('/api/admin/worktool/robots', {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  })).status()).toBe(200);
   expect((await request.post('/api/worktool/callback/robot')).status()).toBe(500);
   expect((await request.post('/v1/chat/completions')).status()).toBe(500);
   const evidence = await request.get('/__e2e/evidence');
-  expect(await evidence.json()).toMatchObject({ workToolRequests: 2, externalProviderCalls: 1 });
+  expect(await evidence.json()).toMatchObject({ workToolRequests: 1, externalProviderCalls: 1 });
 });
 
 test('auth policy and paged audit fixtures are deterministic units', () => {

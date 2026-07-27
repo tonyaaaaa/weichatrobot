@@ -15,7 +15,11 @@ export function createInitialState() {
     handoffVersion: 1,
     candidateStatus: 'pending',
     finalAnswer: '由人工确认的安全答案。',
-    robot: { id: 'robot-e2e', name: 'E2E 机器人', isEnabled: true, sendRateLimitPerMinute: 50, updatedAtUtc: '2026-07-23T00:00:00Z' },
+    robot: {
+      id: 'robot-e2e', name: 'E2E 机器人', robotReference: 'configured',
+      hasWorkToolRobotId: true, isEnabled: true, sendRateLimitPerMinute: 50,
+      updatedAtUtc: '2026-07-23T00:00:00Z'
+    },
     model: {
       id: 'model-e2e', name: 'e2e-chat', provider: 'fake-local', configurationType: 'chat',
       baseUrl: 'http://127.0.0.1:4178/__fake/chat', model: 'safe-chat-v1',

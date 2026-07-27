@@ -35,7 +35,7 @@ test.beforeEach(async ({ page }) => {
 
 test('login enforces role-specific navigation and route guards', async ({ page }) => {
   await login(page, 'admin');
-  for (const [path, heading] of [['/robots', '机器人设置'], ['/groups', '群管理'], ['/knowledge/documents', '知识文档'],
+  for (const [path, heading] of [['/robots', '机器人设置'], ['/groups', '已登记群'], ['/knowledge/documents', '知识文档'],
     ['/handoffs', '人工转接'], ['/audit', '会话审计']] as const) {
     await page.goto(path);
     await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
@@ -84,7 +84,7 @@ test('admin updates robot and fake model settings and previews every group rule 
   await page.getByRole('link', { name: '机器人设置' }).click();
   await page.getByLabel('机器人名称').fill('安全验收机器人');
   await page.getByLabel('发送限流').fill('40');
-  await page.getByTestId('save-robot-robot-e2e').click();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.getByText('机器人设置已保存。')).toBeVisible();
 
   await page.getByRole('link', { name: '模型配置' }).click();
@@ -112,8 +112,7 @@ test('admin updates robot and fake model settings and previews every group rule 
   await expect(page.getByTestId(`model-card-${modelId}`)).toContainText('默认');
 
   await page.getByRole('link', { name: '群管理' }).click();
-  await page.getByLabel('群配置 ID').fill('group-e2e');
-  await page.getByRole('button', { name: '读取配置' }).click();
+  await page.getByTestId('configure-group').click();
   await page.getByTestId('add-exact-include').click();
   await page.getByLabel('include-1-模式').fill('技术部');
   await page.getByTestId('add-contains-include').click();
@@ -143,7 +142,7 @@ test('knowledge operator uploads, approves chunks, queues indexing, and reads sa
   page.once('dialog', dialog => dialog.accept());
   await page.getByTestId('approve-previews').click();
   await expect(page.getByText('分段已批准，可以提交索引。')).toBeVisible();
-  await page.locator('#index-tag-ids').fill('11111111-1111-1111-1111-111111111111');
+  await page.getByTestId('knowledge-tag-11111111-1111-1111-1111-111111111111').check();
   await page.getByTestId('queue-index').click();
   await expect(page.getByText('索引任务已排队。')).toBeVisible();
   await expect(page.getByRole('heading', { name: '检索来源' })).toHaveCount(0);
@@ -173,7 +172,8 @@ test('human resolves a handoff and knowledge operator approves the resulting ans
   await page.getByRole('link', { name: '人工转接' }).click();
   await page.getByTestId('handoff-handoff-e2e').click();
   await expect(page.getByText('用户明确要求人工')).toBeVisible();
-  await page.getByTestId('assignee').fill('22222222-2222-2222-2222-222222222222');
+  await page.getByRole('combobox', { name: '客服' }).click();
+  await page.getByRole('option', { name: /E2E 人工客服/ }).click();
   page.once('dialog', dialog => dialog.accept());
   await page.getByTestId('assign-handoff').click();
   await expect(page.getByText('转接已分配。')).toBeVisible();
@@ -187,7 +187,7 @@ test('human resolves a handoff and knowledge operator approves the resulting ans
   await page.getByRole('link', { name: '知识审核' }).click();
   await page.getByTestId('candidate-candidate-e2e').click();
   await expect(page.locator('#revised-answer')).toHaveValue('由人工确认的安全答案。');
-  await page.locator('#candidate-tags').fill('11111111-1111-1111-1111-111111111111');
+  await page.getByTestId('knowledge-tag-11111111-1111-1111-1111-111111111111').check();
   page.once('dialog', dialog => dialog.accept());
   await page.getByTestId('approve-candidate').click();
   await expect(page.getByText('审核已提交，状态：approved_pending_index')).toBeVisible();
