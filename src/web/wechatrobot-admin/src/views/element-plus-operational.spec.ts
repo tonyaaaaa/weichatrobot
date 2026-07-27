@@ -96,7 +96,8 @@ describe('Task 16 Element Plus operational surfaces', () => {
         total: 1, page: 1, pageSize: 20
       }),
       roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
-      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn(),
+      setWorkToolDisplayName: vi.fn(), clearWorkToolDisplayName: vi.fn()
     } } });
     await flushPromises();
     expect(users.findComponent({ name: 'ElButton' }).exists()).toBe(true);

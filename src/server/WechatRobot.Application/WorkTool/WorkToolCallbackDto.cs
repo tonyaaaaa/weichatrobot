@@ -6,6 +6,11 @@ public sealed class WorkToolCallbackDto
 {
     public const int MaxIdentifierLength = 128;
     public const int MaxTextLength = 8192;
+    public const int MaxFileBase64Length = 8 * 1024 * 1024;
+
+    private static readonly HashSet<int?> OfficialTextTypes =
+        [0, 1, 2, 3, 5, 7, 8, 9, 13, 15];
+
     [JsonPropertyName("spoken")]
     public string? Spoken { get; init; }
 
@@ -29,6 +34,7 @@ public sealed class WorkToolCallbackDto
     public int? RoomType { get; init; }
 
     [JsonPropertyName("atMe")]
+    [JsonConverter(typeof(FlexibleNullableBooleanJsonConverter))]
     public bool? AtMe { get; init; }
 
     [JsonPropertyName("textType")]
@@ -37,43 +43,50 @@ public sealed class WorkToolCallbackDto
     [JsonPropertyName("messageId")]
     public string? MessageId { get; init; }
 
-    public bool IsSupportedGroupText(out string reason)
+    [JsonPropertyName("fileBase64")]
+    public string? FileBase64 { get; init; }
+
+    public WorkToolCallbackClassification Classify()
     {
-        if (RoomType != 1)
-        {
-            reason = "unsupported-room-type";
-            return false;
-        }
-
-        if (TextType != 1)
-        {
-            reason = "unsupported-text-type";
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(GroupName) || string.IsNullOrWhiteSpace(ReceivedName) || string.IsNullOrWhiteSpace(Spoken))
-        {
-            reason = "missing-required-group-or-text-field";
-            return false;
-        }
-
         if (!IsWithinLength(MessageId, MaxIdentifierLength)
             || !IsWithinLength(ReceivedName, MaxIdentifierLength)
             || !IsWithinLength(ConnectorStableSenderId, MaxIdentifierLength)
             || !IsWithinLength(GroupName, MaxIdentifierLength)
             || !IsWithinLength(GroupRemark, MaxIdentifierLength)
             || !IsWithinLength(Spoken, MaxTextLength)
-            || !IsWithinLength(RawSpoken, MaxTextLength))
-        {
-            reason = "callback-field-too-large";
-            return false;
-        }
+            || !IsWithinLength(RawSpoken, MaxTextLength)
+            || !IsWithinLength(FileBase64, MaxFileBase64Length))
+            return new(WorkToolCallbackDisposition.Reject, "callback-field-too-large");
 
-        reason = string.Empty;
-        return true;
+        if (RoomType is < 1 or > 4)
+            return new(WorkToolCallbackDisposition.Reject, "unknown-room-type");
+
+        if (!OfficialTextTypes.Contains(TextType))
+            return new(WorkToolCallbackDisposition.Reject, "unknown-text-type");
+
+        if (RoomType != 1 || TextType != 1)
+            return new(WorkToolCallbackDisposition.Ignore, "unsupported-message-kind");
+
+        if (string.IsNullOrWhiteSpace(GroupName)
+            || string.IsNullOrWhiteSpace(ReceivedName)
+            || string.IsNullOrWhiteSpace(Spoken))
+            return new(WorkToolCallbackDisposition.Reject, "missing-required-group-text-field");
+
+        return new(WorkToolCallbackDisposition.Process, string.Empty);
     }
 
     public static bool IsIdentifierWithinLimit(string? value) => IsWithinLength(value, MaxIdentifierLength);
 
     private static bool IsWithinLength(string? value, int maximumLength) => value is null || value.Length <= maximumLength;
 }
+
+public enum WorkToolCallbackDisposition
+{
+    Process,
+    Ignore,
+    Reject
+}
+
+public sealed record WorkToolCallbackClassification(
+    WorkToolCallbackDisposition Disposition,
+    string Reason);

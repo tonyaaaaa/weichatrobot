@@ -2,6 +2,7 @@ using System.Data.Common;
 using Microsoft.Extensions.Configuration;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Messaging;
+using WechatRobot.Infrastructure.WorkTool;
 
 namespace WechatRobot.Infrastructure.Security;
 
@@ -13,6 +14,7 @@ public static class StartupConfigurationValidator
         ValidateMySql(configuration.GetConnectionString("WechatRobot"));
         ValidateUpload(configuration);
         ValidateSendLimit(configuration);
+        ValidateWorkToolRateLimit(configuration);
         if (requireCors) ValidateCors(configuration);
     }
 
@@ -71,5 +73,18 @@ public static class StartupConfigurationValidator
         var options = configuration.GetSection(FixedReplyOptions.SectionName).Get<FixedReplyOptions>() ?? new();
         if (options.SendRateLimitPerMinute is < 1 or > 60)
             throw new InvalidOperationException("FixedReply:SendRateLimitPerMinute must be between 1 and the WorkTool limit of 60.");
+    }
+
+    private static void ValidateWorkToolRateLimit(IConfiguration configuration)
+    {
+        var options = configuration
+            .GetSection(WorkToolRateLimitOptions.SectionName)
+            .Get<WorkToolRateLimitOptions>() ?? new();
+        if (string.IsNullOrWhiteSpace(options.ScopeKey) || options.ScopeKey.Length > 128)
+            throw new InvalidOperationException("WorkTool:RateLimit:ScopeKey must contain 1-128 characters.");
+        if (options.RequestsPerMinute is < 1 or > 60)
+            throw new InvalidOperationException("WorkTool:RateLimit:RequestsPerMinute must be between 1 and 60.");
+        if (options.MaxWaitSeconds is < 1 or > 60)
+            throw new InvalidOperationException("WorkTool:RateLimit:MaxWaitSeconds must be between 1 and 60.");
     }
 }

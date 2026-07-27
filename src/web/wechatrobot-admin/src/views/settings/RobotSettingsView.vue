@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
-import { ElAlert, ElButton, ElEmpty, ElSkeleton, ElTag } from 'element-plus';
+import { ElAlert, ElButton, ElEmpty, ElSkeleton, ElSwitch, ElTag } from 'element-plus';
 import {
   robotApi,
   type RobotApi,
@@ -72,10 +72,26 @@ async function createRobot() {
   finally { busy.value = ''; }
 }
 
+function credentialSaveRequired(item: RobotSettings) {
+  if (credentials[item.id]?.trim()) return '新机器人 ID 尚未保存，请先保存后再测试连接。';
+  if (!item.hasWorkToolRobotId) return '请先填写并保存 WorkTool 机器人 ID。';
+  return '';
+}
+
 async function probe(item: RobotSettings) {
+  const blockedReason = credentialSaveRequired(item);
+  if (blockedReason) {
+    error.value = blockedReason;
+    return;
+  }
   busy.value = `${item.id}:probe`; error.value = '';
   try { probes[item.id] = await props.api.probe(item.id); }
-  catch { error.value = 'WorkTool 连接测试失败。'; }
+  catch (exception) {
+    const code = (exception as { response?: { data?: { error?: string } } }).response?.data?.error;
+    error.value = code === 'worktool-credential-required'
+      ? '请先填写并保存 WorkTool 机器人 ID。'
+      : 'WorkTool 连接测试失败。';
+  }
   finally { busy.value = ''; }
 }
 
@@ -123,29 +139,74 @@ onMounted(load);
         <header><div><h2>{{ item.name }}</h2><small>{{ formatBeijingTime(item.updatedAtUtc) }}</small></div>
           <div><ElTag>{{ item.hasWorkToolRobotId ? '标识已配置' : '标识缺失' }}</ElTag>
             <ElTag :type="item.isEnabled ? 'success' : 'info'">{{ item.isEnabled ? '已启用' : '已停用' }}</ElTag></div></header>
-        <label>机器人名称<input v-model="item.name" maxlength="128"></label>
-        <label>发送限流<input v-model.number="item.sendRateLimitPerMinute" type="number" min="1" max="60"></label>
-        <label>轮换 WorkTool 机器人 ID
-          <input v-model="credentials[item.id]" type="password" autocomplete="new-password" placeholder="留空表示不修改">
+        <label class="field">机器人名称<input v-model="item.name" maxlength="128"></label>
+        <label class="field">发送限流<input v-model.number="item.sendRateLimitPerMinute" type="number" min="1" max="60"></label>
+        <label class="field">轮换 WorkTool 机器人 ID
+          <input
+            v-model="credentials[item.id]"
+            :data-testid="`credential-${item.id}`"
+            type="password"
+            autocomplete="new-password"
+            placeholder="留空表示不修改"
+          >
         </label>
-        <label><input v-model="item.isEnabled" type="checkbox"> 启用机器人（启用前需测试连接）</label>
-        <div class="actions">
-          <ElButton :data-testid="`probe-${item.id}`" @click="probe(item)">测试连接</ElButton>
-          <ElButton type="primary" @click="save(item)">保存</ElButton>
-          <ElButton @click="queryCallbacks(item)">查询回调状态</ElButton>
+        <div class="setting-row runtime-setting">
+          <div class="setting-copy">
+            <strong>机器人运行状态</strong>
+            <p>停用后不会用于消息发送和群操作，配置仍会保留。</p>
+          </div>
+          <ElSwitch
+            v-model="item.isEnabled"
+            :data-testid="`enabled-${item.id}`"
+            inline-prompt
+            active-text="启用"
+            inactive-text="停用"
+          />
+        </div>
+        <div v-if="credentialSaveRequired(item)" class="credential-hint" role="status">
+          {{ credentialSaveRequired(item) }}
+        </div>
+        <div class="actions primary-actions">
+          <ElButton
+            :data-testid="`probe-${item.id}`"
+            :disabled="Boolean(credentialSaveRequired(item))"
+            :loading="busy === `${item.id}:probe`"
+            @click="probe(item)"
+          >测试连接</ElButton>
+          <ElButton type="primary" :loading="busy === `${item.id}:save`" @click="save(item)">保存设置</ElButton>
         </div>
         <div v-if="probes[item.id]" class="status-row">
           <ElTag :type="probes[item.id].reachable ? 'success' : 'danger'">{{ probes[item.id].reachable ? '可达' : '不可达' }}</ElTag>
-          <ElTag :type="probes[item.id].online === true ? 'success' : 'info'">
-            {{ probes[item.id].online === true ? '在线' : probes[item.id].online === false ? '离线' : '在线状态未知' }}
-          </ElTag>
+          <ElTag type="info">在线状态：WorkTool 官方未提供可靠结果</ElTag>
         </div>
         <div class="callback-box">
-          <label>公网地址<input v-model="publicBaseUrl" type="url"></label>
-          <label><input v-model="replyAll" type="checkbox"> 回复全部消息</label>
+          <div class="callback-heading">
+            <div class="setting-copy">
+              <strong>回调配置</strong>
+              <p>配置 WorkTool 向当前系统推送消息和指令结果。</p>
+            </div>
+            <ElButton
+              :disabled="Boolean(credentialSaveRequired(item))"
+              :loading="busy === `${item.id}:callbacks`"
+              @click="queryCallbacks(item)"
+            >查询回调状态</ElButton>
+          </div>
+          <label class="field">公网地址<input v-model="publicBaseUrl" type="url"></label>
+          <div class="setting-row">
+            <div class="setting-copy"><strong>回复全部消息</strong><p>开启后 WorkTool 会将所有收到的消息推送到回调地址。</p></div>
+            <ElSwitch v-model="replyAll" active-text="开启" inactive-text="关闭" />
+          </div>
           <div class="actions">
-            <ElButton :data-testid="`message-callback-${item.id}`" @click="configureMessage(item)">配置消息回调</ElButton>
-            <ElButton :data-testid="`result-callback-${item.id}`" @click="configureResult(item)">配置指令结果回调</ElButton>
+            <ElButton
+              :data-testid="`message-callback-${item.id}`"
+              :disabled="Boolean(credentialSaveRequired(item))"
+              @click="configureMessage(item)"
+            >配置消息回调</ElButton>
+            <ElButton
+              :data-testid="`result-callback-${item.id}`"
+              :disabled="Boolean(credentialSaveRequired(item))"
+              @click="configureResult(item)"
+            >配置指令结果回调</ElButton>
           </div>
           <p v-if="callbacks[item.id]">
             消息回调：{{ callbacks[item.id].messageCallbackConfigured ? '已配置' : '未配置' }}；
@@ -165,5 +226,6 @@ onMounted(load);
 </template>
 
 <style scoped>
-.ops-page,.cards,.panel{display:grid;gap:var(--space-lg)}.ops-page{max-width:1440px;margin:auto}.page-header,.panel>header,.actions,.status-row{display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);flex-wrap:wrap}.cards{grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}.panel{padding:var(--space-xl);border:1px solid var(--color-border);border-radius:.75rem;background:var(--color-surface)}label{display:grid;gap:var(--space-xs)}.callback-box{display:grid;gap:var(--space-md);padding:var(--space-lg);border-radius:.6rem;background:var(--color-background)}small{color:var(--color-muted-text)}.create-panel{position:fixed;z-index:50;inset:15% 25%;box-shadow:var(--shadow-lg)}
+.ops-page,.cards,.panel{display:grid;gap:var(--space-lg)}.ops-page{max-width:1440px;margin:auto}.page-header,.panel>header,.callback-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);flex-wrap:wrap}.actions,.status-row{display:flex;align-items:center;gap:var(--space-md);flex-wrap:wrap}.cards{grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}.panel{padding:var(--space-xl);border:1px solid var(--color-border);border-radius:.75rem;background:var(--color-surface)}.field{display:grid;gap:var(--space-xs)}.setting-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);min-height:44px;padding:var(--space-md);border:1px solid var(--color-border);border-radius:.6rem}.setting-copy{display:grid;gap:var(--space-xs)}.setting-copy p{margin:0;color:var(--color-muted-text);line-height:1.5}.credential-hint{padding:var(--space-sm) var(--space-md);border-radius:.5rem;background:var(--color-background);color:var(--color-muted-text)}.primary-actions{justify-content:flex-end}.callback-box{display:grid;gap:var(--space-md);padding:var(--space-lg);border-radius:.6rem;background:var(--color-background)}small{color:var(--color-muted-text)}.create-panel{position:fixed;z-index:50;inset:15% 25%;box-shadow:var(--shadow-lg)}
+@media (max-width:640px){.setting-row{align-items:flex-start}.primary-actions{justify-content:stretch}.primary-actions :deep(.el-button){flex:1}.create-panel{inset:5%}}
 </style>

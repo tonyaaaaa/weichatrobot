@@ -208,6 +208,14 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("varchar(256)");
 
+                    b.Property<string>("WorkToolDisplayName")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .UseCollation("utf8mb4_bin");
+
+                    b.Property<DateTime?>("WorkToolDisplayNameUpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("NormalizedEmail")
@@ -216,6 +224,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasIndex("NormalizedUserName")
                         .IsUnique()
                         .HasDatabaseName("UserNameIndex");
+
+                    b.HasIndex("WorkToolDisplayName")
+                        .IsUnique();
 
                     b.ToTable("AspNetUsers", (string)null);
                 });
@@ -522,6 +533,60 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.ToTable("durable_job", (string)null);
                 });
 
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupHumanAgentEntity", b =>
+                {
+                    b.Property<Guid>("GroupProfileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("ApplicationUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("DefaultGroupProfileId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("char(36)")
+                        .HasComputedColumnSql("CASE WHEN `IsDefault` = 1 AND `IsEnabled` = 1 THEN `GroupProfileId` ELSE NULL END", true);
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("LastVerifiedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("VerificationStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("Stale");
+
+                    b.Property<string>("WorkToolDisplayNameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .UseCollation("utf8mb4_bin");
+
+                    b.HasKey("GroupProfileId", "ApplicationUserId");
+
+                    b.HasIndex("ApplicationUserId");
+
+                    b.HasIndex("DefaultGroupProfileId")
+                        .IsUnique();
+
+                    b.ToTable("group_human_agent", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_group_human_agent_verification_status", "`VerificationStatus` IN ('Verified','Missing','Conflict','Stale')");
+                        });
+                });
+
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -574,6 +639,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("varchar(256)");
 
+                    b.Property<string>("RegistrationSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("Manual");
+
                     b.Property<Guid>("RobotConfigId")
                         .HasColumnType("char(36)");
 
@@ -584,6 +656,12 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("varchar(256)");
 
+                    b.Property<DateTime?>("WorkToolImportedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("WorkToolLastSeenAtUtc")
+                        .HasColumnType("datetime(6)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("RobotConfigId", "Name", "WorkToolGroupRemark");
@@ -591,6 +669,8 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.ToTable("group_profile", null, t =>
                         {
                             t.HasCheckConstraint("CK_group_profile_handoff_pause_policy", "`HandoffPausePolicy` IN ('Group','Sender')");
+
+                            t.HasCheckConstraint("CK_group_profile_registration_source", "`RegistrationSource` IN ('Manual','WorkToolImport')");
                         });
                 });
 
@@ -1835,6 +1915,19 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("varchar(256)");
 
+                    b.Property<Guid?>("ReconciledGroupProfileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("ReconciliationAttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ReconciliationNextAttemptAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("ReconciliationStatus")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
                     b.Property<string>("Result")
                         .HasMaxLength(1024)
                         .HasColumnType("varchar(1024)");
@@ -1878,10 +1971,15 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CreatedAtUtc");
 
+                    b.HasIndex("ReconciledGroupProfileId");
+
                     b.HasIndex("RobotConfigId");
 
                     b.HasIndex("WorkToolCommandMessageId")
                         .IsUnique();
+
+                    b.HasIndex("ReconciliationStatus", "ReconciliationNextAttemptAtUtc")
+                        .HasDatabaseName("IX_worktool_operation_audit_reconciliation_due");
 
                     b.HasIndex("Status", "CreatedAtUtc");
 
@@ -1928,6 +2026,24 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("worktool_operation_confirmation", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.WorkToolRateLimitBucketEntity", b =>
+                {
+                    b.Property<string>("ScopeKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<DateTime>("NextPermitAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("ScopeKey");
+
+                    b.ToTable("worktool_rate_limit_bucket", (string)null);
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.WorkerHeartbeatEntity", b =>
@@ -2037,6 +2153,21 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("RelatedConversationMessageId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupHumanAgentEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ApplicationUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GroupProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", b =>
@@ -2267,6 +2398,12 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.WorkToolOperationAuditEntity", b =>
                 {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ReconciledGroupProfileId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("FK_worktool_operation_audit_reconciled_group");
+
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.RobotConfigEntity", null)
                         .WithMany()
                         .HasForeignKey("RobotConfigId")

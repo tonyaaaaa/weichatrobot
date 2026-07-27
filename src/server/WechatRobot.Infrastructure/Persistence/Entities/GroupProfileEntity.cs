@@ -20,6 +20,9 @@ public sealed class GroupProfileEntity
     public bool? ContextIncludeBotHistory { get; set; }
     public string HandoffPausePolicy { get; set; } = "Group";
     public int ConfigurationVersion { get; set; }
+    public string RegistrationSource { get; set; } = "Manual";
+    public DateTime? WorkToolImportedAtUtc { get; set; }
+    public DateTime? WorkToolLastSeenAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

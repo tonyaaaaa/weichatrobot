@@ -98,6 +98,39 @@ public sealed class UserAdministrationServiceTests
         Assert.False(result.IsEnabled);
     }
 
+    [Fact]
+    public async Task WorkTool_display_name_is_explicit_trimmed_and_company_unique()
+    {
+        await using var fixture = await UserAdministrationFixture.CreateAsync();
+        var service = fixture.Services.GetRequiredService<UserAdministrationService>();
+        var first = await fixture.CreateUserAsync(
+            "first-agent@example.test",
+            "后台客服甲",
+            "Temporary1!Password",
+            [SystemRoles.HumanAgent]);
+        var second = await fixture.CreateUserAsync(
+            "second-agent@example.test",
+            "后台客服乙",
+            "Temporary1!Password",
+            [SystemRoles.HumanAgent]);
+
+        var bound = await service.SetWorkToolDisplayNameAsync(
+            "admin@example.test",
+            first.Id,
+            "  客服-王小明  ",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("客服-王小明", bound.WorkToolDisplayName);
+        var conflict = await Assert.ThrowsAsync<UserAdministrationException>(() =>
+            service.SetWorkToolDisplayNameAsync(
+                "admin@example.test",
+                second.Id,
+                "客服-王小明",
+                TestContext.Current.CancellationToken));
+        Assert.Equal("worktool-display-name-conflict", conflict.Code);
+        Assert.NotEqual(first.DisplayName, bound.WorkToolDisplayName);
+    }
+
     private sealed class UserAdministrationFixture : IAsyncDisposable
     {
         private readonly ServiceProvider _provider;

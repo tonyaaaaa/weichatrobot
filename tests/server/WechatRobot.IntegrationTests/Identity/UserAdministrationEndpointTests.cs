@@ -127,8 +127,51 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
         Assert.Equal(HttpStatusCode.Unauthorized, me.StatusCode);
     }
 
+    [Fact]
+    public async Task Admin_can_bind_and_clear_a_unique_WorkTool_display_name()
+    {
+        await _factory.ResetAsync();
+        var admin = await _factory.CreateUserAsync(
+            "nickname-admin@example.test",
+            "Admin",
+            "Temporary1!Password",
+            [SystemRoles.Admin]);
+        var agent = await _factory.CreateUserAsync(
+            "nickname-agent@example.test",
+            "后台名称",
+            "Temporary1!Password",
+            [SystemRoles.HumanAgent]);
+        using var client = _factory.CreateAdminClient(admin);
+
+        var bind = await client.PutAsJsonAsync(
+            $"/api/admin/users/{agent.Id:D}/worktool-display-name",
+            new { displayName = "企微客服甲" },
+            TestContext.Current.CancellationToken);
+
+        bind.EnsureSuccessStatusCode();
+        var bound = await bind.Content.ReadFromJsonAsync<ManagedUserResponse>(
+            JsonOptions,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("企微客服甲", bound!.WorkToolDisplayName);
+
+        var clear = await client.DeleteAsync(
+            $"/api/admin/users/{agent.Id:D}/worktool-display-name",
+            TestContext.Current.CancellationToken);
+        clear.EnsureSuccessStatusCode();
+        var cleared = await clear.Content.ReadFromJsonAsync<ManagedUserResponse>(
+            JsonOptions,
+            TestContext.Current.CancellationToken);
+        Assert.Null(cleared!.WorkToolDisplayName);
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private sealed record ManagedUserResponse(Guid Id, string Email, string DisplayName, bool IsEnabled, string[] Roles);
+    private sealed record ManagedUserResponse(
+        Guid Id,
+        string Email,
+        string DisplayName,
+        bool IsEnabled,
+        string? WorkToolDisplayName,
+        string[] Roles);
     private sealed record ManagedUserPageResponse(ManagedUserResponse[] Items, int Total, int Page, int PageSize);
 }
 

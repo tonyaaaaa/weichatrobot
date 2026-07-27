@@ -4,6 +4,8 @@ namespace WechatRobot.Application.WorkTool;
 
 public sealed class WorkToolCommandResultDto
 {
+    private static readonly HashSet<int> SupportedCommandTypes = [203, 206, 207];
+
     public const int MaximumMessageIdLength = 128;
     public const int MaximumListEntries = 100;
     public const int MaximumDisplayNameLength = 128;
@@ -52,7 +54,7 @@ public sealed class WorkToolCommandResultDto
             return false;
         }
 
-        if (Type != 1)
+        if (Type is null || !SupportedCommandTypes.Contains(Type.Value))
         {
             reason = "unsupported-result-type";
             return false;

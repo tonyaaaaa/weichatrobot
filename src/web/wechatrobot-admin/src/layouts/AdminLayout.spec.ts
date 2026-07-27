@@ -24,4 +24,13 @@ describe('AdminLayout responsive navigation', () => {
     expect(source).toContain('.nav-toggle:hover:not(.is-disabled)');
     expect(source).toContain('.nav-toggle:focus-visible');
   });
+
+  it('does not repeat the public-read OSS warning above every administration page', () => {
+    setActivePinia(createPinia());
+    const wrapper = mount(AdminLayout, {
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, RouterView: true } }
+    });
+
+    expect(wrapper.text()).not.toContain('公共读 OSS 风险提示');
+  });
 });

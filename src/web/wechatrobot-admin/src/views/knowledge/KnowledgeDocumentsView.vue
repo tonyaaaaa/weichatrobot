@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElAlert, ElButton, ElEmpty, ElProgress, ElSkeleton, ElTag } from 'element-plus';
-import PublicOssWarning from '../../components/PublicOssWarning.vue';
 import {
   knowledgeApi,
   type KnowledgeApi,
@@ -193,8 +192,6 @@ onMounted(() => {
       </div>
       <ElButton v-if="canListDocuments()" :loading="loading" @click="load">刷新列表</ElButton>
     </header>
-
-    <PublicOssWarning />
 
     <section class="panel upload-panel" aria-labelledby="upload-title">
       <div class="panel-heading">

@@ -83,6 +83,16 @@ describe('DashboardView', () => {
     expect(wrapper.get('[data-testid="readiness-status"]').text()).toContain('异常');
   });
 
+  it('does not present the compatibility online count as a reliable live metric', async () => {
+    const wrapper = mountView({
+      getSummary: vi.fn().mockResolvedValue(summary())
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('WorkTool 官方未提供可靠在线结果');
+    expect(wrapper.text()).not.toContain('当前在线');
+  });
+
   it('offers retry after the aggregate request fails', async () => {
     const getSummary = vi.fn()
       .mockRejectedValueOnce(new Error('offline'))

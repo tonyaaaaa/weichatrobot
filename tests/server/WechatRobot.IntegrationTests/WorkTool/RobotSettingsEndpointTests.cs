@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Security;
+using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.IntegrationTests.Models;
@@ -151,5 +152,94 @@ public sealed class RobotSettingsEndpointTests : IClassFixture<ModelConfiguratio
                 .ToArrayAsync(TestContext.Current.CancellationToken));
         Assert.DoesNotContain("plaintext-robot-id", auditJson, StringComparison.Ordinal);
         Assert.DoesNotContain("replacement-secret", auditJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Probe_returns_configuration_conflict_when_robot_identifier_is_missing()
+    {
+        var robot = new RobotConfigEntity
+        {
+            Name = $"missing-credential-{Guid.NewGuid():N}",
+            IsEnabled = false,
+            EncryptedWorkToolRobotId = null
+        };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.RobotConfigs.Add(robot);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsync(
+            $"/api/admin/worktool/robots/{robot.Id:D}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<Dictionary<string, string>>(
+            TestContext.Current.CancellationToken);
+        Assert.Equal("worktool-credential-required", payload?["error"]);
+    }
+
+    [Fact]
+    public async Task Admin_can_discover_and_selectively_import_remote_groups()
+    {
+        var robot = new RobotConfigEntity
+        {
+            Name = $"group-import-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"secret-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test",
+            IsEnabled = true
+        };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.RobotConfigs.Add(robot);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+        var workTool = _factory.Services.GetRequiredService<RecordingWorkToolClient>();
+        workTool.NextGroupPage = new WorkToolGroupPage(
+            1,
+            50,
+            1,
+            1,
+            [new("待导入客户群", "群主甲", 8, "公告")]);
+        using var client = _factory.CreateClient();
+
+        var discovery = await client.GetAsync(
+            $"/api/admin/worktool/robots/{robot.Id:D}/groups?page=1&pageSize=50",
+            TestContext.Current.CancellationToken);
+        discovery.EnsureSuccessStatusCode();
+        var discoveryJson = await discovery.Content.ReadAsStringAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Contains("待导入客户群", discoveryJson, StringComparison.Ordinal);
+        Assert.Contains("\"importState\":\"Available\"", discoveryJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(robot.WorkToolRobotId, discoveryJson, StringComparison.Ordinal);
+
+        var imported = await client.PostAsJsonAsync(
+            $"/api/admin/worktool/robots/{robot.Id:D}/groups/import",
+            new
+            {
+                groups = new[]
+                {
+                    new
+                    {
+                        groupName = "待导入客户群",
+                        expectedImportState = "Available"
+                    }
+                }
+            },
+            TestContext.Current.CancellationToken);
+
+        imported.EnsureSuccessStatusCode();
+        using var verify = _factory.Services.CreateScope();
+        Assert.Equal(
+            1,
+            await verify.ServiceProvider.GetRequiredService<WechatRobotDbContext>()
+                .GroupProfiles.CountAsync(
+                    group => group.RobotConfigId == robot.Id
+                        && group.Name == "待导入客户群",
+                    TestContext.Current.CancellationToken));
     }
 }

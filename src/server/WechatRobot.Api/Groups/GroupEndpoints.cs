@@ -20,8 +20,62 @@ public static class GroupEndpoints
         var groups = endpoints.MapGroup("/api/groups").RequireAuthorization(SystemRoles.Admin);
         groups.MapGet("{id:guid}/configuration", GetConfigurationAsync);
         groups.MapPut("{id:guid}/configuration", UpdateConfigurationAsync);
+        groups.MapGet("{id:guid}/eligible-human-agents", GetEligibleHumanAgentsAsync);
+        groups.MapPut("{id:guid}/human-agents", UpdateHumanAgentsAsync);
         endpoints.MapPost("/api/group-rules/preview", PreviewAsync).RequireAuthorization(SystemRoles.Admin);
         return endpoints;
+    }
+
+    private static async Task<IResult> GetEligibleHumanAgentsAsync(
+        Guid id,
+        WechatRobotDbContext database,
+        CancellationToken cancellationToken)
+    {
+        if (!await database.GroupProfiles.AsNoTracking().AnyAsync(group => group.Id == id, cancellationToken))
+            return Results.NotFound();
+
+        var eligibleRoleNames = new[] { SystemRoles.Admin, SystemRoles.HumanAgent };
+        var candidates = await (
+                from user in database.Users.AsNoTracking()
+                join userRole in database.UserRoles.AsNoTracking() on user.Id equals userRole.UserId
+                join role in database.Roles.AsNoTracking() on userRole.RoleId equals role.Id
+                where user.IsEnabled
+                    && user.WorkToolDisplayName != null
+                    && eligibleRoleNames.Contains(role.Name!)
+                select new EligibleHumanAgentResponse(
+                    user.Id,
+                    user.DisplayName,
+                    user.WorkToolDisplayName!,
+                    "Stale",
+                    false,
+                    false))
+            .Distinct()
+            .OrderBy(candidate => candidate.DisplayName)
+            .ToArrayAsync(cancellationToken);
+
+        return Results.Ok(new EligibleHumanAgentsResponse(
+            candidates,
+            false,
+            "需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。"));
+    }
+
+    private static async Task<IResult> UpdateHumanAgentsAsync(
+        Guid id,
+        UpdateGroupHumanAgentsRequest request,
+        WechatRobotDbContext database,
+        CancellationToken cancellationToken)
+    {
+        if (!await database.GroupProfiles.AsNoTracking().AnyAsync(group => group.Id == id, cancellationToken))
+            return Results.NotFound();
+
+        // WorkTool only documents how to request the type=512 result. It does not
+        // document a stable member-nickname response schema. Until a captured
+        // result has passed the evidence gate, no assignment may be enabled.
+        return Results.Conflict(new
+        {
+            error = "worktool-member-snapshot-unavailable",
+            message = "需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。"
+        });
     }
 
     private static async Task<IResult> GetConfigurationAsync(Guid id, WechatRobotDbContext database, GroupConfigurationService service, CancellationToken cancellationToken)
@@ -234,5 +288,22 @@ public static class GroupEndpoints
     public sealed record GroupContextResponse(GroupContextOverrides Configured, GroupContextSettings Effective);
     public sealed record PreviewGroupRulesResponse(IReadOnlyList<GroupRulePreviewResult> Results);
     public sealed record GroupRulePreviewResult(string GroupName, bool IsMatch, bool IsExcluded);
+    public sealed record EligibleHumanAgentsResponse(
+        IReadOnlyList<EligibleHumanAgentResponse> Candidates,
+        bool CanConfigure,
+        string GateMessage);
+    public sealed record EligibleHumanAgentResponse(
+        Guid UserId,
+        string DisplayName,
+        string WorkToolDisplayName,
+        string VerificationStatus,
+        bool IsEnabled,
+        bool IsDefault);
+    public sealed record UpdateGroupHumanAgentsRequest(
+        IReadOnlyList<Guid>? UserIds,
+        Guid? DefaultUserId = null)
+    {
+        public IReadOnlyList<Guid> UserIds { get; init; } = UserIds ?? [];
+    }
     private enum GroupRuleDirection { Include, Exclude }
 }

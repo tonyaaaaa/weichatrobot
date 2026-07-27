@@ -55,4 +55,63 @@ describe('GroupListView', () => {
     expect(wrapper.text()).toContain('群列表加载失败，请稍后重试');
     expect(wrapper.find('[data-testid="group-row"]').exists()).toBe(false);
   });
+
+  it('loads remote groups by selected robot and imports only checked available rows', async () => {
+    const api = {
+      listGroups: vi.fn().mockResolvedValue([]),
+      listRobots: vi.fn().mockResolvedValue([
+        { id: 'robot-1', name: '客服机器人', isEnabled: true }
+      ]),
+      listRemoteGroups: vi.fn().mockResolvedValue({
+        pageNumber: 1,
+        pageSize: 50,
+        totalPages: 1,
+        total: 2,
+        items: [
+          {
+            groupName: '可导入群',
+            masterName: '群主甲',
+            membersCount: 8,
+            importState: 'Available'
+          },
+          {
+            groupName: '已登记群',
+            masterName: '群主乙',
+            membersCount: 5,
+            importState: 'Imported'
+          }
+        ]
+      }),
+      importRemoteGroups: vi.fn().mockResolvedValue([
+        {
+          groupName: '可导入群',
+          status: 'Imported',
+          groupProfileId: 'group-1'
+        }
+      ])
+    };
+    const wrapper = mount(GroupListView, {
+      props: { api },
+      global: { stubs: { RouterLink: routerLinkStub } }
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="remote-robot"]').setValue('robot-1');
+    await wrapper.get('[data-testid="load-remote-groups"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('WorkTool 已将该群列表接口标记为将废弃');
+    expect(wrapper.get('[data-testid="select-remote-可导入群"]').attributes('disabled'))
+      .toBeUndefined();
+    expect(wrapper.get('[data-testid="select-remote-已登记群"]').attributes('disabled'))
+      .toBeDefined();
+
+    await wrapper.get('[data-testid="select-remote-可导入群"]').setValue(true);
+    await wrapper.get('[data-testid="import-remote-groups"]').trigger('click');
+    await flushPromises();
+
+    expect(api.importRemoteGroups).toHaveBeenCalledWith(
+      'robot-1',
+      [{ groupName: '可导入群', expectedImportState: 'Available' }]
+    );
+  });
 });

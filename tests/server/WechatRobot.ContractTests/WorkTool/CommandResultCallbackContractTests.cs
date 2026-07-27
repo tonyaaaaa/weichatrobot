@@ -6,7 +6,7 @@ namespace WechatRobot.ContractTests.WorkTool;
 public sealed class CommandResultCallbackContractTests
 {
     [Fact]
-    public void Documented_type_one_result_is_accepted_without_retaining_raw_message()
+    public void Documented_type_203_result_is_accepted_without_retaining_raw_message()
     {
         var dto = JsonSerializer.Deserialize<WorkToolCommandResultDto>(
             """
@@ -16,7 +16,7 @@ public sealed class CommandResultCallbackContractTests
               "errorReason": "",
               "runTime": 1721781000000,
               "timeCost": 1.25,
-              "type": 1,
+              "type": 203,
               "successList": ["Alice"],
               "failList": [],
               "rawMsg": "must-not-be-retained"
@@ -40,12 +40,12 @@ public sealed class CommandResultCallbackContractTests
 
     public static TheoryData<WorkToolCommandResultDto, string> InvalidResults => new()
     {
-        { new() { ErrorCode = 0, Type = 1 }, "missing-message-id" },
-        { new() { MessageId = new string('x', 129), ErrorCode = 0, Type = 1 }, "message-id-too-large" },
-        { new() { MessageId = "command", Type = 1 }, "missing-result-code" },
-        { new() { MessageId = "command", ErrorCode = 0, Type = 2 }, "unsupported-result-type" },
-        { new() { MessageId = "command", ErrorCode = 0, Type = 1, SuccessList = Enumerable.Repeat("Alice", 101).ToArray() }, "result-list-too-large" },
-        { new() { MessageId = "command", ErrorCode = 0, Type = 1, SuccessList = Enumerable.Repeat("Alice", 51).ToArray(), FailList = Enumerable.Repeat("Bob", 50).ToArray() }, "result-list-too-large" },
-        { new() { MessageId = "command", ErrorCode = 0, Type = 1, FailList = [new string('x', 129)] }, "result-name-too-large" }
+        { new() { ErrorCode = 0, Type = 203 }, "missing-message-id" },
+        { new() { MessageId = new string('x', 129), ErrorCode = 0, Type = 203 }, "message-id-too-large" },
+        { new() { MessageId = "command", Type = 203 }, "missing-result-code" },
+        { new() { MessageId = "command", ErrorCode = 0, Type = 1 }, "unsupported-result-type" },
+        { new() { MessageId = "command", ErrorCode = 0, Type = 203, SuccessList = Enumerable.Repeat("Alice", 101).ToArray() }, "result-list-too-large" },
+        { new() { MessageId = "command", ErrorCode = 0, Type = 203, SuccessList = Enumerable.Repeat("Alice", 51).ToArray(), FailList = Enumerable.Repeat("Bob", 50).ToArray() }, "result-list-too-large" },
+        { new() { MessageId = "command", ErrorCode = 0, Type = 203, FailList = [new string('x', 129)] }, "result-name-too-large" }
     };
 }

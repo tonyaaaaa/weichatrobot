@@ -31,7 +31,8 @@ builder.Logging.AddRedactingConsole();
 StartupConfigurationValidator.Validate(builder.Configuration, requireCors: false);
 var connectionString = builder.Configuration.GetConnectionString("WechatRobot")
     ?? throw new InvalidOperationException("ConnectionStrings:WechatRobot must be configured.");
-builder.Services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
+builder.Services.AddDbContextFactory<WechatRobotDbContext>(
+    options => options.UseMySQL(connectionString));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
 builder.Services.AddScoped<SendCommandService>();
 builder.Services.AddOptions<DocumentUploadOptions>().BindConfiguration(DocumentUploadOptions.SectionName)
@@ -145,14 +146,23 @@ builder.Services.AddScoped<IRetrievalEvidenceProvider, KnowledgeRetrievalEvidenc
 builder.Services.AddScoped<IKnowledgeTagScopeResolver, KnowledgeTagScopeResolver>();
 builder.Services.AddScoped<GroundedAnswerService>();
 builder.Services.AddScoped<InboundMessageProcessor>();
+builder.Services.AddOptions<WorkToolRateLimitOptions>()
+    .BindConfiguration(WorkToolRateLimitOptions.SectionName)
+    .ValidateOnStart();
+builder.Services.AddSingleton<IWorkToolGlobalRateLimiter, MySqlWorkToolGlobalRateLimiter>();
+builder.Services.AddTransient<WorkToolGlobalRateLimitHandler>();
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/");
-});
+})
+    .AddHttpMessageHandler<WorkToolGlobalRateLimitHandler>()
+    .ConfigurePrimaryHttpMessageHandler(WorkToolHttpTransport.CreatePrimaryHandler);
 builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
+builder.Services.AddScoped<WorkToolGroupImportService>();
 builder.Services.AddHostedService<DurableJobWorker>();
 builder.Services.AddHostedService<RobotSendWorker>();
 builder.Services.AddHostedService<WorkToolGroupOperationWorker>();
+builder.Services.AddHostedService<WorkToolGroupReconciliationWorker>();
 builder.Services.AddHostedService<KnowledgeUploadWorker>();
 builder.Services.AddHostedService<KnowledgeParseWorker>();
 builder.Services.AddHostedService<KnowledgeIndexWorker>();

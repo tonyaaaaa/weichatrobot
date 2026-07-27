@@ -36,6 +36,24 @@ public sealed class RobotAndCallbackContractTests
         Assert.Equal("/robot/robotInfo/online?robotId=robot-7", handler.RequestUri!.PathAndQuery);
     }
 
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("")]
+    [InlineData("""{"code":200,"data":{"online":true,"status":1}}""")]
+    [InlineData("""{"unexpected":"successful-but-undocumented"}""")]
+    public async Task GetOnlineAsync_treats_every_http_2xx_body_as_unknown_without_failure(
+        string body)
+    {
+        using var handler = new CapturingHandler(body);
+
+        var result = await Client(handler).GetOnlineAsync(
+            Guid.NewGuid(),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(result.Online);
+        Assert.Null(result.FailureCode);
+    }
+
     [Fact]
     public async Task ConfigureMessageCallbackAsync_uses_robot_update_contract()
     {
@@ -57,6 +75,7 @@ public sealed class RobotAndCallbackContractTests
                 """{"openCallback":1,"replyAll":1,"callbackUrl":"https://robot.example/api/worktool/callback/route?token=fake-secret"}""")!
                 .ToJsonString(),
             JsonNode.Parse(handler.Body)!.ToJsonString());
+        Assert.Equal(Encoding.UTF8.GetByteCount(handler.Body), handler.ContentLength);
     }
 
     [Fact]
@@ -109,6 +128,58 @@ public sealed class RobotAndCallbackContractTests
         Assert.DoesNotContain("fake-secret", result.FailureCode, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Robot_probe_retries_one_transport_failure_with_fresh_http_11_connections()
+    {
+        using var handler = new TransportFailureThenSuccessHandler(
+            """{"code":200,"message":"操作成功","data":{"robotId":"robot-7","openCallback":1,"replyAll":1}}""");
+
+        var result = await Client(handler).GetRobotAsync(
+            Guid.NewGuid(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Reachable);
+        Assert.Equal(2, handler.CallCount);
+        Assert.All(handler.Versions, version => Assert.Equal(HttpVersion.Version11, version));
+        Assert.All(handler.ConnectionCloseValues, Assert.True);
+    }
+
+    [Fact]
+    public async Task Message_callback_configuration_retries_one_transport_failure()
+    {
+        using var handler = new TransportFailureThenSuccessHandler(
+            """{"code":0,"message":"ok","data":null}""");
+
+        var result = await Client(handler).ConfigureMessageCallbackAsync(
+            Guid.NewGuid(),
+            new WorkToolMessageCallbackRequest(
+                true,
+                true,
+                new Uri("https://robot.example/api/worktool/callback/route")),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Configured);
+        Assert.Equal(2, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task Message_delivery_is_not_retried_after_a_transport_failure()
+    {
+        using var handler = new TransportFailureThenSuccessHandler(
+            """{"code":0,"message":"ok","data":"message-7"}""");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            Client(handler).SendTextAsync(
+                new WorkToolSendRequest(
+                    Guid.NewGuid(),
+                    "测试群",
+                    "只发送一次",
+                    "idempotency-7"),
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, handler.CallCount);
+    }
+
     private static WorkToolClient Client(HttpMessageHandler handler) =>
         new(
             new HttpClient(handler) { BaseAddress = new Uri("https://api.worktool.test/") },
@@ -118,12 +189,14 @@ public sealed class RobotAndCallbackContractTests
     {
         public Uri? RequestUri { get; private set; }
         public string Body { get; private set; } = string.Empty;
+        public long? ContentLength { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             RequestUri = request.RequestUri;
+            ContentLength = request.Content?.Headers.ContentLength;
             Body = request.Content is null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken);
@@ -131,6 +204,28 @@ public sealed class RobotAndCallbackContractTests
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
+        }
+    }
+
+    private sealed class TransportFailureThenSuccessHandler(string body) : HttpMessageHandler
+    {
+        public int CallCount { get; private set; }
+        public List<Version> Versions { get; } = [];
+        public List<bool> ConnectionCloseValues { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            Versions.Add(request.Version);
+            ConnectionCloseValues.Add(request.Headers.ConnectionClose == true);
+            if (CallCount == 1)
+                throw new HttpRequestException("Simulated Windows TLS decryption failure.");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
         }
     }
 

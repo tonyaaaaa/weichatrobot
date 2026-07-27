@@ -16,6 +16,8 @@ public static class UserAdministrationEndpoints
         group.MapPost("", CreateAsync);
         group.MapPut("/{id:guid}/enabled", SetEnabledAsync);
         group.MapPut("/{id:guid}/roles", SetRolesAsync);
+        group.MapPut("/{id:guid}/worktool-display-name", SetWorkToolDisplayNameAsync);
+        group.MapDelete("/{id:guid}/worktool-display-name", ClearWorkToolDisplayNameAsync);
         return group;
     }
 
@@ -95,10 +97,51 @@ public static class UserAdministrationEndpoints
         }
     }
 
+    private static async Task<IResult> SetWorkToolDisplayNameAsync(
+        Guid id,
+        SetWorkToolDisplayName request,
+        ClaimsPrincipal principal,
+        UserAdministrationService service,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return TypedResults.Ok(await service.SetWorkToolDisplayNameAsync(
+                Actor(principal),
+                id,
+                request.DisplayName,
+                cancellationToken));
+        }
+        catch (UserAdministrationException exception)
+        {
+            return Failure(exception);
+        }
+    }
+
+    private static async Task<IResult> ClearWorkToolDisplayNameAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        UserAdministrationService service,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return TypedResults.Ok(await service.ClearWorkToolDisplayNameAsync(
+                Actor(principal),
+                id,
+                cancellationToken));
+        }
+        catch (UserAdministrationException exception)
+        {
+            return Failure(exception);
+        }
+    }
+
     private static IResult Failure(UserAdministrationException exception) => exception.Code switch
     {
         "user-not-found" => TypedResults.NotFound(new { error = exception.Code }),
         "last-enabled-admin" => TypedResults.Conflict(new { error = exception.Code }),
+        "worktool-display-name-conflict" => TypedResults.Conflict(new { error = exception.Code }),
         _ => TypedResults.BadRequest(new { error = exception.Code, errors = exception.Errors })
     };
 
@@ -108,4 +151,5 @@ public static class UserAdministrationEndpoints
         "unknown";
 
     public sealed record SetManagedUserEnabled(bool IsEnabled);
+    public sealed record SetWorkToolDisplayName(string DisplayName);
 }

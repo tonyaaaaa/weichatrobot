@@ -23,6 +23,16 @@ public sealed class WorkToolPersistenceMigrationTests(MySqlFixture fixture) : IC
         AssertProperty<ConversationMessageEntity>(model, "GroupRemark", true, 256);
         AssertReceipt<SendCommandEntity>(model);
         AssertReceipt<WorkToolOperationAuditEntity>(model);
+        var rateBucket = model.FindEntityType(typeof(WorkToolRateLimitBucketEntity));
+        Assert.NotNull(rateBucket);
+        Assert.Equal(
+            "worktool_rate_limit_bucket",
+            rateBucket.GetTableName());
+        Assert.Equal(
+            128,
+            rateBucket.FindProperty(nameof(WorkToolRateLimitBucketEntity.ScopeKey))!.GetMaxLength());
+        Assert.True(
+            rateBucket.FindProperty(nameof(WorkToolRateLimitBucketEntity.Version))!.IsConcurrencyToken);
 
         var group = model.FindEntityType(typeof(GroupProfileEntity))!;
         Assert.DoesNotContain(

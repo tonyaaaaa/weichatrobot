@@ -41,7 +41,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         var response = await PostAsync(
             client,
             seeded,
-            new { messageId = seeded.MessageId, errorCode, type = 1, successList, failList });
+            new { messageId = seeded.MessageId, errorCode, type = 203, successList, failList });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("""{"code":0,"message":"accepted"}""", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
@@ -67,7 +67,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         var response = await PostAsync(
             client,
             seeded,
-            new { messageId = seeded.MessageId, errorCode = 0, type = 1, successList = new[] { "Alice" }, failList = Array.Empty<string>() });
+            new { messageId = seeded.MessageId, errorCode = 0, type = 207, successList = new[] { "Alice" }, failList = Array.Empty<string>() });
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -76,6 +76,8 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         var audit = await scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().WorkToolOperationAudits.AsNoTracking()
             .SingleAsync(item => item.Id == seeded.TargetId, TestContext.Current.CancellationToken);
         Assert.Equal(WorkToolCommandStatuses.ExecutedSucceeded, audit.Status);
+        Assert.Equal("Pending", audit.ReconciliationStatus);
+        Assert.NotNull(audit.ReconciliationNextAttemptAtUtc);
         Assert.Equal(["Alice"], Deserialize(audit.WorkToolSuccessListJson));
     }
 
@@ -85,7 +87,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         await using var factory = new CallbackApiFactory(fixture.ConnectionString);
         var seeded = await SeedSendAsync(factory, WorkToolCommandStatuses.Accepted);
         using var client = factory.CreateClient();
-        var succeeded = new { messageId = seeded.MessageId, errorCode = 0, type = 1, successList = new[] { "Alice" }, failList = Array.Empty<string>() };
+        var succeeded = new { messageId = seeded.MessageId, errorCode = 0, type = 203, successList = new[] { "Alice" }, failList = Array.Empty<string>() };
 
         (await PostAsync(client, seeded, succeeded)).EnsureSuccessStatusCode();
         (await PostAsync(client, seeded, succeeded)).EnsureSuccessStatusCode();
@@ -93,7 +95,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         {
             messageId = seeded.MessageId,
             errorCode = 1001,
-            type = 1,
+            type = 203,
             successList = Array.Empty<string>(),
             failList = new[] { "Alice" }
         })).EnsureSuccessStatusCode();
@@ -120,7 +122,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         {
             messageId = seeded.MessageId,
             errorCode = 0,
-            type = 1,
+            type = 203,
             successList = new[] { "Alice" },
             failList = Array.Empty<string>()
         };
@@ -151,7 +153,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         {
             messageId = seeded.MessageId,
             errorCode = 0,
-            type = 1,
+            type = 203,
             successList = new[] { "Alice" },
             failList = Array.Empty<string>()
         })).EnsureSuccessStatusCode();
@@ -179,7 +181,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         {
             messageId = unknownMessageId,
             errorCode = 0,
-            type = 1,
+            type = 203,
             successList = new[] { "Sensitive Display Name" },
             failList = Array.Empty<string>()
         });
@@ -203,7 +205,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         var seeded = await SeedRobotAsync(factory);
         using var client = factory.CreateClient();
         var messageId = $"invalid-{Guid.NewGuid():N}";
-        var payload = new { messageId, errorCode = 0, type = 1 };
+        var payload = new { messageId, errorCode = 0, type = 203 };
 
         var invalidToken = await client.PostAsJsonAsync(
             $"/api/worktool/command-results/{seeded.RouteCode}?token=wrong",
@@ -213,12 +215,36 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         {
             messageId,
             errorCode = 0,
-            type = 1,
+            type = 203,
             successList = new[] { new string('x', 129) }
         });
 
         Assert.Equal(HttpStatusCode.Unauthorized, invalidToken.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
+        await using var scope = factory.Services.CreateAsyncScope();
+        Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().AdministrationAudits.AsNoTracking()
+            .CountAsync(audit => audit.Action.StartsWith("worktool.command-result") &&
+                                 audit.TargetId == seeded.RobotId.ToString("D"),
+                TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(999)]
+    public async Task Registration_and_unknown_command_types_are_rejected(int commandType)
+    {
+        await using var factory = new CallbackApiFactory(fixture.ConnectionString);
+        var seeded = await SeedRobotAsync(factory);
+        using var client = factory.CreateClient();
+
+        var response = await PostAsync(client, seeded, new
+        {
+            messageId = $"unsupported-{Guid.NewGuid():N}",
+            errorCode = 0,
+            type = commandType
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         await using var scope = factory.Services.CreateAsyncScope();
         Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>().AdministrationAudits.AsNoTracking()
             .CountAsync(audit => audit.Action.StartsWith("worktool.command-result") &&
@@ -237,7 +263,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
         {
             messageId = seeded.MessageId,
             errorCode = 0,
-            type = 1,
+            type = 203,
             successList = Array.Empty<string>(),
             failList = Array.Empty<string>()
         })).EnsureSuccessStatusCode();
@@ -288,7 +314,7 @@ public sealed class CommandResultCallbackTests : IClassFixture<MySqlFixture>
             RobotConfigId = robot.RobotId,
             OperatorName = "test",
             Operation = "Rename",
-            WorkToolCommandNumber = 203,
+            WorkToolCommandNumber = 207,
             SanitizedRequestJson = "{}",
             Status = status,
             WorkToolCommandMessageId = robot.MessageId,

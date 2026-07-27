@@ -236,6 +236,12 @@ public sealed class EfWorkToolCommandResultStore(WechatRobotDbContext database) 
         audit.Result = $"worktool_code_{result.ErrorCode}";
         audit.LeaseOwner = null;
         audit.LeaseExpiresAtUtc = null;
+        if (string.Equals(result.FinalStatus, WorkToolCommandStatuses.ExecutedSucceeded, StringComparison.Ordinal)
+            && audit.Operation is "Create" or "Rename")
+        {
+            audit.ReconciliationStatus = "Pending";
+            audit.ReconciliationNextAttemptAtUtc = result.ResultAtUtc;
+        }
         audit.Version++;
     }
 

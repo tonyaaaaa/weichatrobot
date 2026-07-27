@@ -19,6 +19,9 @@ const configurationVersion = ref(0);
 const loading = ref(true);
 const loadError = ref('');
 const configurationLoaded = ref(false);
+const humanAgentGateMessage = ref('需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。');
+const humanAgentCandidates = ref<{ userId: string; displayName: string; workToolDisplayName: string }[]>([]);
+const canConfigureHumanAgents = ref(false);
 const configured = reactive<ContextOverrides>({});
 const effective = ref<EffectiveContext>({ senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true });
 const canSave = computed(() => configurationLoaded.value && !loading.value);
@@ -51,6 +54,12 @@ async function load() {
       : 0;
     Object.assign(configured, configuration.context.configured);
     effective.value = configuration.context.effective;
+    if (props.api.getEligibleHumanAgents) {
+      const humanAgents = await props.api.getEligibleHumanAgents(props.id);
+      humanAgentCandidates.value = humanAgents.candidates;
+      canConfigureHumanAgents.value = humanAgents.canConfigure;
+      humanAgentGateMessage.value = humanAgents.gateMessage;
+    }
     configurationLoaded.value = true;
   } catch (error) {
     const status = (error as { response?: { status?: number } }).response?.status;
@@ -142,6 +151,19 @@ watch(() => props.id, load, { immediate: true });
           </div>
           <p v-else class="empty-tags">当前没有可绑定的知识库标签。</p>
         </section>
+        <section class="group-panel human-agent-panel" aria-labelledby="human-agent-title">
+          <h2 id="human-agent-title">群人工客服</h2>
+          <p>{{ humanAgentGateMessage }}</p>
+          <div v-if="humanAgentCandidates.length" class="agent-choice-list">
+            <label v-for="agent in humanAgentCandidates" :key="agent.userId">
+              <input type="checkbox" :disabled="!canConfigureHumanAgents">
+              <span>{{ agent.displayName }}（企微：{{ agent.workToolDisplayName }}）</span>
+            </label>
+          </div>
+          <button type="button" data-testid="save-human-agents" :disabled="!canConfigureHumanAgents">
+            保存群客服
+          </button>
+        </section>
         <ContextPolicyForm :configured="configured" :effective="effective" @clear="save(true)" />
       </aside>
       </div>
@@ -213,9 +235,21 @@ watch(() => props.id, load, { immediate: true });
   gap: var(--space-xl);
 }
 .panel-heading p,
-.tag-panel > p {
+.tag-panel > p,
+.human-agent-panel > p {
   margin-bottom: var(--space-lg);
   color: var(--color-muted-text);
+}
+.human-agent-panel button { margin-top: var(--space-md); }
+.agent-choice-list {
+  display: grid;
+  gap: var(--space-sm);
+}
+.agent-choice-list label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
 }
 .preview-editor {
   display: grid;

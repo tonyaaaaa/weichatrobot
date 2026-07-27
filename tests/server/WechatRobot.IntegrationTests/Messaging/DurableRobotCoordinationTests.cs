@@ -500,10 +500,12 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
         await database.DeadLetters.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
         await database.SendCommands.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        var robotId = $"coordination-{Guid.NewGuid():N}";
         var robot = new RobotConfigEntity
         {
-            Name = $"coordination-{Guid.NewGuid():N}",
-            WorkToolRobotId = $"coordination-{Guid.NewGuid():N}",
+            Name = robotId,
+            WorkToolRobotId = robotId,
+            EncryptedWorkToolRobotId = robotId,
             CallbackSecretHash = "test",
             SendRateLimitPerMinute = ratePerMinute
         };
@@ -576,9 +578,11 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
 
     private static ProductionSeed CreateProductionSeed(bool enabled, string prefix)
     {
+        var robotId = Guid.NewGuid().ToString("N");
         var robot = new RobotConfigEntity
         {
-            Name = $"{prefix}-{Guid.NewGuid():N}", WorkToolRobotId = Guid.NewGuid().ToString("N"),
+            Name = $"{prefix}-{Guid.NewGuid():N}", WorkToolRobotId = robotId,
+            EncryptedWorkToolRobotId = robotId,
             CallbackSecretHash = "hash", IsEnabled = enabled
         };
         var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = Guid.NewGuid().ToString("N"), Name = $"{prefix}-group" };

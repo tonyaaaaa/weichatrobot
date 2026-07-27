@@ -23,6 +23,8 @@ public static class WorkToolGroupOperationEndpoints
             .RequireAuthorization(SystemRoles.Admin)
             .RequireRateLimiting(RateLimitPolicies.WorkToolCommands);
         group.MapGet("/robots", ListRobotsAsync);
+        group.MapGet("/robots/{id:guid}/groups", DiscoverGroupsAsync);
+        group.MapPost("/robots/{id:guid}/groups/import", ImportGroupsAsync);
         group.MapPut("/robots/{id:guid}", UpsertRobotAsync);
         group.MapPost("/robots/{id:guid}/test-connection", ProbeRobotAsync);
         group.MapGet("/robots/{id:guid}/probe", ProbeRobotAsync);
@@ -37,6 +39,70 @@ public static class WorkToolGroupOperationEndpoints
         group.MapPost("/group-operations/preview", PreviewAsync);
         group.MapPost("/group-operations/execute", ExecuteAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> DiscoverGroupsAsync(
+        Guid id,
+        string? query,
+        int? page,
+        int? pageSize,
+        WorkToolGroupImportService service,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Results.Ok(await service.DiscoverAsync(
+                id,
+                query,
+                page ?? 1,
+                pageSize ?? 50,
+                cancellationToken));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["pagination"] = ["Page must be positive and pageSize must be between 1 and 100."]
+            });
+        }
+        catch (WorkToolGroupListException exception)
+        {
+            return Results.Json(
+                new { error = exception.FailureCode },
+                statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private static async Task<IResult> ImportGroupsAsync(
+        Guid id,
+        ImportGroupsRequest request,
+        ClaimsPrincipal user,
+        WorkToolGroupImportService service,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOperator(user, out var actor))
+            return Results.Forbid();
+        try
+        {
+            return Results.Ok(await service.ImportAsync(
+                id,
+                request.Groups,
+                actor,
+                cancellationToken));
+        }
+        catch (ArgumentException)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["groups"] = ["One to 100 unique available group selections are required."]
+            });
+        }
+        catch (WorkToolGroupListException exception)
+        {
+            return Results.Json(
+                new { error = exception.FailureCode },
+                statusCode: StatusCodes.Status502BadGateway);
+        }
     }
 
     private static async Task<IResult> ListRobotsAsync(WechatRobotDbContext database, CancellationToken cancellationToken)
@@ -166,6 +232,8 @@ public static class WorkToolGroupOperationEndpoints
         if (!TryGetOperator(user, out var actor)) return Results.Forbid();
         var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (robot is null) return Results.NotFound();
+        if (string.IsNullOrWhiteSpace(robot.EncryptedWorkToolRobotId))
+            return MissingWorkToolCredential();
         try
         {
             var result = await service.ProbeAsync(robot.Id, cancellationToken);
@@ -182,8 +250,16 @@ public static class WorkToolGroupOperationEndpoints
                 enableToken,
                 enableToken is null ? null : expiresAtUtc));
         }
+        catch (WorkToolCredentialUnavailableException) { return MissingWorkToolCredential(); }
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { return Results.Problem("WorkTool connection test failed.", statusCode: 502); }
     }
+
+    private static IResult MissingWorkToolCredential() =>
+        Results.Conflict(new
+        {
+            error = "worktool-credential-required",
+            message = "Save a WorkTool robot ID before testing the connection."
+        });
 
     private static async Task<IResult> ConfigureMessageCallbackAsync(
         Guid id,
@@ -508,4 +584,6 @@ public static class WorkToolGroupOperationEndpoints
     public sealed record CommandStatusResponse(bool Succeeded, string Message, Guid? AuditId = null);
     public sealed record AuditResponse(Guid Id, string Operation, int WorkToolCommandNumber, string Status, string? Result, DateTime CreatedAtUtc, string SanitizedRequest);
     public sealed record AuditScopeResponse(string Scope);
+    public sealed record ImportGroupsRequest(
+        IReadOnlyList<GroupImportSelection> Groups);
 }

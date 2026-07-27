@@ -19,14 +19,35 @@ export interface UpdateGroupConfiguration {
   expectedConfigurationVersion: number;
 }
 export interface RulePreview { results: { groupName: string; isMatch: boolean; isExcluded: boolean }[]; }
+export interface EligibleHumanAgent {
+  userId: string;
+  displayName: string;
+  workToolDisplayName: string;
+  verificationStatus: string;
+  isEnabled: boolean;
+  isDefault: boolean;
+}
+export interface EligibleHumanAgents {
+  candidates: EligibleHumanAgent[];
+  canConfigure: boolean;
+  gateMessage: string;
+}
 export interface GroupApi {
   getConfiguration(groupId: string): Promise<GroupConfiguration>;
   updateConfiguration(groupId: string, request: UpdateGroupConfiguration): Promise<GroupConfiguration>;
   previewRules(request: Pick<UpdateGroupConfiguration, 'includeRules' | 'excludeRules'> & { groupNames: string[] }): Promise<RulePreview>;
+  getEligibleHumanAgents?(groupId: string): Promise<EligibleHumanAgents>;
+  updateHumanAgents?(groupId: string, request: { userIds: string[]; defaultUserId?: string | null }): Promise<void>;
 }
 
 export const groupApi: GroupApi = {
   async getConfiguration(groupId) { return (await apiClient.get<GroupConfiguration>(`/api/groups/${encodeURIComponent(groupId)}/configuration`)).data; },
   async updateConfiguration(groupId, request) { return (await apiClient.put<GroupConfiguration>(`/api/groups/${encodeURIComponent(groupId)}/configuration`, request)).data; },
-  async previewRules(request) { return (await apiClient.post<RulePreview>('/api/group-rules/preview', request)).data; }
+  async previewRules(request) { return (await apiClient.post<RulePreview>('/api/group-rules/preview', request)).data; },
+  async getEligibleHumanAgents(groupId) {
+    return (await apiClient.get<EligibleHumanAgents>(`/api/groups/${encodeURIComponent(groupId)}/eligible-human-agents`)).data;
+  },
+  async updateHumanAgents(groupId, request) {
+    await apiClient.put(`/api/groups/${encodeURIComponent(groupId)}/human-agents`, request);
+  }
 };

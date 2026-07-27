@@ -22,6 +22,10 @@ public sealed class WorkToolOperationAuditEntity
     public DateTime? WorkToolResultAtUtc { get; set; }
     public string? WorkToolSuccessListJson { get; set; }
     public string? WorkToolFailListJson { get; set; }
+    public string? ReconciliationStatus { get; set; }
+    public int ReconciliationAttemptCount { get; set; }
+    public DateTime? ReconciliationNextAttemptAtUtc { get; set; }
+    public Guid? ReconciledGroupProfileId { get; set; }
     public int Version { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

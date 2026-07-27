@@ -13,6 +13,7 @@ public sealed record ManagedUser(
     string Email,
     string DisplayName,
     bool IsEnabled,
+    string? WorkToolDisplayName,
     IReadOnlyList<string> Roles);
 
 public sealed record ManagedUserPage(
@@ -179,6 +180,96 @@ public sealed class UserAdministrationService(
         return ToManagedUser(user, requestedRoles);
     }
 
+    public async Task<ManagedUser> SetWorkToolDisplayNameAsync(
+        string actor,
+        Guid userId,
+        string displayName,
+        CancellationToken cancellationToken)
+    {
+        var normalized = displayName.Trim();
+        if (normalized.Length is < 1 or > 128)
+            throw new UserAdministrationException("worktool-display-name-invalid");
+
+        await using var transaction = await BeginTransactionAsync(cancellationToken);
+        var user = await users.FindByIdAsync(userId.ToString()).WaitAsync(cancellationToken)
+            ?? throw new UserAdministrationException("user-not-found");
+        var currentRoles = await users.GetRolesAsync(user).WaitAsync(cancellationToken);
+        if (!user.IsEnabled ||
+            !currentRoles.Any(role => role is SystemRoles.Admin or SystemRoles.HumanAgent))
+            throw new UserAdministrationException("worktool-agent-ineligible");
+
+        if (await users.Users.AsNoTracking().AnyAsync(
+                candidate => candidate.Id != userId
+                    && candidate.WorkToolDisplayName == normalized,
+                cancellationToken))
+            throw new UserAdministrationException("worktool-display-name-conflict");
+        if (user.WorkToolDisplayName == normalized)
+            return ToManagedUser(user, currentRoles);
+
+        user.WorkToolDisplayName = normalized;
+        user.WorkToolDisplayNameUpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        await MarkAgentBindingsStaleAsync(userId, cancellationToken);
+        try
+        {
+            EnsureIdentity(await users.UpdateAsync(user).WaitAsync(cancellationToken));
+            AddAudit(actor, "user_worktool_display_name_changed", user.Id, new
+            {
+                user.Email,
+                WorkToolDisplayName = normalized
+            });
+            await database.SaveChangesAsync(cancellationToken);
+            await CommitAsync(transaction, cancellationToken);
+            return ToManagedUser(user, currentRoles);
+        }
+        catch (DbUpdateException)
+        {
+            throw new UserAdministrationException("worktool-display-name-conflict");
+        }
+    }
+
+    public async Task<ManagedUser> ClearWorkToolDisplayNameAsync(
+        string actor,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await BeginTransactionAsync(cancellationToken);
+        var user = await users.FindByIdAsync(userId.ToString()).WaitAsync(cancellationToken)
+            ?? throw new UserAdministrationException("user-not-found");
+        var currentRoles = await users.GetRolesAsync(user).WaitAsync(cancellationToken);
+        if (user.WorkToolDisplayName is null)
+            return ToManagedUser(user, currentRoles);
+
+        user.WorkToolDisplayName = null;
+        user.WorkToolDisplayNameUpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        await MarkAgentBindingsStaleAsync(userId, cancellationToken);
+        EnsureIdentity(await users.UpdateAsync(user).WaitAsync(cancellationToken));
+        AddAudit(actor, "user_worktool_display_name_changed", user.Id, new
+        {
+            user.Email,
+            WorkToolDisplayName = (string?)null
+        });
+        await database.SaveChangesAsync(cancellationToken);
+        await CommitAsync(transaction, cancellationToken);
+        return ToManagedUser(user, currentRoles);
+    }
+
+    private async Task MarkAgentBindingsStaleAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var bindings = await database.GroupHumanAgents
+            .Where(agent => agent.ApplicationUserId == userId)
+            .ToArrayAsync(cancellationToken);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        foreach (var binding in bindings)
+        {
+            binding.VerificationStatus = "Stale";
+            binding.IsEnabled = false;
+            binding.IsDefault = false;
+            binding.UpdatedAtUtc = now;
+        }
+    }
+
     private async Task<List<string>> ValidateRolesAsync(
         IReadOnlyCollection<string> requestedRoles,
         CancellationToken cancellationToken)
@@ -257,5 +348,6 @@ public sealed class UserAdministrationService(
             user.Email ?? string.Empty,
             user.DisplayName,
             user.IsEnabled,
+            user.WorkToolDisplayName,
             assignedRoles.Order(StringComparer.Ordinal).ToArray());
 }

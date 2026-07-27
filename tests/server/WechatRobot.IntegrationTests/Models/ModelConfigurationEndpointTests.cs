@@ -815,6 +815,8 @@ public sealed class RecordingWorkToolClient : IWorkToolClient
     public WorkToolMessageCallbackRequest? LastMessageCallbackRequest { get; private set; }
     public Uri? LastEventCallbackUrl { get; private set; }
     public int? LastEventCallbackType { get; private set; }
+    public WorkToolGroupPage NextGroupPage { get; set; } =
+        new(1, 50, 0, 0, []);
     public Task<WorkToolCommandSubmission> SendTextAsync(WorkToolSendRequest request, CancellationToken cancellationToken) => Task.FromResult(Accepted("fake-send-command"));
     public Task<WorkToolSendResult> TestConnectionAsync(Guid robotConfigId, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
     public Task<WorkToolSendResult> BindCallbackAsync(Guid robotConfigId, int type, Uri callbackUrl, CancellationToken cancellationToken) => Task.FromResult(WorkToolSendResult.Success());
@@ -839,6 +841,25 @@ public sealed class RecordingWorkToolClient : IWorkToolClient
         Task.FromResult(new WorkToolRobotSnapshot(true, "fake-robot-id", true, true, null));
     public Task<WorkToolOnlineSnapshot> GetOnlineAsync(Guid robotConfigId, CancellationToken cancellationToken) =>
         Task.FromResult(new WorkToolOnlineSnapshot(null, null));
+    public Task<WorkToolGroupPage> ListGroupsAsync(
+        Guid robotConfigId,
+        string? groupName,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var items = string.IsNullOrWhiteSpace(groupName)
+            ? NextGroupPage.Items
+            : NextGroupPage.Items.Where(item =>
+                item.GroupName == groupName.Trim()).ToArray();
+        return Task.FromResult(NextGroupPage with
+        {
+            PageNumber = page,
+            PageSize = pageSize,
+            Total = items.Count,
+            Items = items
+        });
+    }
     public void Reset(WorkToolSendResult? next = null)
     {
         GroupOperationCalls = 0;
@@ -850,6 +871,7 @@ public sealed class RecordingWorkToolClient : IWorkToolClient
         LastMessageCallbackRequest = null;
         LastEventCallbackUrl = null;
         LastEventCallbackType = null;
+        NextGroupPage = new(1, 50, 0, 0, []);
     }
     private static WorkToolCommandSubmission Accepted(string messageId) => new(true, messageId, null, false);
 }

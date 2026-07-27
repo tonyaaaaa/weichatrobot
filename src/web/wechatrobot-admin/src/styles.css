@@ -55,6 +55,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 input, select, textarea {
   width: 100%; padding: .55rem .7rem; border: 1px solid var(--color-border); border-radius: .5rem; color: var(--color-foreground); background: var(--color-surface);
 }
+input[type="checkbox"], input[type="radio"] {
+  flex: 0 0 auto; width: 1.25rem; height: 1.25rem; min-height: 1.25rem; margin: 0; padding: 0; accent-color: var(--color-accent);
+}
 textarea { min-height: 88px; resize: vertical; }
 label { display: block; margin-top: var(--space-md); font-weight: 600; }
 h1, h2, h3, p { margin-top: 0; }

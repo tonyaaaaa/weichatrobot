@@ -44,10 +44,10 @@ public sealed class GroupOperationsContractTests
     }
 
     [Theory]
-    [InlineData(WorkToolGroupOperationKind.AddMembers, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupName":null,"newGroupAnnouncement":null,"selectList":["member-1"],"showMessageHistory":false,"removeList":[]}]}""")]
-    [InlineData(WorkToolGroupOperationKind.RemoveMembers, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupName":null,"newGroupAnnouncement":null,"selectList":[],"showMessageHistory":false,"removeList":["member-1"]}]}""")]
-    [InlineData(WorkToolGroupOperationKind.Rename, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupName":"new value","newGroupAnnouncement":null,"selectList":[],"showMessageHistory":false,"removeList":[]}]}""")]
-    [InlineData(WorkToolGroupOperationKind.UpdateAnnouncement, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupName":null,"newGroupAnnouncement":"new value","selectList":[],"showMessageHistory":false,"removeList":[]}]}""")]
+    [InlineData(WorkToolGroupOperationKind.AddMembers, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","selectList":["member-1"],"showMessageHistory":false,"removeList":[]}]}""")]
+    [InlineData(WorkToolGroupOperationKind.RemoveMembers, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","selectList":[],"showMessageHistory":false,"removeList":["member-1"]}]}""")]
+    [InlineData(WorkToolGroupOperationKind.Rename, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupName":"new value","selectList":[],"showMessageHistory":false,"removeList":[]}]}""")]
+    [InlineData(WorkToolGroupOperationKind.UpdateAnnouncement, """{"socketType":2,"list":[{"type":207,"groupName":"group-name","newGroupAnnouncement":"new value","selectList":[],"showMessageHistory":false,"removeList":[]}]}""")]
     public async Task Existing_group_operations_map_to_documented_command_207(WorkToolGroupOperationKind kind, string expected)
     {
         using var handler = new CapturingHandler("{\"code\":0,\"data\":\"group-command-2\"}");

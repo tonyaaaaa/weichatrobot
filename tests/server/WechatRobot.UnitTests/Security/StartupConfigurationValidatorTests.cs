@@ -77,6 +77,24 @@ public sealed class StartupConfigurationValidatorTests
             Assert.Throws<InvalidOperationException>(() => StartupConfigurationValidator.Validate(Configuration(values), true)).Message);
     }
 
+    [Theory]
+    [InlineData("WorkTool:RateLimit:RequestsPerMinute", "61")]
+    [InlineData("WorkTool:RateLimit:RequestsPerMinute", "0")]
+    [InlineData("WorkTool:RateLimit:MaxWaitSeconds", "0")]
+    [InlineData("WorkTool:RateLimit:MaxWaitSeconds", "61")]
+    [InlineData("WorkTool:RateLimit:ScopeKey", "")]
+    public void Invalid_global_worktool_rate_limit_fails_fast(string keyName, string value)
+    {
+        using var key = MasterKeyScope.Valid();
+        var values = ValidValues();
+        values[keyName] = value;
+
+        Assert.Contains(
+            "WorkTool:RateLimit",
+            Assert.Throws<InvalidOperationException>(() =>
+                StartupConfigurationValidator.Validate(Configuration(values), true)).Message);
+    }
+
     private static IConfiguration Configuration(Dictionary<string, string?>? values = null) =>
         new ConfigurationBuilder().AddInMemoryCollection(values ?? ValidValues()).Build();
 
@@ -88,7 +106,10 @@ public sealed class StartupConfigurationValidatorTests
         ["DocumentUpload:MaximumArchiveEntries"] = "2000",
         ["DocumentUpload:MaximumExpandedArchiveBytes"] = "209715200",
         ["DocumentUpload:MaximumArchiveExpansionRatio"] = "100",
-        ["FixedReply:SendRateLimitPerMinute"] = "50"
+        ["FixedReply:SendRateLimitPerMinute"] = "50",
+        ["WorkTool:RateLimit:ScopeKey"] = "default-egress",
+        ["WorkTool:RateLimit:RequestsPerMinute"] = "60",
+        ["WorkTool:RateLimit:MaxWaitSeconds"] = "15"
     };
 
     private sealed class MasterKeyScope : IDisposable

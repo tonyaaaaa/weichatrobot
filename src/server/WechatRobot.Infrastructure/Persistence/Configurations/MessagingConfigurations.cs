@@ -38,7 +38,14 @@ internal sealed class GroupProfileConfiguration : IEntityTypeConfiguration<Group
         builder.Property(entity => entity.WorkToolGroupRemark).HasMaxLength(256);
         builder.Property(entity => entity.HandoffPausePolicy).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
         builder.Property(entity => entity.ConfigurationVersion).HasDefaultValue(0).IsConcurrencyToken();
+        builder.Property(entity => entity.RegistrationSource)
+            .HasMaxLength(32)
+            .HasDefaultValue("Manual")
+            .IsRequired();
         builder.ToTable(table => table.HasCheckConstraint("CK_group_profile_handoff_pause_policy", "`HandoffPausePolicy` IN ('Group','Sender')"));
+        builder.ToTable(table => table.HasCheckConstraint(
+            "CK_group_profile_registration_source",
+            "`RegistrationSource` IN ('Manual','WorkToolImport')"));
         builder.HasIndex(entity => new { entity.RobotConfigId, entity.Name, entity.WorkToolGroupRemark });
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
     }
@@ -242,11 +249,21 @@ internal sealed class WorkToolOperationAuditConfiguration : IEntityTypeConfigura
         builder.Property(entity => entity.WorkToolCommandMessageId).HasMaxLength(128);
         builder.Property(entity => entity.WorkToolSuccessListJson).HasColumnType("json");
         builder.Property(entity => entity.WorkToolFailListJson).HasColumnType("json");
+        builder.Property(entity => entity.ReconciliationStatus).HasMaxLength(32);
         builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => entity.CreatedAtUtc);
         builder.HasIndex(entity => new { entity.Status, entity.CreatedAtUtc });
         builder.HasIndex(entity => entity.WorkToolCommandMessageId).IsUnique();
+        builder.HasIndex(entity => new
+        {
+            entity.ReconciliationStatus,
+            entity.ReconciliationNextAttemptAtUtc
+        }).HasDatabaseName("IX_worktool_operation_audit_reconciliation_due");
         builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<GroupProfileEntity>().WithMany()
+            .HasForeignKey(entity => entity.ReconciledGroupProfileId)
+            .HasConstraintName("FK_worktool_operation_audit_reconciled_group")
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

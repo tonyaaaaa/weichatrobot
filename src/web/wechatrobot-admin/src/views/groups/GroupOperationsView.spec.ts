@@ -7,6 +7,8 @@ describe('GroupOperationsView', () => {
   it('requires an explicit manual invitation acknowledgement before registering an existing group', async () => {
     const api = {
       listGroups: vi.fn().mockResolvedValue([]),
+      listRemoteGroups: vi.fn(),
+      importRemoteGroups: vi.fn(),
       listRobots: vi.fn().mockResolvedValue([
         { id: 'robot-config-1', name: '客服机器人', isEnabled: true },
         { id: 'robot-config-2', name: '停用机器人', isEnabled: false }
@@ -43,6 +45,8 @@ describe('GroupOperationsView', () => {
   it('loads registered groups and selecting one populates the operation form', async () => {
     const api = {
       listGroups: vi.fn().mockResolvedValue([{ id: 'known-1', robotConfigId: 'robot-config-1', name: '技术支持群', workToolGroupRemark: 'support-east' }]),
+      listRemoteGroups: vi.fn(),
+      importRemoteGroups: vi.fn(),
       listRobots: vi.fn().mockResolvedValue([{ id: 'robot-config-1', name: '客服机器人', isEnabled: true }]),
       registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([]), getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端审计范围' })
     };
@@ -68,6 +72,8 @@ describe('GroupOperationsView', () => {
     ];
     const api = {
       listGroups: vi.fn().mockResolvedValue([]),
+      listRemoteGroups: vi.fn(),
+      importRemoteGroups: vi.fn(),
       listRobots: vi.fn().mockResolvedValue([]),
       registerExistingGroup: vi.fn(),
       preview: vi.fn(),

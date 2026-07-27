@@ -119,10 +119,22 @@ public static class WorkToolCallbackEndpoints
                 return Results.Unauthorized();
             }
 
-            if (!callback.IsSupportedGroupText(out var reason))
+            var classification = callback.Classify();
+            if (classification.Disposition == WorkToolCallbackDisposition.Reject)
             {
-                logger.LogWarning("WorkTool callback rejected: {Reason}.", reason);
+                logger.LogWarning(
+                    "WorkTool callback rejected: {Reason}.",
+                    classification.Reason);
                 return Results.BadRequest();
+            }
+            if (classification.Disposition == WorkToolCallbackDisposition.Ignore)
+            {
+                logger.LogInformation(
+                    "WorkTool callback ignored with reason {Reason}, room type {RoomType}, text type {TextType}.",
+                    classification.Reason,
+                    callback.RoomType,
+                    callback.TextType);
+                return Results.Json(new WorkToolCallbackAcceptedResponse("ignored"));
             }
 
             await inboundMessages.IngestAsync(robot.Id, robotCode, callback, ingestionToken);
@@ -141,9 +153,9 @@ public static class WorkToolCallbackEndpoints
         return Results.Json(new WorkToolCallbackAcceptedResponse());
     }
 
-    private sealed class WorkToolCallbackAcceptedResponse
+    private sealed class WorkToolCallbackAcceptedResponse(string message = "accepted")
     {
         public int Code => 0;
-        public string Message => "accepted";
+        public string Message => message;
     }
 }

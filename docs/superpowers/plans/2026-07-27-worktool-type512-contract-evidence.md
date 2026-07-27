@@ -11,7 +11,7 @@
 ## Verified Contract Boundary
 
 - Official request: `POST /wework/sendRawMessage?robotId={robotId}` with `socketType=2` and one list item containing only `type=512` and `groupName`.
-- Official result query: `GET /robot/rawMsg/list` with `robotId`, `page`, `size`, `sort`, `desc`, `startTime`, `endTime`, `type`, and `messageId`.
+- Official result query: `GET /robot/rawMsg/list` with `robotId`, `page`, `size`, `sort`, `startTime`, `endTime`, `type`, and `messageId`. The current official example uses the single value `sort=run_time,desc`; there is no separate documented `desc` parameter.
 - The documented result row contains `rawMsg`, `rawSuccess`, `errorReason`, `runTime`, `apiSend`, `robotId`, `type`, `messageId`, `successList`, `failList`, and `timeCost`.
 - The official documentation does not identify which `type=512` field contains nicknames or provide a `type=512` result example.
 - Therefore this plan must not define a nickname DTO, infer member identity, or persist a member snapshot.
@@ -152,7 +152,7 @@ public sealed record WorkToolRawCommandResult(
     string MessageId,
     string? SuccessListRaw,
     string? FailListRaw,
-    long? TimeCost);
+    decimal? TimeCost);
 
 Task<IReadOnlyList<WorkToolRawCommandResult>> ListGroupMemberSnapshotResultsAsync(
     Guid robotConfigId,
@@ -195,9 +195,8 @@ Assert.Equal(HttpMethod.Get, handler.Method);
 Assert.Contains("robot/rawMsg/list?", handler.PathAndQuery);
 Assert.Contains("robotId=robot-7", handler.PathAndQuery);
 Assert.Contains("page=1", handler.PathAndQuery);
-Assert.Contains("size=20", handler.PathAndQuery);
-Assert.Contains("sort=run_time", handler.PathAndQuery);
-Assert.Contains("desc=true", handler.PathAndQuery);
+Assert.Contains("size=10", handler.PathAndQuery);
+Assert.Contains("sort=run_time%2Cdesc", handler.PathAndQuery);
 Assert.Contains("type=512", handler.PathAndQuery);
 Assert.Contains("messageId=member-command-1", handler.PathAndQuery);
 Assert.Single(results);
@@ -235,9 +234,8 @@ var query = string.Join(
     "&",
     $"robotId={Escape(robotId)}",
     "page=1",
-    "size=20",
-    "sort=run_time",
-    "desc=true",
+    "size=10",
+    $"sort={Escape("run_time,desc")}",
     $"startTime={Escape(startTime.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))}",
     $"endTime={Escape(endTime.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))}",
     "type=512",

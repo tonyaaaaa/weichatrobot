@@ -1,5 +1,9 @@
+using System.Net;
 using System.Net.Http.Json;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using WechatRobot.Application.WorkTool;
 
@@ -10,13 +14,16 @@ public sealed class WorkToolClient(
     IWorkToolCredentialResolver credentials,
     ILogger<WorkToolClient>? logger = null) : IWorkToolClient
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 
     public async Task<WorkToolCommandSubmission> SendTextAsync(
         WorkToolSendRequest request,
         CancellationToken cancellationToken)
     {
-        var robotId = await credentials.ResolveRobotIdAsync(request.RobotConfigId, cancellationToken);
+        var robotId = await credentials.ResolveEnabledRobotIdAsync(request.RobotConfigId, cancellationToken);
         return await SendCommandAsync(
             robotId,
             new
@@ -24,7 +31,7 @@ public sealed class WorkToolClient(
                 type = 203,
                 titleList = new[] { request.GroupName },
                 receivedContent = request.Text,
-                atList = request.AtList ?? []
+                atList = request.AtList is { Count: > 0 } ? request.AtList : null
             },
             cancellationToken);
     }
@@ -57,17 +64,167 @@ public sealed class WorkToolClient(
                     : Array.Empty<string>()
             };
 
-        var robotId = await credentials.ResolveRobotIdAsync(request.RobotConfigId, cancellationToken);
+        var robotId = await credentials.ResolveEnabledRobotIdAsync(request.RobotConfigId, cancellationToken);
         return await SendCommandAsync(robotId, command, cancellationToken);
+    }
+
+    public async Task<WorkToolCommandSubmission> RequestGroupMemberSnapshotAsync(
+        Guid robotConfigId,
+        string groupName,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+        var robotId = await credentials.ResolveEnabledRobotIdAsync(
+            robotConfigId,
+            cancellationToken);
+        return await SendCommandAsync(
+            robotId,
+            new
+            {
+                type = 512,
+                groupName = groupName.Trim()
+            },
+            cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WorkToolRawCommandResult>>
+        ListGroupMemberSnapshotResultsAsync(
+            Guid robotConfigId,
+            string messageId,
+            DateTimeOffset startTime,
+            DateTimeOffset endTime,
+            CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(messageId);
+        if (endTime < startTime)
+            throw new ArgumentOutOfRangeException(
+                nameof(endTime),
+                "End time must not precede start time.");
+
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(
+            robotConfigId,
+            cancellationToken);
+        var query = string.Join(
+            "&",
+            $"robotId={Escape(robotId)}",
+            "page=1",
+            "size=10",
+            $"sort={Escape("run_time,desc")}",
+            $"startTime={Escape(startTime.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))}",
+            $"endTime={Escape(endTime.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))}",
+            "type=512",
+            $"messageId={Escape(messageId.Trim())}");
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Get,
+                $"robot/rawMsg/list?{query}"),
+            "list_raw_results",
+            cancellationToken);
+        var parsed = await ReadEnvelopeAsync<IReadOnlyList<RawCommandResultData>>(
+            response,
+            "list_raw_results",
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new WorkToolRawResultException(HttpFailure(response));
+        if (!parsed.Parsed || parsed.Envelope?.Code != 200
+                           || parsed.Envelope.Data is null)
+        {
+            throw new WorkToolRawResultException(
+                parsed.Parsed
+                    ? SafeFailureCode(parsed.Envelope?.Code)
+                      ?? "worktool_invalid_response"
+                    : "worktool_invalid_response");
+        }
+
+        return parsed.Envelope.Data.Select(item =>
+        {
+            if (string.IsNullOrWhiteSpace(item.MessageId))
+                throw new WorkToolRawResultException("worktool_invalid_response");
+            return new WorkToolRawCommandResult(
+                OpaqueRaw(item.RawMsg),
+                item.RawSuccess,
+                item.ErrorReason,
+                OpaqueRaw(item.RunTime),
+                item.ApiSend,
+                item.Type,
+                item.MessageId.Trim(),
+                OpaqueRaw(item.SuccessList),
+                OpaqueRaw(item.FailList),
+                item.TimeCost);
+        }).ToArray();
+    }
+
+    public async Task<WorkToolGroupPage> ListGroupsAsync(
+        Guid robotConfigId,
+        string? groupName,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        if (page < 1)
+            throw new ArgumentOutOfRangeException(nameof(page));
+        if (pageSize is < 1 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        if (groupName?.Length > 256)
+            throw new ArgumentOutOfRangeException(nameof(groupName));
+
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(
+            robotConfigId,
+            cancellationToken);
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Get,
+                $"robot/wework/group/list?robotId={Escape(robotId)}&groupName={Escape(groupName?.Trim() ?? string.Empty)}&page={page}&size={pageSize}"),
+            "list_groups",
+            cancellationToken);
+        var parsed = await ReadEnvelopeAsync<GroupPageData>(
+            response,
+            "list_groups",
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+            throw new WorkToolGroupListException(HttpFailure(response));
+        if (!parsed.Parsed || parsed.Envelope?.Code != 0 || parsed.Envelope.Data is null)
+            throw new WorkToolGroupListException(
+                parsed.Parsed
+                    ? SafeFailureCode(parsed.Envelope?.Code) ?? "worktool_invalid_response"
+                    : "worktool_invalid_response");
+
+        var data = parsed.Envelope.Data;
+        if (data.PageNum < 0
+            || data.PageSize < 0
+            || data.TotalPage < 0
+            || data.Total < 0
+            || data.List is null)
+            throw new WorkToolGroupListException("worktool_invalid_response");
+
+        var items = data.List
+            .Where(group => !string.IsNullOrWhiteSpace(group.GroupName))
+            .Select(group => new WorkToolGroupSummary(
+                group.GroupName.Trim(),
+                group.MasterName,
+                Math.Max(0, group.MembersNum),
+                group.GroupAnnouncement))
+            .ToArray();
+
+        return new(
+            data.PageNum,
+            data.PageSize,
+            data.TotalPage,
+            data.Total,
+            items);
     }
 
     public async Task<WorkToolRobotSnapshot> GetRobotAsync(
         Guid robotConfigId,
         CancellationToken cancellationToken)
     {
-        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
-        using var response = await httpClient.GetAsync(
-            $"robot/robotInfo/get?robotId={Escape(robotId)}",
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(robotConfigId, cancellationToken);
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Get,
+                $"robot/robotInfo/get?robotId={Escape(robotId)}"),
+            "get_robot",
             cancellationToken);
         var parsed = await ReadEnvelopeAsync<RobotData>(response, "get_robot", cancellationToken);
 
@@ -101,37 +258,19 @@ public sealed class WorkToolClient(
         Guid robotConfigId,
         CancellationToken cancellationToken)
     {
-        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
-        using var response = await httpClient.GetAsync(
-            $"robot/robotInfo/online?robotId={Escape(robotId)}",
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(robotConfigId, cancellationToken);
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Get,
+                $"robot/robotInfo/online?robotId={Escape(robotId)}"),
+            "get_online",
             cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-
         if (!response.IsSuccessStatusCode)
         {
             return new(null, HttpFailure(response));
         }
 
-        if (string.IsNullOrWhiteSpace(body) || body.Trim() == "{}")
-        {
-            return new(null, null);
-        }
-
-        try
-        {
-            var envelope = JsonSerializer.Deserialize<Envelope<OnlineData>>(body, JsonOptions);
-            if (envelope?.Code is not (0 or 200))
-            {
-                LogFailure("get_online", envelope?.Code);
-                return new(null, SafeFailureCode(envelope?.Code));
-            }
-
-            return new(envelope.Data?.ToBoolean(), null);
-        }
-        catch (JsonException)
-        {
-            return new(null, "worktool_invalid_response");
-        }
+        return new(null, null);
     }
 
     public async Task<WorkToolMessageCallbackConfiguration> ConfigureMessageCallbackAsync(
@@ -139,15 +278,19 @@ public sealed class WorkToolClient(
         WorkToolMessageCallbackRequest request,
         CancellationToken cancellationToken)
     {
-        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
-        using var response = await httpClient.PostAsJsonAsync(
-            $"robot/robotInfo/update?robotId={Escape(robotId)}",
-            new
-            {
-                openCallback = request.OpenCallback ? 1 : 0,
-                replyAll = request.ReplyAll ? 1 : 0,
-                callbackUrl = request.CallbackUrl.AbsoluteUri
-            },
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(robotConfigId, cancellationToken);
+        var body = new
+        {
+            openCallback = request.OpenCallback ? 1 : 0,
+            replyAll = request.ReplyAll ? 1 : 0,
+            callbackUrl = request.CallbackUrl.AbsoluteUri
+        };
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Post,
+                $"robot/robotInfo/update?robotId={Escape(robotId)}",
+                body),
+            "configure_message_callback",
             cancellationToken);
         var result = await ReadMutationAsync(response, "configure_message_callback", cancellationToken);
         return new(
@@ -161,9 +304,12 @@ public sealed class WorkToolClient(
         Guid robotConfigId,
         CancellationToken cancellationToken)
     {
-        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
-        using var response = await httpClient.GetAsync(
-            $"robot/robotInfo/callBack/get?robotId={Escape(robotId)}&robotKey=",
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(robotConfigId, cancellationToken);
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Get,
+                $"robot/robotInfo/callBack/get?robotId={Escape(robotId)}&robotKey="),
+            "list_event_callbacks",
             cancellationToken);
         var parsed = await ReadEnvelopeAsync<IReadOnlyList<CallbackData>>(
             response,
@@ -193,10 +339,14 @@ public sealed class WorkToolClient(
         CancellationToken cancellationToken)
     {
         EnsureSupportedEventType(type);
-        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
-        using var response = await httpClient.PostAsJsonAsync(
-            $"robot/robotInfo/callBack/bind?robotId={Escape(robotId)}",
-            new { type, callBackUrl = callbackUrl.AbsoluteUri },
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(robotConfigId, cancellationToken);
+        var body = new { type, callBackUrl = callbackUrl.AbsoluteUri };
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Post,
+                $"robot/robotInfo/callBack/bind?robotId={Escape(robotId)}",
+                body),
+            "bind_event_callback",
             cancellationToken);
         return await ReadMutationAsync(response, "bind_event_callback", cancellationToken);
     }
@@ -207,10 +357,14 @@ public sealed class WorkToolClient(
         CancellationToken cancellationToken)
     {
         EnsureSupportedEventType(type);
-        var robotId = await credentials.ResolveRobotIdAsync(robotConfigId, cancellationToken);
-        using var response = await httpClient.PostAsJsonAsync(
-            $"robot/robotInfo/callBack/deleteByType?robotId={Escape(robotId)}",
-            new { type },
+        var robotId = await credentials.ResolveConfiguredRobotIdAsync(robotConfigId, cancellationToken);
+        var body = new { type };
+        using var response = await SendAdministrativeAsync(
+            () => CreateAdministrativeRequest(
+                HttpMethod.Post,
+                $"robot/robotInfo/callBack/deleteByType?robotId={Escape(robotId)}",
+                body),
+            "delete_event_callback",
             cancellationToken);
         return await ReadMutationAsync(response, "delete_event_callback", cancellationToken);
     }
@@ -248,12 +402,62 @@ public sealed class WorkToolClient(
         object command,
         CancellationToken cancellationToken)
     {
-        using var response = await httpClient.PostAsJsonAsync(
-            $"wework/sendRawMessage?robotId={Escape(robotId)}",
-            new { socketType = 2, list = new[] { command } },
-            cancellationToken);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"wework/sendRawMessage?robotId={Escape(robotId)}")
+        {
+            Content = JsonContent.Create(
+                new { socketType = 2, list = new[] { command } },
+                mediaType: null,
+                options: JsonOptions)
+        };
+        using var response = await httpClient.SendAsync(request, cancellationToken);
         var parsed = await ReadEnvelopeAsync<string>(response, "submit_command", cancellationToken);
         return ToSubmission(response, parsed.Envelope, parsed.Parsed);
+    }
+
+    private async Task<HttpResponseMessage> SendAdministrativeAsync(
+        Func<HttpRequestMessage> requestFactory,
+        string endpoint,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            using var request = requestFactory();
+            try
+            {
+                return await httpClient.SendAsync(request, cancellationToken);
+            }
+            catch (HttpRequestException exception) when (
+                attempt == 0 &&
+                exception is not WorkToolRateLimitException &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                logger?.LogWarning(
+                    exception,
+                    "WorkTool administrative endpoint {Endpoint} had a transport failure; retrying once with a fresh HTTP/1.1 connection.",
+                    endpoint);
+            }
+        }
+    }
+
+    private static HttpRequestMessage CreateAdministrativeRequest(
+        HttpMethod method,
+        string requestUri,
+        object? body = null)
+    {
+        var request = new HttpRequestMessage(method, requestUri)
+        {
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact
+        };
+        request.Headers.ConnectionClose = true;
+        if (body is not null)
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(body, JsonOptions),
+                Encoding.UTF8,
+                "application/json");
+        return request;
     }
 
     private async Task<WorkToolCallbackMutationResult> ReadMutationAsync(
@@ -334,6 +538,14 @@ public sealed class WorkToolClient(
 
     private static string Escape(string value) => Uri.EscapeDataString(value);
 
+    private static string? OpaqueRaw(JsonElement value) =>
+        value.ValueKind switch
+        {
+            JsonValueKind.Undefined or JsonValueKind.Null => null,
+            JsonValueKind.String => value.GetString(),
+            _ => value.GetRawText()
+        };
+
     private static string HttpFailure(HttpResponseMessage response) =>
         $"worktool_http_{(int)response.StatusCode}";
 
@@ -363,21 +575,46 @@ public sealed class WorkToolClient(
         int OpenCallback,
         int ReplyAll);
 
-    private sealed record OnlineData(
-        bool? Online,
-        int? Status)
-    {
-        public bool? ToBoolean() => Online ?? Status switch
-        {
-            0 => false,
-            1 => true,
-            _ => null
-        };
-    }
+    private sealed record GroupPageData(
+        int PageNum,
+        int PageSize,
+        int TotalPage,
+        int Total,
+        IReadOnlyList<GroupData>? List);
+
+    private sealed record GroupData(
+        string GroupName,
+        string? MasterName,
+        int MembersNum,
+        string? GroupAnnouncement);
+
+    private sealed record RawCommandResultData(
+        JsonElement RawMsg,
+        int RawSuccess,
+        string? ErrorReason,
+        JsonElement RunTime,
+        int ApiSend,
+        int Type,
+        string MessageId,
+        JsonElement SuccessList,
+        JsonElement FailList,
+        decimal? TimeCost);
 
     private sealed record CallbackData(
         long Id,
         int Type,
         string CallBackUrl,
         string? TypeName);
+}
+
+public sealed class WorkToolGroupListException(string failureCode)
+    : InvalidOperationException("WorkTool group list request failed.")
+{
+    public string FailureCode { get; } = failureCode;
+}
+
+public sealed class WorkToolRawResultException(string failureCode)
+    : InvalidOperationException("WorkTool raw result request failed.")
+{
+    public string FailureCode { get; } = failureCode;
 }

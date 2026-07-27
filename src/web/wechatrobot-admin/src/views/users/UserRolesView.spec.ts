@@ -55,6 +55,16 @@ function createApi(initial = [user()]): UserAdministrationApi {
       const target = items.find(item => item.id === id)!;
       target.roles = [...roles];
       return { ...target };
+    }),
+    setWorkToolDisplayName: vi.fn(async (id, displayName) => {
+      const target = items.find(item => item.id === id)!;
+      target.workToolDisplayName = displayName;
+      return { ...target };
+    }),
+    clearWorkToolDisplayName: vi.fn(async id => {
+      const target = items.find(item => item.id === id)!;
+      target.workToolDisplayName = null;
+      return { ...target };
     })
   };
 }
@@ -130,5 +140,36 @@ describe('UserRolesView', () => {
     await wrapper.get('[data-testid="toggle-user-user-1"]').trigger('click');
     await flushPromises();
     expect(wrapper.text()).toContain('系统必须保留至少一个已启用的管理员。');
+  });
+
+  it('binds an explicit WorkTool nickname only for eligible users', async () => {
+    const api = createApi([
+      user({
+        id: 'agent-1',
+        displayName: '后台客服名称',
+        roles: ['HumanAgent'],
+        workToolDisplayName: null
+      }),
+      user({
+        id: 'operator-1',
+        displayName: '知识运营',
+        roles: ['KnowledgeOperator']
+      })
+    ]);
+    const wrapper = mount(UserRolesView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('仅 Admin 或 HumanAgent 可绑定');
+    await wrapper.get('[data-testid="bind-worktool-agent-1"]').trigger('click');
+    await wrapper.get('[data-testid="worktool-display-name"]').setValue('  企微客服甲  ');
+    await wrapper.get('[data-testid="save-worktool-display-name"]').trigger('click');
+    await flushPromises();
+
+    expect(api.setWorkToolDisplayName).toHaveBeenCalledWith('agent-1', '企微客服甲');
+    expect(wrapper.text()).toContain('企微客服甲');
+    expect(api.setWorkToolDisplayName).not.toHaveBeenCalledWith(
+      'agent-1',
+      '后台客服名称'
+    );
   });
 });

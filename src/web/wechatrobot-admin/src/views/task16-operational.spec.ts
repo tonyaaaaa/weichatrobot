@@ -37,7 +37,7 @@ function createDocumentAdministrationApiStubs() {
 }
 
 describe('Task 16 operational pages', () => {
-  it('shows upload progress, upload errors, DOC conversion guidance and the public OSS warning', async () => {
+  it('shows upload progress, upload errors and DOC conversion guidance without a repeated OSS banner', async () => {
     const api = {
       upload: vi.fn(async (_file: File, progress: (value: number) => void) => {
         progress(45);
@@ -57,7 +57,7 @@ describe('Task 16 operational pages', () => {
     expect(wrapper.text()).toContain('OSS unavailable');
     expect(wrapper.text()).toContain('DOC');
     expect(wrapper.text()).toContain('DOCX');
-    expect(wrapper.text()).toContain('公共读 OSS');
+    expect(wrapper.text()).not.toContain('公共读 OSS 风险提示');
   });
 
   it('links a successful upload to its real document version detail', async () => {
@@ -588,7 +588,8 @@ describe('Task 16 operational pages', () => {
     const users = mount(UserRolesView, { props: { api: {
       list: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
       roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
-      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn(),
+      setWorkToolDisplayName: vi.fn(), clearWorkToolDisplayName: vi.fn()
     } } });
     await flushPromises();
     expect(users.text()).not.toContain('后端暂未提供');

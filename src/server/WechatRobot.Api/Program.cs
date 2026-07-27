@@ -141,6 +141,11 @@ builder.Services.AddOptions<WorkToolCallbackOptions>()
     .BindConfiguration(WorkToolCallbackOptions.SectionName)
     .ValidateDataAnnotations()
     .ValidateOnStart();
+builder.Services.AddOptions<WorkToolRateLimitOptions>()
+    .BindConfiguration(WorkToolRateLimitOptions.SectionName)
+    .ValidateOnStart();
+builder.Services.AddSingleton<IWorkToolGlobalRateLimiter, MySqlWorkToolGlobalRateLimiter>();
+builder.Services.AddTransient<WorkToolGlobalRateLimitHandler>();
 builder.Services.AddScoped<InboundMessageService>(services => new InboundMessageService(
     services.GetRequiredService<IDurableJobRepository>(),
     services.GetRequiredService<TimeProvider>(),
@@ -149,9 +154,14 @@ builder.Services.AddApiRateLimits(builder.Environment.IsEnvironment("Testing"));
 builder.Services.AddWechatRobotHealth(builder.Configuration);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
-builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"));
+builder.Services
+    .AddHttpClient<IWorkToolClient, WorkToolClient>(
+        client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"))
+    .AddHttpMessageHandler<WorkToolGlobalRateLimitHandler>()
+    .ConfigurePrimaryHttpMessageHandler(WorkToolHttpTransport.CreatePrimaryHandler);
 builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
 builder.Services.AddScoped<RobotCallbackConfigurationService>();
+builder.Services.AddScoped<WorkToolGroupImportService>();
 builder.Services.AddScoped<IWorkToolCommandResultStore, EfWorkToolCommandResultStore>();
 builder.Services.AddScoped<WorkToolCommandResultProcessor>();
 builder.Services

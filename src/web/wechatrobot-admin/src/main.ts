@@ -10,6 +10,7 @@ import 'element-plus/es/components/pagination/style/css';
 import 'element-plus/es/components/progress/style/css';
 import 'element-plus/es/components/select/style/css';
 import 'element-plus/es/components/skeleton/style/css';
+import 'element-plus/es/components/switch/style/css';
 import 'element-plus/es/components/table/style/css';
 import 'element-plus/es/components/tag/style/css';
 import './styles.css';

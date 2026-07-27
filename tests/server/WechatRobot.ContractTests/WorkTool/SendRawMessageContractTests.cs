@@ -44,6 +44,62 @@ public sealed class SendRawMessageContractTests
         Assert.False(result.DeliveryMayHaveOccurred);
     }
 
+    [Fact]
+    public async Task SendTextAsync_omits_atList_when_no_mentions_are_requested()
+    {
+        var handler = new RecordingHandler(
+            HttpStatusCode.OK,
+            """{"code":0,"message":"accepted","data":"command-2"}""");
+        using var client = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://fake.worktool.test/")
+        };
+        var sut = new WorkToolClient(client, new FixedCredentials());
+
+        await sut.SendTextAsync(
+            new WorkToolSendRequest(
+                Guid.NewGuid(),
+                "Support Group",
+                "fixed reply",
+                "idem-2",
+                []),
+            TestContext.Current.CancellationToken);
+
+        using var json = JsonDocument.Parse(handler.Body);
+        var command = json.RootElement.GetProperty("list")[0];
+        Assert.False(command.TryGetProperty("atList", out _));
+    }
+
+    [Fact]
+    public async Task RequestGroupMemberSnapshotAsync_sends_only_the_official_type512_fields()
+    {
+        var handler = new RecordingHandler(
+            HttpStatusCode.OK,
+            """{"code":0,"message":"accepted","data":"member-command-1"}""");
+        using var client = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://fake.worktool.test/")
+        };
+        var sut = new WorkToolClient(client, new FixedCredentials());
+
+        var result = await sut.RequestGroupMemberSnapshotAsync(
+            Guid.NewGuid(),
+            "售后客户群",
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Accepted);
+        Assert.Equal("member-command-1", result.MessageId);
+        Assert.Equal("/wework/sendRawMessage?robotId=robot-7", handler.PathAndQuery);
+        using var json = JsonDocument.Parse(handler.Body);
+        Assert.Equal(2, json.RootElement.GetProperty("socketType").GetInt32());
+        var list = json.RootElement.GetProperty("list");
+        Assert.Equal(1, list.GetArrayLength());
+        var command = list[0];
+        Assert.Equal(2, command.EnumerateObject().Count());
+        Assert.Equal(512, command.GetProperty("type").GetInt32());
+        Assert.Equal("售后客户群", command.GetProperty("groupName").GetString());
+    }
+
     private sealed class RecordingHandler(HttpStatusCode statusCode, string responseBody) : HttpMessageHandler
     {
         public string? Method { get; private set; }

@@ -3,7 +3,20 @@ namespace WechatRobot.Application.WorkTool;
 public interface IWorkToolCredentialResolver
 {
     Task<string> ResolveRobotIdAsync(Guid robotConfigId, CancellationToken cancellationToken);
+
+    Task<string> ResolveEnabledRobotIdAsync(
+        Guid robotConfigId,
+        CancellationToken cancellationToken) =>
+        ResolveRobotIdAsync(robotConfigId, cancellationToken);
+
+    Task<string> ResolveConfiguredRobotIdAsync(
+        Guid robotConfigId,
+        CancellationToken cancellationToken) =>
+        ResolveRobotIdAsync(robotConfigId, cancellationToken);
 }
+
+public sealed class WorkToolCredentialUnavailableException(string message)
+    : InvalidOperationException(message);
 
 public interface IWorkToolClient
 {
@@ -14,6 +27,29 @@ public interface IWorkToolClient
     Task<WorkToolCommandSubmission> ExecuteGroupOperationAsync(
         WorkToolGroupOperationRequest request,
         CancellationToken cancellationToken);
+
+    Task<WorkToolCommandSubmission> RequestGroupMemberSnapshotAsync(
+        Guid robotConfigId,
+        string groupName,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    Task<IReadOnlyList<WorkToolRawCommandResult>>
+        ListGroupMemberSnapshotResultsAsync(
+            Guid robotConfigId,
+            string messageId,
+            DateTimeOffset startTime,
+            DateTimeOffset endTime,
+            CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    Task<WorkToolGroupPage> ListGroupsAsync(
+        Guid robotConfigId,
+        string? groupName,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<WorkToolRobotSnapshot> GetRobotAsync(
         Guid robotConfigId,
@@ -97,6 +133,19 @@ public sealed record WorkToolRobotSnapshot(
     string? FailureCode);
 
 public sealed record WorkToolOnlineSnapshot(bool? Online, string? FailureCode);
+
+public sealed record WorkToolGroupPage(
+    int PageNumber,
+    int PageSize,
+    int TotalPages,
+    int Total,
+    IReadOnlyList<WorkToolGroupSummary> Items);
+
+public sealed record WorkToolGroupSummary(
+    string GroupName,
+    string? MasterName,
+    int MembersCount,
+    string? GroupAnnouncement);
 
 public sealed record WorkToolMessageCallbackRequest(
     bool OpenCallback,

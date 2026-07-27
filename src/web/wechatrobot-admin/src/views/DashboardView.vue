@@ -111,7 +111,7 @@ onMounted(load);
         <div class="section-heading">
           <div>
             <h2 id="robot-summary-title">机器人</h2>
-            <p>可达、在线和回调配置是独立状态。</p>
+            <p>可达和回调配置是独立状态；WorkTool 官方未提供可靠在线结果。</p>
           </div>
           <ElTag v-if="data.robots.failedChecks" type="warning">
             {{ data.robots.failedChecks }} 个检查失败
@@ -129,10 +129,6 @@ onMounted(load);
           <article class="metric-card">
             <span>WorkTool 可达</span>
             <strong>{{ data.robots.reachable }}</strong>
-          </article>
-          <article class="metric-card">
-            <span>当前在线</span>
-            <strong>{{ data.robots.online }}</strong>
           </article>
           <article class="metric-card">
             <span>消息回调已配置</span>

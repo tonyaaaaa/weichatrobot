@@ -72,6 +72,12 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
         var robot = await SeedRobotAsync(factory, "callback-valid", "callback-secret");
         using var client = factory.CreateClient();
+        var warmup = await client.PostAsJsonAsync(
+            "/api/worktool/callback/warmup?token=wrong",
+            ValidPayload("message-warmup"),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, warmup.StatusCode);
+
         var stopwatch = Stopwatch.StartNew();
         var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", ValidPayload("message-valid"), TestContext.Current.CancellationToken);
         stopwatch.Stop();
@@ -92,6 +98,46 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
             && item.PayloadJson.Contains(robot.Id.ToString()), TestContext.Current.CancellationToken);
         Assert.Contains("\"WasMentioned\":false", job.PayloadJson, StringComparison.Ordinal);
         Assert.Contains("\"GroupRemark\":\"Support\"", job.PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Official_string_atMe_callback_is_accepted_and_preserves_mention_state()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var robot = await SeedRobotAsync(factory, "callback-official-atme", "callback-secret");
+        using var client = factory.CreateClient();
+        const string payload = """
+            {
+              "spoken": "How do I reset my password?",
+              "rawSpoken": "How do I reset my password?",
+              "receivedName": "Alice",
+              "groupName": "Support",
+              "groupRemark": "Support",
+              "roomType": 1,
+              "atMe": "true",
+              "textType": 1,
+              "messageId": "message-official-string-atme"
+            }
+            """;
+
+        using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+        var response = await client.PostAsync(
+            $"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret",
+            content,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("{\"code\":0,\"message\":\"accepted\"}", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        Assert.Equal(1, await database.ConversationMessages.CountAsync(
+            message => message.RobotConfigId == robot.Id,
+            TestContext.Current.CancellationToken));
+        var job = await database.DurableJobs.SingleAsync(
+            item => item.RelatedConversationMessageId != null &&
+                    item.PayloadJson.Contains(robot.Id.ToString()),
+            TestContext.Current.CancellationToken);
+        Assert.Contains("\"WasMentioned\":true", job.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -130,18 +176,25 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
 
     [Theory]
     [InlineData("roomType", 2)]
+    [InlineData("roomType", 3)]
+    [InlineData("roomType", 4)]
     [InlineData("textType", 2)]
-    public async Task Non_group_or_non_text_callback_is_rejected_without_enqueuing(string field, int value)
+    [InlineData("textType", 3)]
+    [InlineData("textType", 9)]
+    public async Task Official_but_unsupported_callback_is_acknowledged_and_ignored(string field, int value)
     {
         await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
-        var robot = await SeedRobotAsync(factory, $"callback-{field}-{value}", "callback-secret");
-        var payload = ValidPayload($"message-{field}-{value}");
+        var robot = await SeedRobotAsync(factory, $"callback-ignored-{field}-{value}", "callback-secret");
+        var payload = ValidPayload($"message-ignored-{field}-{value}");
         payload[field] = value;
         using var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync($"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret", payload, TestContext.Current.CancellationToken);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+            "{\"code\":0,\"message\":\"ignored\"}",
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         await AssertNoInboundDataAsync(factory, robot.Id);
     }
 
