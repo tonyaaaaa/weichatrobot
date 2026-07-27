@@ -100,12 +100,15 @@ Invoke-RestMethod -Method Post -Uri "${apiBase}api/admin/worktool/groups/registe
 
 .\scripts\update-worktool-callback.ps1 `
   -ApiBaseUrl $apiBase `
-  -RobotConfigId $robotId `
   -PublicBaseUrl $apiBase `
-  -BearerToken $adminToken `
+  -Email 'checkpoint-admin@example.test' `
   -Apply `
-  -Confirmation APPLY
+  -Confirmation UPDATE
 ```
+
+The script prompts securely for the temporary bootstrap administrator password.
+This checkpoint assumes the local database contains only the enabled checkpoint
+robot; otherwise select it by its displayed name when prompted.
 
 脚本只调用本系统的两个管理员端点，不直接调用 WorkTool：
 

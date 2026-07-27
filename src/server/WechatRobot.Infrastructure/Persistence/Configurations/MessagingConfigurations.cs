@@ -134,7 +134,7 @@ internal sealed class RetrievalAuditConfiguration : IEntityTypeConfiguration<Ret
         builder.Property(entity => entity.ContextPolicy).HasMaxLength(1024).IsRequired();
         builder.Property(entity => entity.FailureCode).HasMaxLength(64);
         builder.Property(entity => entity.EvidenceJson).HasColumnType("json").IsRequired();
-        builder.Property(entity => entity.InputSummaryJson).HasColumnType("json").HasDefaultValueSql("(JSON_OBJECT())").IsRequired();
+        builder.Property(entity => entity.InputSummaryJson).HasColumnType("json").IsRequired();
         builder.HasIndex(entity => entity.ConversationMessageId).IsUnique();
         builder.HasIndex(entity => new { entity.GroupProfileId, entity.CreatedAtUtc });
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.ConversationMessageId).OnDelete(DeleteBehavior.Restrict);

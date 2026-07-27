@@ -95,8 +95,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         var producer = new EfHandoffStore(producerContext).StartAsync(command, DateTime.UtcNow, TestContext.Current.CancellationToken);
         await blocker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        var enable = client.PutAsJsonAsync($"/api/admin/worktool/robots/{seed.Robot.Id:D}",
-            new { seed.Robot.Name, seed.Robot.WorkToolRobotId, isEnabled = true }, TestContext.Current.CancellationToken);
+        var enable = EnableRobotAsync(client, seed.Robot.Id, seed.Robot.Name);
         await Task.Delay(250, TestContext.Current.CancellationToken);
         Assert.False(enable.IsCompleted);
         blocker.Release();
@@ -123,7 +122,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         await blocker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var disable = client.PutAsJsonAsync($"/api/admin/worktool/robots/{seed.Robot.Id:D}",
-            new { seed.Robot.Name, seed.Robot.WorkToolRobotId, isEnabled = false }, TestContext.Current.CancellationToken);
+            new { seed.Robot.Name, isEnabled = false }, TestContext.Current.CancellationToken);
         await Task.Delay(250, TestContext.Current.CancellationToken);
         Assert.False(disable.IsCompleted);
         blocker.Release();
@@ -151,7 +150,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         await using var factory = new RobotAdminFactory(_fixture.ConnectionString);
         using var client = factory.CreateClient();
         var disabled = await client.PutAsJsonAsync($"/api/admin/worktool/robots/{robot.Id:D}",
-            new { robot.Name, robot.WorkToolRobotId, isEnabled = false }, TestContext.Current.CancellationToken);
+            new { robot.Name, isEnabled = false }, TestContext.Current.CancellationToken);
         disabled.EnsureSuccessStatusCode();
         Assert.False(await repository.EnsureSendEnabledAsync(leased, TestContext.Current.CancellationToken));
         await using (var disabledScope = provider.CreateAsyncScope())
@@ -163,11 +162,10 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         Assert.Null(await repository.LeaseNextSendCommandAsync("disabled-worker", now.AddMinutes(1), TimeSpan.FromMinutes(1),
             TestContext.Current.CancellationToken));
 
-        var enabled = await client.PutAsJsonAsync($"/api/admin/worktool/robots/{robot.Id:D}",
-            new { robot.Name, robot.WorkToolRobotId, isEnabled = true }, TestContext.Current.CancellationToken);
+        var enabled = await EnableRobotAsync(client, robot.Id, robot.Name);
         enabled.EnsureSuccessStatusCode();
         (await client.PutAsJsonAsync($"/api/admin/worktool/robots/{robot.Id:D}",
-            new { robot.Name, robot.WorkToolRobotId, isEnabled = true }, TestContext.Current.CancellationToken)).EnsureSuccessStatusCode();
+            new { robot.Name, isEnabled = true }, TestContext.Current.CancellationToken)).EnsureSuccessStatusCode();
         await using var resumedScope = provider.CreateAsyncScope();
         var resumedRepository = resumedScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
         var first = Assert.IsType<LeasedSendCommand>(await resumedRepository.LeaseNextSendCommandAsync("resumed-worker", now.AddMinutes(2),
@@ -196,7 +194,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         Assert.True(await IsRobotSendLockHeldAsync(robot.Id));
 
         var disable = client.PutAsJsonAsync($"/api/admin/worktool/robots/{robot.Id:D}",
-            new { robot.Name, robot.WorkToolRobotId, isEnabled = false }, TestContext.Current.CancellationToken);
+            new { robot.Name, isEnabled = false }, TestContext.Current.CancellationToken);
         await Task.Delay(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
         Assert.False(disable.IsCompleted, "Disable must not report success while a provider send is still in flight.");
 
@@ -230,8 +228,7 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
             var repository = enqueueScope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
             var enqueue = repository.EnqueueSendCommandAsync(new(robot.Id, robot.WorkToolRobotId, "Support", "queued",
                 $"enable-race-{Guid.NewGuid():N}"), TestContext.Current.CancellationToken);
-            var enable = client.PutAsJsonAsync($"/api/admin/worktool/robots/{robot.Id:D}",
-                new { robot.Name, robot.WorkToolRobotId, isEnabled = true }, TestContext.Current.CancellationToken);
+            var enable = EnableRobotAsync(client, robot.Id, robot.Name);
             await Task.Delay(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
             Assert.False(enqueue.IsCompleted);
             Assert.False(enable.IsCompleted);
@@ -704,6 +701,8 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
             {
                 services.RemoveAll<DbContextOptions<WechatRobotDbContext>>(); services.RemoveAll<WechatRobotDbContext>();
                 services.AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(connectionString));
+                services.RemoveAll<IWorkToolClient>();
+                services.AddSingleton<IWorkToolClient, ProbeWorkToolClient>();
                 services.AddAuthentication(options =>
                     {
                         options.DefaultAuthenticateScheme = "integration-admin"; options.DefaultChallengeScheme = "integration-admin";
@@ -713,6 +712,67 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
             });
         }
     }
+
+    private static async Task<HttpResponseMessage> EnableRobotAsync(
+        HttpClient client,
+        Guid robotId,
+        string name)
+    {
+        var probe = await client.PostAsync(
+            $"/api/admin/worktool/robots/{robotId:D}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+        probe.EnsureSuccessStatusCode();
+        var confirmation = await probe.Content.ReadFromJsonAsync<EnableProbeResponse>(
+            TestContext.Current.CancellationToken);
+        Assert.False(string.IsNullOrWhiteSpace(confirmation?.EnableConfirmationToken));
+        return await client.PutAsJsonAsync(
+            $"/api/admin/worktool/robots/{robotId:D}",
+            new
+            {
+                name,
+                isEnabled = true,
+                enableConfirmationToken = confirmation.EnableConfirmationToken
+            },
+            TestContext.Current.CancellationToken);
+    }
+
+    private sealed class ProbeWorkToolClient : IWorkToolClient
+    {
+        public Task<WorkToolRobotSnapshot> GetRobotAsync(
+            Guid robotConfigId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new WorkToolRobotSnapshot(true, "configured", false, false, null));
+
+        public Task<WorkToolOnlineSnapshot> GetOnlineAsync(
+            Guid robotConfigId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new WorkToolOnlineSnapshot(true, null));
+
+        public Task<WorkToolCommandSubmission> SendTextAsync(
+            WorkToolSendRequest request,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<WorkToolCommandSubmission> ExecuteGroupOperationAsync(
+            WorkToolGroupOperationRequest request,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<WorkToolSendResult> TestConnectionAsync(
+            Guid robotConfigId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(WorkToolSendResult.Success());
+
+        public Task<WorkToolSendResult> BindCallbackAsync(
+            Guid robotConfigId,
+            int type,
+            Uri callbackUrl,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed record EnableProbeResponse(string? EnableConfirmationToken);
 
     private static DateTime TruncateToMicroseconds(DateTime value) => new(value.Ticks - value.Ticks % 10, DateTimeKind.Utc);
 }

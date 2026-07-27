@@ -1,5 +1,6 @@
 using System.Text;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Http.Features;
@@ -15,6 +16,8 @@ using WechatRobot.Api.Handoffs;
 using WechatRobot.Api.Health;
 using WechatRobot.Api.Audit;
 using WechatRobot.Api.Robots;
+using WechatRobot.Api.Dashboard;
+using WechatRobot.Api.Users;
 using WechatRobot.Api.Security;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Application.Jobs;
@@ -64,6 +67,8 @@ builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<ModelConfigurationManager>();
 builder.Services.AddScoped<KnowledgeTagManager>();
 builder.Services.AddScoped<KnowledgeDocumentAdministrationQuery>();
+builder.Services.AddScoped<DashboardSummaryService>();
+builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
@@ -192,6 +197,28 @@ builder.Services.AddAuthentication(options =>
             NameClaimType = ClaimTypes.Name,
             RoleClaimType = ClaimTypes.Role
         };
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var stampHash = context.Principal?.FindFirstValue("security_stamp_hash");
+                if (string.IsNullOrWhiteSpace(stampHash))
+                    return;
+                var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                var userManager = context.HttpContext.RequestServices.GetRequiredService<UserManager<ApplicationUser>>();
+                var user = userId is null ? null : await userManager.FindByIdAsync(userId);
+                if (user is null || !user.IsEnabled)
+                {
+                    context.Fail("The user is disabled or unavailable.");
+                    return;
+                }
+                var currentStamp = await userManager.GetSecurityStampAsync(user);
+                if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(stampHash),
+                    Encoding.ASCII.GetBytes(AuthEndpoints.HashSecurityStamp(currentStamp))))
+                    context.Fail("The token has been invalidated.");
+            }
+        };
     });
 builder.Services.AddAuthorization(options =>
 {
@@ -229,6 +256,8 @@ app.UseRateLimiter();
 app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
 app.MapRobotSettingsEndpoints();
+app.MapDashboardEndpoints();
+app.MapUserAdministrationEndpoints();
 app.MapGroupEndpoints();
 app.MapDocumentEndpoints();
 app.MapChunkPreviewEndpoints();
@@ -239,6 +268,7 @@ app.MapWorkToolGroupOperationEndpoints();
 app.MapHandoffEndpoints();
 app.MapKnowledgeReviewEndpoints();
 app.MapConversationAuditEndpoints();
+app.MapAdministrationAuditEndpoints();
 app.MapWechatRobotHealthEndpoints();
 app.MapGet("/", () => Results.Ok()).RequireAuthorization();
 

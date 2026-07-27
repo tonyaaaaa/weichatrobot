@@ -4,7 +4,7 @@ import GroupOperationsView from './GroupOperationsView.vue';
 
 describe('GroupOperationsView', () => {
   it('requires an explicit manual invitation acknowledgement before registering an existing group', async () => {
-    const api = { listGroups: vi.fn().mockResolvedValue([]), registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([]) };
+    const api = { listGroups: vi.fn().mockResolvedValue([]), registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([]), getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端审计范围' }) };
     const wrapper = mount(GroupOperationsView, { props: { api } });
     await wrapper.get('[data-testid="register-existing-group"]').trigger('click');
     expect(wrapper.text()).toContain('先由人工在企业微信中邀请机器人入群');
@@ -22,7 +22,7 @@ describe('GroupOperationsView', () => {
   it('loads registered groups and selecting one populates the operation form', async () => {
     const api = {
       listGroups: vi.fn().mockResolvedValue([{ id: 'known-1', robotConfigId: 'robot-config-1', name: '技术支持群', workToolGroupRemark: 'support-east' }]),
-      registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([])
+      registerExistingGroup: vi.fn(), preview: vi.fn(), execute: vi.fn(), listOperations: vi.fn().mockResolvedValue([]), getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端审计范围' })
     };
     const wrapper = mount(GroupOperationsView, { props: { api } });
     await Promise.resolve(); await wrapper.vm.$nextTick();
@@ -49,6 +49,7 @@ describe('GroupOperationsView', () => {
       registerExistingGroup: vi.fn(),
       preview: vi.fn(),
       execute: vi.fn(),
+      getAuditScope: vi.fn().mockResolvedValue({ scope: '服务端返回的群命令审计范围' }),
       listOperations: vi.fn().mockResolvedValue(statuses.map(([status], index) => ({
         id: `audit-${index}`,
         operation: 'AddMembers',
@@ -65,5 +66,6 @@ describe('GroupOperationsView', () => {
     for (const [, copy] of statuses) {
       expect(wrapper.text()).toContain(copy);
     }
+    expect(wrapper.text()).toContain('服务端返回的群命令审计范围');
   });
 });

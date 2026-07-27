@@ -19,4 +19,11 @@ Create a new high-entropy value of at least 32 characters, deploy it to API inst
 
 ## WorkTool callback
 
-Generate a new high-entropy callback token, persist only its SHA-256 hash for the selected robot, and use `scripts/update-worktool-callback.ps1` with a fake target first. For a real change, use `-Apply` only after checking the displayed token-redacted callback URL and entering the exact confirmation. Verify the new token with one harmless callback before invalidating the old route. Robot IDs and callback tokens must remain out of logs.
+Use `scripts/update-worktool-callback.ps1` with a loopback fake API first. For a
+real change, review its `https://wxrobot.aavisa.com` preview, run again with
+`-Apply`, securely enter administrator credentials, select the enabled robot by
+name, and type the exact confirmation. The backend generates or reuses the
+encrypted callback credential and retains only the hashes required for callback
+authentication and its grace window. Verify the new route with one harmless
+callback. Robot IDs, callback route codes, callback secrets, administrator
+passwords, and bearer tokens must remain out of logs.

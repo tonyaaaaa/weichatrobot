@@ -28,8 +28,22 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                 name: "HeadingsJson",
                 table: "knowledge_chunk",
                 type: "json",
+                nullable: true);
+
+            migrationBuilder.Sql("""
+                UPDATE `knowledge_chunk`
+                SET `HeadingsJson` = '[]'
+                WHERE `HeadingsJson` IS NULL;
+                """);
+
+            migrationBuilder.AlterColumn<string>(
+                name: "HeadingsJson",
+                table: "knowledge_chunk",
+                type: "json",
                 nullable: false,
-                defaultValueSql: "(JSON_ARRAY())");
+                oldClrType: typeof(string),
+                oldType: "json",
+                oldNullable: true);
 
             migrationBuilder.AddColumn<bool>(
                 name: "IsTable",
@@ -49,8 +63,22 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                 name: "SynonymsJson",
                 table: "knowledge_chunk",
                 type: "json",
+                nullable: true);
+
+            migrationBuilder.Sql("""
+                UPDATE `knowledge_chunk`
+                SET `SynonymsJson` = '[]'
+                WHERE `SynonymsJson` IS NULL;
+                """);
+
+            migrationBuilder.AlterColumn<string>(
+                name: "SynonymsJson",
+                table: "knowledge_chunk",
+                type: "json",
                 nullable: false,
-                defaultValueSql: "(JSON_ARRAY())");
+                oldClrType: typeof(string),
+                oldType: "json",
+                oldNullable: true);
 
             migrationBuilder.AddColumn<int>(
                 name: "TableColumns",

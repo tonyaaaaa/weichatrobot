@@ -38,6 +38,13 @@ public static class GroupEndpoints
         IGroundedConversationRepository conversations,
         CancellationToken cancellationToken)
     {
+        if (request.ExpectedConfigurationVersion is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["expectedConfigurationVersion"] = ["The current configuration version is required for every update."]
+            });
+        }
         var selectedTagIds = request.BoundTagIds.Distinct().ToArray();
         if (request.IncludeRules.Count > MaximumRulesPerKind || request.ExcludeRules.Count > MaximumRulesPerKind || selectedTagIds.Length > 100)
         {
@@ -57,10 +64,6 @@ public static class GroupEndpoints
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["handoffPausePolicy"] = ["Handoff pause policy must be group or sender."] });
         }
-        if (request.HandoffPausePolicy is not null && request.ExpectedConfigurationVersion is null)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["expectedConfigurationVersion"] = ["A configuration version is required when changing handoff pause policy."] });
-        }
         var validation = service.Validate(context, include, exclude);
         if (!validation.IsValid)
         {
@@ -69,7 +72,7 @@ public static class GroupEndpoints
 
         var group = await database.GroupProfiles.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (group is null) return Results.NotFound();
-        if (request.ExpectedConfigurationVersion is { } expectedVersion && expectedVersion != group.ConfigurationVersion)
+        if (request.ExpectedConfigurationVersion.Value != group.ConfigurationVersion)
             return Results.Conflict(new { error = "group-configuration-conflict", currentVersion = group.ConfigurationVersion });
 
         if (selectedTagIds.Length > 0)

@@ -31,7 +31,8 @@ function createDocumentAdministrationApiStubs() {
     getDocumentVersions: vi.fn(),
     retryDocumentUpload: vi.fn(),
     disableDocument: vi.fn(),
-    requestPhysicalDelete: vi.fn()
+    requestPhysicalDelete: vi.fn(),
+    deletePreview: vi.fn()
   };
 }
 
@@ -336,7 +337,13 @@ describe('Task 16 operational pages', () => {
     expect(pagination.exists()).toBe(true);
     pagination.vm.$emit('current-change', 2);
     await flushPromises();
-    expect(api.capability).toHaveBeenLastCalledWith(2, 20);
+    expect(api.capability).toHaveBeenLastCalledWith({
+      groupId: undefined,
+      fromUtc: undefined,
+      toUtc: undefined,
+      page: 2,
+      pageSize: 20
+    });
   });
 
   it('redacts secret-shaped values from review and handoff evidence', async () => {
@@ -563,8 +570,15 @@ describe('Task 16 operational pages', () => {
     expect(api.testConnection).toHaveBeenCalledWith('m1');
   });
 
-  it('states unavailable backend capabilities honestly for users and system settings', () => {
-    expect(mount(UserRolesView).text()).toContain('后端暂未提供');
+  it('exposes implemented user administration while keeping unavailable system settings honest', async () => {
+    const users = mount(UserRolesView, { props: { api: {
+      list: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
+      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
+    } } });
+    await flushPromises();
+    expect(users.text()).not.toContain('后端暂未提供');
+    expect(users.find('[data-testid="create-user"]').exists()).toBe(true);
     expect(mount(SystemSettingsView).text()).toContain('后端暂未提供');
   });
 });

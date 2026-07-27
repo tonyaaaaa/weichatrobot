@@ -9,7 +9,12 @@ const apiClient = vi.hoisted(() => ({
 
 vi.mock('./http', () => ({ apiClient }));
 
-import { knowledgeApi, type KnowledgeDocumentDetail, type KnowledgeDocumentPage } from './knowledge';
+import {
+  knowledgeApi,
+  type ChunkPolicy,
+  type KnowledgeDocumentDetail,
+  type KnowledgeDocumentPage
+} from './knowledge';
 
 const documentId = 'document/unsafe';
 const encodedDocumentId = 'document%2Funsafe';
@@ -99,5 +104,26 @@ describe('knowledgeApi document administration', () => {
 
     const serialized = JSON.stringify(detail);
     expect(serialized).not.toMatch(/stagedContent|objectKey|payloadJson|authorization|credential|secret/i);
+  });
+
+  it('sends a discriminated chunk policy and an encoded preview delete request', async () => {
+    const policy: ChunkPolicy = {
+      kind: 'separator',
+      targetTokens: 600,
+      overlapTokens: 80,
+      maximumTokens: 800,
+      separator: '\n---\n'
+    };
+    await knowledgeApi.generatePreviews('version/unsafe', 7, policy);
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/knowledge/versions/version%2Funsafe/previews/generate',
+      { expectedRevision: 7, policy }
+    );
+
+    await knowledgeApi.deletePreview('version/unsafe', 'preview/unsafe', 8);
+    expect(apiClient.delete).toHaveBeenCalledWith(
+      '/api/knowledge/versions/version%2Funsafe/previews/preview%2Funsafe',
+      { params: { expectedRevision: 8 } }
+    );
   });
 });

@@ -76,6 +76,12 @@ export interface KnowledgeDocumentListRequest {
 }
 export interface PreviewItem { id: string; sequence: number; text: string; pageNumber?: number; status?: string }
 export interface PreviewSet { versionId: string; revision: number; items: PreviewItem[] }
+export interface ChunkLengths { targetTokens: number; overlapTokens: number; maximumTokens: number }
+export type ChunkPolicy =
+  | ({ kind: 'smart' } & ChunkLengths)
+  | ({ kind: 'separator'; separator: string } & ChunkLengths)
+  | ({ kind: 'regex'; regexPattern: string } & ChunkLengths)
+  | ({ kind: 'qa'; qaEntries: Array<{ question: string; synonyms: string[]; answer: string }> } & ChunkLengths);
 export interface IndexJobStatus {
   id: string;
   versionId: string;
@@ -107,10 +113,11 @@ export interface KnowledgeApi {
   disableDocument(documentId: string, expectedStateVersion: number): Promise<void>;
   requestPhysicalDelete(documentId: string, expectedStateVersion: number): Promise<void>;
   getPreviews(versionId: string): Promise<PreviewSet | PreviewItem[]>;
-  generatePreviews(versionId: string, revision: number): Promise<PreviewSet>;
+  generatePreviews(versionId: string, revision: number, policy?: ChunkPolicy): Promise<PreviewSet>;
   editPreview(versionId: string, previewId: string, text: string, revision: number): Promise<PreviewSet>;
   splitPreview(versionId: string, previewId: string, offset: number, revision: number): Promise<PreviewSet>;
   mergePreviews(versionId: string, firstId: string, secondId: string, revision: number): Promise<PreviewSet>;
+  deletePreview(versionId: string, previewId: string, revision: number): Promise<PreviewSet>;
   approvePreviews(versionId: string, revision: number): Promise<PreviewItem[]>;
   getIndexStatus(documentId: string): Promise<IndexStatus>;
   queueIndex(documentId: string, versionId: string, tagIds: string[], reindex?: boolean): Promise<{ jobId: string }>;
@@ -164,21 +171,29 @@ export const knowledgeApi: KnowledgeApi = {
       { params: { expectedStateVersion } }
     );
   },
-  async getPreviews(versionId) { return (await apiClient.get(`/api/knowledge/versions/${versionId}/previews`)).data; },
-  async generatePreviews(versionId, expectedRevision) {
-    return (await apiClient.post(`/api/knowledge/versions/${versionId}/previews/generate`, { expectedRevision, policy: null })).data;
+  async getPreviews(versionId) { return (await apiClient.get(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews`)).data; },
+  async generatePreviews(versionId, expectedRevision, policy = {
+    kind: 'smart', targetTokens: 800, overlapTokens: 120, maximumTokens: 1000
+  }) {
+    return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/generate`, { expectedRevision, policy })).data;
   },
   async editPreview(versionId, previewId, text, expectedRevision) {
-    return (await apiClient.put(`/api/knowledge/versions/${versionId}/previews/${previewId}`, { text, expectedRevision })).data;
+    return (await apiClient.put(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/${encodeURIComponent(previewId)}`, { text, expectedRevision })).data;
   },
   async splitPreview(versionId, previewId, offset, expectedRevision) {
-    return (await apiClient.post(`/api/knowledge/versions/${versionId}/previews/${previewId}/split`, { offset, expectedRevision })).data;
+    return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/${encodeURIComponent(previewId)}/split`, { offset, expectedRevision })).data;
   },
   async mergePreviews(versionId, firstId, secondId, expectedRevision) {
-    return (await apiClient.post(`/api/knowledge/versions/${versionId}/previews/merge`, { firstId, secondId, expectedRevision })).data;
+    return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/merge`, { firstId, secondId, expectedRevision })).data;
+  },
+  async deletePreview(versionId, previewId, expectedRevision) {
+    return (await apiClient.delete(
+      `/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/${encodeURIComponent(previewId)}`,
+      { params: { expectedRevision } }
+    )).data;
   },
   async approvePreviews(versionId, expectedRevision) {
-    return (await apiClient.post(`/api/knowledge/versions/${versionId}/previews/approve`, { expectedRevision })).data;
+    return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/approve`, { expectedRevision })).data;
   },
   async getIndexStatus(documentId) {
     return (await apiClient.get(`/api/knowledge/documents/${documentId}/index-status`, { params: { checkConsistency: true } })).data;

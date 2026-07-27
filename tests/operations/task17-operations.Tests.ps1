@@ -17,39 +17,41 @@ function Invoke-Captured([scriptblock]$Action) {
 
 $robotConfigId = [Guid]::NewGuid()
 $bearerToken = "fake-operations-bearer-token"
+$password = "fake-operations-password"
 $preview = Invoke-Captured {
-    & $callbackScript `
-        -ApiBaseUrl "https://admin.example.test/" `
-        -RobotConfigId $robotConfigId `
-        -PublicBaseUrl "https://callbacks.example.test/" `
-        -BearerToken $bearerToken
+    & $callbackScript
 }
-Assert-True ($preview -match [regex]::Escape($robotConfigId.ToString("D"))) "preview must identify only the internal robot configuration"
+Assert-True ($preview -match "API origin: https://wxrobot.aavisa.com") "preview must use the production API origin by default"
+Assert-True ($preview -match "Public callback origin: https://wxrobot.aavisa.com") "preview must use the production callback origin by default"
 Assert-True ($preview -match "configure message callback and command-result callback") "preview must name both callback actions"
-Assert-True ($preview -notmatch [regex]::Escape($bearerToken)) "preview must never print the bearer token"
+Assert-True ($preview -match "Preview only") "preview must not perform network operations"
 
 $badBaseFailed = $false
 try {
-    & $callbackScript -ApiBaseUrl "https://admin.example.test/base?x=1" -RobotConfigId $robotConfigId `
-        -PublicBaseUrl "https://callbacks.example.test/" -BearerToken $bearerToken | Out-Null
+    & $callbackScript -ApiBaseUrl "https://admin.example.test/base?x=1" | Out-Null
 } catch { $badBaseFailed = $true }
 Assert-True $badBaseFailed "API base URL with path/query must be rejected"
 
 $port = Get-Random -Minimum 22000 -Maximum 42000
 $listenerJob = Start-Job -ScriptBlock {
-    param($Port)
+    param($Port, $RobotConfigId)
     $listener = [Net.HttpListener]::new()
     $listener.Prefixes.Add("http://127.0.0.1:$Port/")
     $listener.Start()
     try {
-        1..2 | ForEach-Object {
+        0..3 | ForEach-Object {
             $context = $listener.GetContext()
             $reader = [IO.StreamReader]::new($context.Request.InputStream, $context.Request.ContentEncoding)
             $body = $reader.ReadToEnd()
             $reader.Dispose()
             $path = $context.Request.Url.AbsolutePath
             $authorization = $context.Request.Headers["Authorization"]
-            $responseBytes = [Text.Encoding]::UTF8.GetBytes('{"succeeded":true}')
+            $responseBody = switch ($_) {
+                0 { '{"accessToken":"fake-operations-bearer-token","tokenType":"Bearer","expiresInSeconds":900,"user":{"id":"00000000-0000-0000-0000-000000000001","email":"admin@example.test","displayName":"Admin","roles":["Admin"]}}' }
+                1 { '[{"id":"' + $RobotConfigId + '","name":"Main robot","robotReference":"configured","isEnabled":true}]' }
+                default { '{"succeeded":true}' }
+            }
+            $responseBytes = [Text.Encoding]::UTF8.GetBytes($responseBody)
             $context.Response.StatusCode = 200
             $context.Response.ContentType = "application/json"
             $context.Response.OutputStream.Write($responseBytes, 0, $responseBytes.Length)
@@ -61,21 +63,27 @@ $listenerJob = Start-Job -ScriptBlock {
             }
         }
     } finally { $listener.Stop() }
-} -ArgumentList $port
+} -ArgumentList $port, $robotConfigId.ToString("D")
 try {
     Start-Sleep -Milliseconds 1000
     $applyOutput = Invoke-Captured {
-        & $callbackScript -ApiBaseUrl "http://127.0.0.1:$port/" -RobotConfigId $robotConfigId `
-            -PublicBaseUrl "https://callbacks.example.test/" -BearerToken $bearerToken `
-            -Apply -Confirmation "APPLY"
+        & $callbackScript -ApiBaseUrl "http://127.0.0.1:$port/" `
+            -Email "admin@example.test" -TestPassword $password `
+            -Apply -Confirmation "UPDATE"
     }
     $received = @(Receive-Job -Job $listenerJob -Wait)
-    Assert-True ($received.Count -eq 2) "apply must call exactly two admin endpoints"
-    Assert-True ($received[0].Path -eq "/api/admin/worktool/robots/$($robotConfigId.ToString('D'))/message-callback/configure") "first call must configure the message callback"
-    Assert-True ($received[1].Path -eq "/api/admin/worktool/robots/$($robotConfigId.ToString('D'))/command-result-callback/configure") "second call must configure the command-result callback"
-    Assert-True (@($received | Where-Object { $_.Authorization -ne "Bearer $bearerToken" }).Count -eq 0) "bearer token must be sent only in the Authorization header"
-    Assert-True (@($received | Where-Object { $_.Body -match [regex]::Escape($bearerToken) }).Count -eq 0) "request bodies must not contain the bearer token"
+    Assert-True ($received.Count -eq 4) "apply must log in, list robots, and call two callback endpoints"
+    Assert-True ($received[0].Path -eq "/api/auth/login") "first call must log in"
+    Assert-True ($received[1].Path -eq "/api/admin/worktool/robots") "second call must list robots"
+    Assert-True ($received[2].Path -eq "/api/admin/worktool/robots/$($robotConfigId.ToString('D'))/message-callback/configure") "third call must configure the message callback"
+    Assert-True ($received[3].Path -eq "/api/admin/worktool/robots/$($robotConfigId.ToString('D'))/command-result-callback/configure") "fourth call must configure the command-result callback"
+    Assert-True ($null -eq $received[0].Authorization) "login must not send a bearer token"
+    Assert-True (@($received | Select-Object -Skip 1 | Where-Object { $_.Authorization -ne "Bearer $bearerToken" }).Count -eq 0) "authenticated calls must send the bearer token only in the Authorization header"
+    Assert-True (@($received | Select-Object -Skip 1 | Where-Object { $_.Body -match [regex]::Escape($bearerToken) }).Count -eq 0) "authenticated request bodies must not contain the bearer token"
     Assert-True ($applyOutput -notmatch [regex]::Escape($bearerToken)) "apply output must not contain the bearer token"
+    Assert-True ($applyOutput -notmatch [regex]::Escape($password)) "apply output must not contain the password"
+    Assert-True ($applyOutput -notmatch [regex]::Escape($robotConfigId.ToString("D"))) "apply output must not contain the internal robot ID"
+    Assert-True ($applyOutput -match "Selected robot: Main robot") "single enabled robot must be selected automatically"
     Assert-True ($applyOutput -match "Command-result callback configuration accepted") "both callback configurations must be accepted"
 } finally {
     Remove-Job -Job $listenerJob -Force -ErrorAction SilentlyContinue
@@ -83,26 +91,33 @@ try {
 
 $port = Get-Random -Minimum 22000 -Maximum 42000
 $failureJob = Start-Job -ScriptBlock {
-    param($Port)
+    param($Port, $RobotConfigId)
     $listener = [Net.HttpListener]::new()
     $listener.Prefixes.Add("http://127.0.0.1:$Port/")
     $listener.Start()
     try {
-        $context = $listener.GetContext()
-        $bytes = [Text.Encoding]::UTF8.GetBytes('{"succeeded":false}')
-        $context.Response.StatusCode = 200
-        $context.Response.ContentType = "application/json"
-        $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-        $context.Response.Close()
+        0..2 | ForEach-Object {
+            $context = $listener.GetContext()
+            $responseBody = switch ($_) {
+                0 { '{"accessToken":"fake-operations-bearer-token","tokenType":"Bearer","expiresInSeconds":900,"user":{"id":"00000000-0000-0000-0000-000000000001","email":"admin@example.test","displayName":"Admin","roles":["Admin"]}}' }
+                1 { '[{"id":"' + $RobotConfigId + '","name":"Main robot","robotReference":"configured","isEnabled":true}]' }
+                default { '{"succeeded":false}' }
+            }
+            $bytes = [Text.Encoding]::UTF8.GetBytes($responseBody)
+            $context.Response.StatusCode = 200
+            $context.Response.ContentType = "application/json"
+            $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $context.Response.Close()
+        }
     } finally { $listener.Stop() }
-} -ArgumentList $port
+} -ArgumentList $port, $robotConfigId.ToString("D")
 try {
     Start-Sleep -Milliseconds 1000
     $rejected = $false
     try {
-        & $callbackScript -ApiBaseUrl "http://127.0.0.1:$port/" -RobotConfigId $robotConfigId `
-            -PublicBaseUrl "https://callbacks.example.test/" -BearerToken $bearerToken `
-            -Apply -Confirmation "APPLY" | Out-Null
+        & $callbackScript -ApiBaseUrl "http://127.0.0.1:$port/" `
+            -Email "admin@example.test" -TestPassword $password `
+            -Apply -Confirmation "UPDATE" | Out-Null
     } catch { $rejected = $_.Exception.Message -match "did not report success" }
     Assert-True $rejected "HTTP 2xx without business success must be rejected"
     Receive-Job -Job $failureJob -Wait | Out-Null

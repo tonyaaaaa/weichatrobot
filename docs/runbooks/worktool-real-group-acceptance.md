@@ -18,22 +18,19 @@ Before setting any opt-in variable:
 Message callbacks and command-result callbacks are separate WorkTool features. Before either gate, configure both through the authenticated local admin API:
 
 ```powershell
-.\scripts\update-worktool-callback.ps1 `
-  -ApiBaseUrl 'https://<confirmed-api-host>/' `
-  -RobotConfigId '<confirmed-internal-robot-uuid>' `
-  -PublicBaseUrl 'https://<public-callback-origin>/' `
-  -BearerToken '<short-lived-admin-token>'
+.\scripts\update-worktool-callback.ps1
 
 # Review the preview, then deliberately apply:
-.\scripts\update-worktool-callback.ps1 `
-  -ApiBaseUrl 'https://<confirmed-api-host>/' `
-  -RobotConfigId '<confirmed-internal-robot-uuid>' `
-  -PublicBaseUrl 'https://<public-callback-origin>/' `
-  -BearerToken '<short-lived-admin-token>' `
-  -Apply
+.\scripts\update-worktool-callback.ps1 -Apply
 ```
 
-The script calls the local admin endpoints only. The API generates and retains callback query secrets and uses the encrypted WorkTool robot credential. Script output must not contain the bearer token, WorkTool robot ID, callback route code, or callback query secret.
+Both origins default to `https://wxrobot.aavisa.com`. The apply flow securely
+prompts for administrator credentials and lets the operator select an enabled
+robot by name. The script calls the authenticated admin endpoints only. The API
+generates and retains callback query secrets and uses the encrypted WorkTool
+robot credential. Script output must not contain the administrator password,
+bearer token, internal robot ID, WorkTool robot ID, callback route code, or
+callback query secret.
 
 ## Ordinary existing-group gate
 

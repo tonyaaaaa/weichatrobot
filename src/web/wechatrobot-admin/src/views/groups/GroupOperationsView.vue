@@ -4,6 +4,7 @@ import { workToolOperationsApi, type GroupOperation, type KnownGroup, type WorkT
 
 const props = withDefaults(defineProps<{ api?: WorkToolOperationsApi }>(), { api: () => workToolOperationsApi });
 const notice = ref(''); const confirmationToken = ref(''); const audit = ref<WorkToolOperationAudit[]>([]);
+const auditScope = ref('正在读取服务端审计范围…');
 const knownGroups = ref<KnownGroup[]>([]);
 const registration = reactive({ robotConfigId: '', name: '', workToolGroupRemark: '', manualInvitationCompleted: false });
 const operation = reactive<GroupOperation>({ robotConfigId: '', kind: 'Create', groupIdentifier: '', memberDisplayNames: [], value: '' });
@@ -15,6 +16,10 @@ async function preview() { const result = await props.api.preview({ ...operation
 async function execute() { if (!confirmationToken.value) { notice.value = '请先预览，再确认执行。'; return; } const result = await props.api.execute({ ...operation, memberDisplayNames: operation.memberDisplayNames }, confirmationToken.value); notice.value = result.message; confirmationToken.value = ''; await loadAudit(); }
 async function loadAudit() { audit.value = await props.api.listOperations(); }
 async function loadKnownGroups() { knownGroups.value = await props.api.listGroups(); }
+async function loadAuditScope() {
+  try { auditScope.value = (await props.api.getAuditScope()).scope; }
+  catch { auditScope.value = '审计范围读取失败，请刷新页面重试。'; }
+}
 function selectKnownGroup(group: KnownGroup) { operation.robotConfigId = group.robotConfigId; operation.groupIdentifier = group.workToolGroupRemark || group.name; notice.value = `已选择已登记群：${group.name}。`; }
 function statusCopy(status: string) {
   const copies: Record<string, string> = {
@@ -33,7 +38,7 @@ function statusCopy(status: string) {
   };
   return copies[status] || status;
 }
-onMounted(() => Promise.all([loadAudit(), loadKnownGroups()]));
+onMounted(() => Promise.all([loadAudit(), loadKnownGroups(), loadAuditScope()]));
 </script>
 
 <template>
@@ -49,6 +54,6 @@ onMounted(() => Promise.all([loadAudit(), loadKnownGroups()]));
       <label>群名称（如已设置群备注，请填备注名）<input v-model="operation.groupIdentifier" data-testid="operation-group-name"></label><label>成员显示名（每行一个）<textarea :value="operation.memberDisplayNames.join('\n')" @input="operation.memberDisplayNames = ($event.target as HTMLTextAreaElement).value.split('\n').map(item => item.trim()).filter(Boolean)" /></label><p>成员显示名由 WorkTool 按名称执行，不是稳定 ID；重名或改名可能导致操作目标不唯一，请在预览时复核。</p><label>新值 <textarea v-model="operation.value" /></label>
       <button type="button" @click="preview">预览操作</button><button type="button" :disabled="!confirmationToken" @click="execute">确认执行</button>
     </section>
-    <p aria-live="polite">{{ notice }}</p><section><h2>命令状态</h2><p>WorkTool 接受命令不代表机器人已经执行成功；最终结果以命令结果回调为准。审计仅覆盖会改变群状态的 WorkTool 206/207 指令；连接测试是非变更健康检查，不作为群命令审计记录。</p><button type="button" @click="loadAudit">刷新</button><ul><li v-for="item in audit" :key="`${item.createdAtUtc}-${item.operation}`">{{ item.createdAtUtc }} · 指令 {{ item.workToolCommandNumber }} · {{ item.operation }} · {{ statusCopy(item.status) }} {{ item.result }}</li></ul></section>
+    <p aria-live="polite">{{ notice }}</p><section><h2>命令状态</h2><p>WorkTool 接受命令不代表机器人已经执行成功；最终结果以命令结果回调为准。</p><p data-testid="worktool-audit-scope">{{ auditScope }}</p><button type="button" @click="loadAudit">刷新</button><ul><li v-for="item in audit" :key="`${item.createdAtUtc}-${item.operation}`">{{ item.createdAtUtc }} · 指令 {{ item.workToolCommandNumber }} · {{ item.operation }} · {{ statusCopy(item.status) }} {{ item.result }}</li></ul></section>
   </section>
 </template>

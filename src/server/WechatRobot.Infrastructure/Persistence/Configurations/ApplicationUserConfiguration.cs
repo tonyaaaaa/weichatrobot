@@ -9,5 +9,6 @@ internal sealed class ApplicationUserConfiguration : IEntityTypeConfiguration<Ap
     public void Configure(EntityTypeBuilder<ApplicationUser> builder)
     {
         builder.Property(user => user.DisplayName).HasMaxLength(128).IsRequired();
+        builder.Property(user => user.IsEnabled).HasDefaultValue(true);
     }
 }

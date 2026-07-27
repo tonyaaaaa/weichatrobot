@@ -8,8 +8,16 @@ export interface GroupConfiguration {
   id: string; name: string; rules: { include: GroupRule[]; exclude: GroupRule[] }; boundTagIds: string[]; allowedTagIds: string[];
   availableTags: { id: string; name: string; isGlobalPublic: boolean; isEnabled: boolean; isBound: boolean }[]; tagVisibility: 'any-bound-tag-or-global-public';
   context: { configured: ContextOverrides; effective: EffectiveContext }; clearedContextSessions: number;
+  configurationVersion: number;
 }
-export interface UpdateGroupConfiguration { includeRules: GroupRule[]; excludeRules: GroupRule[]; boundTagIds: string[]; context: ContextOverrides; clearContext: boolean; }
+export interface UpdateGroupConfiguration {
+  includeRules: GroupRule[];
+  excludeRules: GroupRule[];
+  boundTagIds: string[];
+  context: ContextOverrides;
+  clearContext: boolean;
+  expectedConfigurationVersion: number;
+}
 export interface RulePreview { results: { groupName: string; isMatch: boolean; isExcluded: boolean }[]; }
 export interface GroupApi {
   getConfiguration(groupId: string): Promise<GroupConfiguration>;

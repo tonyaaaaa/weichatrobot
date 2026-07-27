@@ -11,50 +11,41 @@ namespace WechatRobot.IntegrationTests.WorkTool;
 public sealed class CallbackScriptTests
 {
     [Fact]
-    public async Task Preview_uses_internal_identifiers_and_never_prints_the_bearer_token()
+    public async Task Preview_uses_production_defaults_without_credentials_or_network_access()
     {
         var script = ScriptPath("update-worktool-callback.ps1");
         var source = await File.ReadAllTextAsync(script, TestContext.Current.CancellationToken);
         Assert.DoesNotContain("WorkToolRobotId", source, StringComparison.Ordinal);
         Assert.DoesNotContain("CallbackToken", source, StringComparison.Ordinal);
 
-        const string token = "fake-preview-bearer-token";
-        var robotConfigId = Guid.NewGuid();
-        var result = await RunPowerShellAsync(script,
-        [
-            "-ApiBaseUrl", "https://admin.example/",
-            "-RobotConfigId", robotConfigId.ToString("D"),
-            "-PublicBaseUrl", "https://callbacks.example/",
-            "-BearerToken", token
-        ]);
+        var result = await RunPowerShellAsync(script, []);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains($"Robot configuration: {robotConfigId:D}", result.Output, StringComparison.Ordinal);
-        Assert.Contains("Public callback origin: https://callbacks.example", result.Output, StringComparison.Ordinal);
+        Assert.Contains("API origin: https://wxrobot.aavisa.com", result.Output, StringComparison.Ordinal);
+        Assert.Contains("Public callback origin: https://wxrobot.aavisa.com", result.Output, StringComparison.Ordinal);
         Assert.Contains("Actions: configure message callback and command-result callback", result.Output, StringComparison.Ordinal);
         Assert.Contains("Preview only. Re-run with -Apply.", result.Output, StringComparison.Ordinal);
-        Assert.DoesNotContain(token, result.AllOutput, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Apply_posts_only_to_local_admin_endpoints_and_keeps_token_in_authorization_header()
+    public async Task Apply_logs_in_selects_the_only_enabled_robot_and_configures_both_callbacks()
     {
         var port = AvailablePort();
         using var listener = new HttpListener();
         listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         listener.Start();
-        var captured = CaptureAsync(listener, 2);
-        const string token = "fake-apply-bearer-token";
+        const string token = "fake-login-bearer-token";
+        const string password = "fake-login-password";
         var robotConfigId = Guid.NewGuid();
+        var captured = CaptureSetupAsync(listener, robotConfigId);
 
         var result = await RunPowerShellAsync(ScriptPath("update-worktool-callback.ps1"),
         [
             "-ApiBaseUrl", $"http://127.0.0.1:{port}/",
-            "-RobotConfigId", robotConfigId.ToString("D"),
-            "-PublicBaseUrl", "https://callbacks.example/",
-            "-BearerToken", token,
+            "-Email", "admin@example.test",
+            "-TestPassword", password,
             "-Apply",
-            "-Confirmation", "APPLY"
+            "-Confirmation", "UPDATE"
         ]);
         var requests = await captured.WaitAsync(
             TimeSpan.FromSeconds(10),
@@ -63,16 +54,27 @@ public sealed class CallbackScriptTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(
         [
+            "/api/auth/login",
+            "/api/admin/worktool/robots",
             $"/api/admin/worktool/robots/{robotConfigId:D}/message-callback/configure",
             $"/api/admin/worktool/robots/{robotConfigId:D}/command-result-callback/configure"
         ], requests.Select(request => request.Path).ToArray());
-        Assert.All(requests, request => Assert.Equal($"Bearer {token}", request.Authorization));
-        Assert.All(requests, request =>
+        Assert.Null(requests[0].Authorization);
+        Assert.All(requests.Skip(1), request => Assert.Equal($"Bearer {token}", request.Authorization));
+        using (var login = JsonDocument.Parse(requests[0].Body))
         {
-            Assert.DoesNotContain(token, request.Path, StringComparison.Ordinal);
+            Assert.Equal("admin@example.test", login.RootElement.GetProperty("email").GetString());
+            Assert.Equal(password, login.RootElement.GetProperty("password").GetString());
+        }
+        Assert.All(requests.Skip(1), request =>
+        {
             Assert.DoesNotContain(token, request.Body, StringComparison.Ordinal);
+            Assert.DoesNotContain(password, request.Body, StringComparison.Ordinal);
         });
+        Assert.Contains("Selected robot: Main robot", result.Output, StringComparison.Ordinal);
         Assert.DoesNotContain(token, result.AllOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain(password, result.AllOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain(robotConfigId.ToString("D"), result.AllOutput, StringComparison.Ordinal);
         Assert.DoesNotContain("token=", result.AllOutput, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -153,10 +155,12 @@ public sealed class CallbackScriptTests
         }
     }
 
-    private static async Task<IReadOnlyList<CapturedRequest>> CaptureAsync(HttpListener listener, int count)
+    private static async Task<IReadOnlyList<CapturedRequest>> CaptureSetupAsync(
+        HttpListener listener,
+        Guid robotConfigId)
     {
         var requests = new List<CapturedRequest>();
-        for (var index = 0; index < count; index++)
+        for (var index = 0; index < 4; index++)
         {
             var context = await listener.GetContextAsync();
             using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
@@ -165,7 +169,20 @@ public sealed class CallbackScriptTests
                 context.Request.Url!.AbsolutePath,
                 context.Request.Headers["Authorization"],
                 body));
-            var bytes = Encoding.UTF8.GetBytes("""{"succeeded":true}""");
+            string responseBody;
+            if (index == 0)
+            {
+                responseBody = """{"accessToken":"fake-login-bearer-token","tokenType":"Bearer","expiresInSeconds":900,"user":{"id":"00000000-0000-0000-0000-000000000001","email":"admin@example.test","displayName":"Admin","roles":["Admin"]}}""";
+            }
+            else if (index == 1)
+            {
+                responseBody = $$"""[{"id":"{{robotConfigId:D}}","name":"Main robot","robotReference":"configured","isEnabled":true}]""";
+            }
+            else
+            {
+                responseBody = """{"succeeded":true}""";
+            }
+            var bytes = Encoding.UTF8.GetBytes(responseBody);
             context.Response.StatusCode = 200;
             context.Response.ContentType = "application/json";
             context.Response.ContentLength64 = bytes.Length;

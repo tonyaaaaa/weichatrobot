@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import GroupRulesView from './GroupRulesView.vue';
 
 const api = {
   getConfiguration: vi.fn(),
   updateConfiguration: vi.fn(),
   previewRules: vi.fn()
+};
+const routerLinkStub = {
+  props: ['to'],
+  template: '<a><slot /></a>'
 };
 
 describe('GroupRulesView', () => {
@@ -16,7 +20,7 @@ describe('GroupRulesView', () => {
       availableTags: [],
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
-    const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });
+    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
     await Promise.resolve();
     await wrapper.vm.$nextTick();
 
@@ -35,7 +39,7 @@ describe('GroupRulesView', () => {
       availableTags: [],
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
-    const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });
+    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
     await Promise.resolve();
     await wrapper.vm.$nextTick();
     await wrapper.get('[data-testid="add-exact-include"]').trigger('click');
@@ -61,7 +65,8 @@ describe('GroupRulesView', () => {
       clearedContextSessions: 1,
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
-    const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });
+    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
+    await flushPromises();
 
     await wrapper.get('[data-testid="add-exact-include"]').trigger('click');
     await wrapper.get('[data-testid="add-contains-exclude"]').trigger('click');
@@ -87,14 +92,18 @@ describe('GroupRulesView', () => {
       clearedContextSessions: 0,
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
-    const wrapper = mount(GroupRulesView, { props: { groupId: '00000000-0000-0000-0000-000000000801', api } });
+    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
     await Promise.resolve();
     await wrapper.vm.$nextTick();
     await wrapper.get(`[data-testid="tag-${disabledTagId}"]`).setValue(false);
     await wrapper.get('[data-testid="save-configuration"]').trigger('click');
 
     expect(wrapper.text()).toContain('已禁用，移除后不可重新添加');
-    expect(api.updateConfiguration).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ boundTagIds: [] }));
+    expect(api.updateConfiguration).toHaveBeenCalledWith(
+      '00000000-0000-0000-0000-000000000801',
+      expect.objectContaining({ boundTagIds: [], clearContext: false })
+    );
+    expect(wrapper.find('[aria-label="群配置 ID"]').exists()).toBe(false);
   });
 
   it('keeps a disabled bound tag removable but prevents selecting a disabled unbound tag', async () => {
@@ -108,12 +117,85 @@ describe('GroupRulesView', () => {
       context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
     });
     const wrapper = mount(GroupRulesView, {
-      props: { groupId: '00000000-0000-0000-0000-000000000801', api }
+      props: { id: '00000000-0000-0000-0000-000000000801', api }
     });
     await Promise.resolve();
     await wrapper.vm.$nextTick();
 
     expect(wrapper.get('[data-testid="tag-disabled-bound"]').attributes('disabled')).toBeUndefined();
     expect(wrapper.get('[data-testid="tag-disabled-unbound"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('shows the loaded group name without exposing an editable internal id', async () => {
+    api.getConfiguration.mockResolvedValue({
+      name: '技术群',
+      rules: { include: [], exclude: [] },
+      boundTagIds: [],
+      availableTags: [],
+      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
+    });
+    const wrapper = mount(GroupRulesView, {
+      props: { id: '00000000-0000-0000-0000-000000000801', api },
+      global: { stubs: { RouterLink: routerLinkStub } }
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('技术群');
+    expect(wrapper.text()).toContain('返回群列表');
+    expect(wrapper.find('[aria-label="群配置 ID"]').exists()).toBe(false);
+    expect(api.getConfiguration).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000801');
+  });
+
+  it('does not render an editable form when the route group is unavailable', async () => {
+    const unavailableApi = {
+      getConfiguration: vi.fn().mockRejectedValue({ response: { status: 404 } }),
+      updateConfiguration: vi.fn(),
+      previewRules: vi.fn()
+    };
+    const wrapper = mount(GroupRulesView, {
+      props: { id: '00000000-0000-0000-0000-000000000801', api: unavailableApi },
+      global: { stubs: { RouterLink: true } }
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('群不存在或已删除');
+    expect(wrapper.find('[data-testid="save-configuration"]').exists()).toBe(false);
+  });
+
+  it('sends and advances the loaded configuration version and reloads a conflict', async () => {
+    const configuration = {
+      name: '并发测试群',
+      rules: { include: [], exclude: [] },
+      boundTagIds: [],
+      availableTags: [],
+      configurationVersion: 4,
+      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
+    };
+    const concurrentApi = {
+      getConfiguration: vi.fn()
+        .mockResolvedValueOnce(configuration)
+        .mockResolvedValueOnce({ ...configuration, configurationVersion: 6 }),
+      updateConfiguration: vi.fn()
+        .mockResolvedValueOnce({ ...configuration, configurationVersion: 5, clearedContextSessions: 0 })
+        .mockRejectedValueOnce({ response: { status: 409, data: { error: 'group-configuration-conflict', currentVersion: 6 } } }),
+      previewRules: vi.fn()
+    };
+    const wrapper = mount(GroupRulesView, {
+      props: { id: 'group-1', api: concurrentApi },
+      global: { stubs: { RouterLink: routerLinkStub } }
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="save-configuration"]').trigger('click');
+    await flushPromises();
+    expect(concurrentApi.updateConfiguration).toHaveBeenNthCalledWith(
+      1, 'group-1', expect.objectContaining({ expectedConfigurationVersion: 4 }));
+
+    await wrapper.get('[data-testid="save-configuration"]').trigger('click');
+    await flushPromises();
+    expect(concurrentApi.updateConfiguration).toHaveBeenNthCalledWith(
+      2, 'group-1', expect.objectContaining({ expectedConfigurationVersion: 5 }));
+    expect(concurrentApi.getConfiguration).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).toContain('群配置已被其他操作员修改，已加载最新版本');
   });
 });

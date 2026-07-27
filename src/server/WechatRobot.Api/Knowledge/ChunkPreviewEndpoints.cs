@@ -21,7 +21,11 @@ public static class ChunkPreviewEndpoints
     }
 
     private static async Task<IResult> GenerateAsync(Guid versionId, GeneratePreviewRequest request, KnowledgePreviewService service, CancellationToken token) =>
-        await ExecuteAsync(() => service.GenerateAsync(versionId, request.Policy ?? new ChunkPolicy(ChunkPolicyKind.Smart), request.ExpectedRevision, token));
+        await ExecuteAsync(() => service.GenerateAsync(
+            versionId,
+            request.Policy?.ToPolicy() ?? new ChunkPolicy(ChunkPolicyKind.Smart),
+            request.ExpectedRevision,
+            token));
     private static async Task<IResult> EditAsync(Guid versionId, Guid previewId, EditPreviewRequest request, ChunkPreviewRepository repository, CancellationToken token) =>
         await ExecuteAsync(() => repository.EditAsync(versionId, previewId, request.Text, request.ExpectedRevision, token));
     private static async Task<IResult> SplitAsync(Guid versionId, Guid previewId, SplitPreviewRequest request, ChunkPreviewRepository repository, CancellationToken token) =>
@@ -45,7 +49,48 @@ public static class ChunkPreviewEndpoints
     }
 }
 
-public sealed record GeneratePreviewRequest(ChunkPolicy? Policy, int ExpectedRevision);
+public sealed record GeneratePreviewRequest(ChunkPolicyRequest? Policy, int ExpectedRevision);
+public sealed record QaEntryRequest(string Question, IReadOnlyList<string>? Synonyms, string Answer)
+{
+    public QaEntry ToEntry() => new(Question, Synonyms ?? [], Answer);
+}
+public sealed record ChunkPolicyRequest(
+    string Kind,
+    int TargetTokens = 800,
+    int OverlapTokens = 120,
+    int MaximumTokens = 1000,
+    string? Separator = null,
+    string? RegexPattern = null,
+    IReadOnlyList<QaEntryRequest>? QaEntries = null)
+{
+    public ChunkPolicy ToPolicy()
+    {
+        var normalized = Kind?.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "smart" when Separator is null && RegexPattern is null && QaEntries is null =>
+                New(ChunkPolicyKind.Smart),
+            "separator" when RegexPattern is null && QaEntries is null =>
+                New(ChunkPolicyKind.Separator),
+            "regex" when Separator is null && QaEntries is null =>
+                New(ChunkPolicyKind.Regex),
+            "qa" when Separator is null && RegexPattern is null =>
+                New(ChunkPolicyKind.Qa),
+            "smart" or "separator" or "regex" or "qa" =>
+                throw new ArgumentException("Chunk policy contains fields that do not belong to its kind."),
+            _ => throw new ArgumentException("Chunk policy kind must be smart, separator, regex, or qa.")
+        };
+    }
+
+    private ChunkPolicy New(ChunkPolicyKind kind) => new(
+        kind,
+        TargetTokens,
+        OverlapTokens,
+        MaximumTokens,
+        Separator,
+        RegexPattern,
+        QaEntries?.Select(entry => entry.ToEntry()).ToArray());
+}
 public sealed record EditPreviewRequest(string Text, int ExpectedRevision);
 public sealed record SplitPreviewRequest(int Offset, int ExpectedRevision);
 public sealed record MergePreviewRequest(Guid FirstId, Guid SecondId, int ExpectedRevision);

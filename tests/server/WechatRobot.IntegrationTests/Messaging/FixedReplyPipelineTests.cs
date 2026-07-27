@@ -24,7 +24,7 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
     public FixedReplyPipelineTests(MySqlFixture fixture) => _fixture = fixture;
 
     [Fact]
-    public async Task Two_workers_process_an_ingested_message_and_fake_endpoint_receives_one_fixed_reply()
+    public async Task Two_workers_send_one_fixed_reply_and_leave_the_command_waiting_for_the_result_callback()
     {
         var handler = new FakeWorkToolHandler();
         using var services = CreateServices(handler);
@@ -54,15 +54,22 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
             Assert.Equal(1, await processedDb.ConversationMessages.CountAsync(message => message.RobotConfigId == robotId &&
                 message.ProcessingState == "completed" && processedDb.DurableJobs.Any(job => job.RelatedConversationMessageId == message.Id), TestContext.Current.CancellationToken));
         }
-        await Task.WhenAll(firstSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken), secondSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
-        await Task.WhenAll(firstSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken), secondSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        await Task.WhenAll(
+            firstSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken),
+            secondSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        await Task.WhenAll(
+            firstSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken),
+            secondSendWorker.ProcessOnceAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(1, handler.SendCount);
         Assert.Equal("/wework/sendRawMessage?robotId=robot-fixed", handler.PathAndQuery);
         Assert.Contains("fixed reply", handler.Body, StringComparison.Ordinal);
         await using var verifyScope = services.CreateAsyncScope();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-        Assert.Equal(1, await verifyDb.SendCommands.CountAsync(command => command.RobotConfigId == robotId && command.Status == "completed", TestContext.Current.CancellationToken));
+        Assert.Equal(1, await verifyDb.SendCommands.CountAsync(command =>
+            command.RobotConfigId == robotId &&
+            command.Status == WorkToolCommandStatuses.Accepted &&
+            command.WorkToolCommandMessageId == "fake-fixed-message-1", TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -201,7 +208,13 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
             Interlocked.Increment(ref _sendCount);
             PathAndQuery = request.RequestUri!.PathAndQuery;
             Body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"code\":0,\"message\":\"accepted\"}", Encoding.UTF8, "application/json") };
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"code\":0,\"message\":\"accepted\",\"data\":\"fake-fixed-message-1\"}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
         }
     }
 }

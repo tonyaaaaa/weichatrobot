@@ -94,7 +94,7 @@ public sealed class RobotCallbackConfigurationTests : IClassFixture<ModelConfigu
             {
                 name = "new callback robot",
                 workToolRobotId = submittedRobotId,
-                isEnabled = true
+                isEnabled = false
             },
             TestContext.Current.CancellationToken);
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);

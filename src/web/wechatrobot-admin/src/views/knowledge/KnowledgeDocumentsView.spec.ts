@@ -60,6 +60,7 @@ function createApi() {
     editPreview: vi.fn(),
     splitPreview: vi.fn(),
     mergePreviews: vi.fn(),
+    deletePreview: vi.fn(),
     approvePreviews: vi.fn(),
     getIndexStatus: vi.fn(),
     queueIndex: vi.fn(),

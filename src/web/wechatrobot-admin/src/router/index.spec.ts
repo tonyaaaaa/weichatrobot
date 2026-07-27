@@ -5,9 +5,9 @@ import { useAuthStore } from '../stores/auth';
 
 describe('role-aware navigation', () => {
   it.each([
-    ['Admin', ['工作台', '知识库', '知识库标签', '知识审核', '群管理', '人工转接', '会话审计', '模型配置', '机器人设置', '用户与角色', '系统设置'], []],
-    ['KnowledgeOperator', ['工作台', '知识库', '知识库标签', '知识审核', '会话审计'], ['群管理', '人工转接', '模型配置', '机器人设置', '用户与角色', '系统设置']],
-    ['HumanAgent', ['工作台', '人工转接'], ['知识库', '知识库标签', '知识审核', '群管理', '会话审计', '模型配置', '机器人设置', '用户与角色', '系统设置']]
+    ['Admin', ['工作台', '知识库', '知识库标签', '知识审核', '群管理', '人工转接', '会话审计', '管理审计', '模型配置', '机器人设置', '用户与角色', '系统设置'], []],
+    ['KnowledgeOperator', ['工作台', '知识库', '知识库标签', '知识审核', '会话审计'], ['群管理', '人工转接', '管理审计', '模型配置', '机器人设置', '用户与角色', '系统设置']],
+    ['HumanAgent', ['工作台', '人工转接'], ['知识库', '知识库标签', '知识审核', '群管理', '会话审计', '管理审计', '模型配置', '机器人设置', '用户与角色', '系统设置']]
   ])('%s sees only the navigation granted by route metadata', (role, visible, hidden) => {
     const labels = getVisibleNavigation([role]).map(item => item.label);
 
@@ -44,5 +44,24 @@ describe('role-aware navigation', () => {
     expect(management?.props).toBe(true);
     expect(management?.meta?.roles).toEqual(['Admin', 'KnowledgeOperator']);
     expect(chunks?.name).toBe('knowledge-document-detail');
+  });
+
+  it('registers a group list separately from GUID-backed configuration details', () => {
+    const admin = routes.find(route => route.path === '/');
+    const groupList = admin?.children?.find(route => route.path === 'groups');
+    const configuration = admin?.children?.find(
+      route => route.path === 'groups/:id/configuration');
+
+    expect(groupList?.name).toBe('group-list');
+    expect(configuration?.name).toBe('group-configuration');
+    expect(configuration?.props).toBe(true);
+    expect(configuration?.meta?.roles).toEqual(['Admin']);
+  });
+
+  it('registers administration audit as an Admin-only route', () => {
+    const admin = routes.find(route => route.path === '/');
+    const audit = admin?.children?.find(route => route.path === 'administration-audits');
+    expect(audit?.name).toBe('administration-audit');
+    expect(audit?.meta?.roles).toEqual(['Admin']);
   });
 });

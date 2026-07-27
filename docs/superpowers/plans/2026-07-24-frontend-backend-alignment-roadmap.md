@@ -64,10 +64,10 @@ Only one phase may be `InProgress` at a time. Update the table whenever a phase 
 | P1 Knowledge tag closure | Completed | `docs/superpowers/plans/2026-07-24-knowledge-tag-closure.md` | P0 |
 | P1 Knowledge document management | Completed | `docs/superpowers/plans/2026-07-24-knowledge-document-management.md` | Tags |
 | P1 Typed system settings | Superseded | Keep conversation parameters in Worker `appsettings.json`; database/UI plan retained for reference only | Product decision |
-| P1 Dashboard and operational summary | NotStarted | Create next | P0 |
-| P1 Full robot administration UI | NotStarted | Create after dashboard acceptance | P0 |
-| P2 User and role administration | NotStarted | Create after robot acceptance | None |
-| P2 Remaining knowledge, group concurrency, and audits | NotStarted | Create after user-role acceptance | Tags, documents, P0 |
+| P1 Dashboard and operational summary | Completed | `docs/superpowers/plans/2026-07-25-dashboard-operational-summary.md` | P0 |
+| P1 Full robot administration UI | Completed | `docs/superpowers/plans/2026-07-25-full-robot-administration.md` | P0 |
+| P2 User and role administration | Completed | `docs/superpowers/plans/2026-07-25-user-role-administration.md` | None |
+| P2 Remaining knowledge, group concurrency, and audits | Completed | `docs/superpowers/plans/2026-07-25-remaining-alignment.md` | Tags, documents, P0 |
 | Deferred human-handoff member mapping | Deferred | Separate future design | Enterprise WeChat credentials |
 
 ## Phase 0: WorkTool Contract Correction
@@ -254,6 +254,16 @@ The default server output directories remained locked by API PID `18436` and Wor
 - Handoff pause-policy editing remains deferred.
 
 **Acceptance gate:** chunk policy tests, concurrency conflict tests, audit filter tests, frontend action and conflict tests, full build and frontend verification.
+
+### P2 remaining-alignment completion record — 2026-07-25
+
+- Chunk previews now use validated Smart, Separator, Regex, or QA policy DTOs and support confirmed deletion.
+- Every group-configuration mutation carries `ExpectedConfigurationVersion`; stale writes return a conflict and the frontend reloads current state.
+- Conversation audit supports group and UTC `[from, to)` filters, while WorkTool operation scope is read from the backend.
+- The Admin-only management-audit query/page exposes paginated, filtered, defensively redacted administration records.
+- Server unit tests: 218 passed; contract tests: 62 passed; full integration tests: 285 passed, with 3 explicit external acceptance tests skipped.
+- Frontend typecheck, 114 tests across 36 files, production build, full solution build, and `git diff --check` passed.
+- Human-handoff enterprise-member mapping and handoff pause-policy editing remain explicitly deferred; system settings remain superseded by the approved configuration-file decision.
 
 ## Per-Phase Completion Procedure
 

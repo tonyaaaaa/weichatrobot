@@ -213,6 +213,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
 
         Assert.Equal(InboundPolicyDecisionKind.Proceed, decision.Kind);
         Assert.Equal(east.Id, decision.GroupProfileId);
+        await DeletePendingJobAsync(db, messageId);
     }
 
     [Fact]
@@ -260,6 +261,7 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
         Assert.Equal(InboundPolicyDecisionKind.NoReply, decision.Kind);
         Assert.Null(decision.GroupProfileId);
         Assert.Equal("group_identity_ambiguous", decision.Reason);
+        await DeletePendingJobAsync(db, messageId);
     }
 
     [Fact]
@@ -302,7 +304,15 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
 
         Assert.Equal(InboundPolicyDecisionKind.NoReply, decision.Kind);
         Assert.Equal("group_rule_unmatched", decision.Reason);
+        await DeletePendingJobAsync(db, messageId);
     }
+
+    private static Task<int> DeletePendingJobAsync(
+        WechatRobotDbContext database,
+        Guid messageId) =>
+        database.DurableJobs
+            .Where(job => job.RelatedConversationMessageId == messageId)
+            .ExecuteDeleteAsync(TestContext.Current.CancellationToken);
 
     private ServiceProvider Services() => new ServiceCollection()
         .AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(fixture.ConnectionString))

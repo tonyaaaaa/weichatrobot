@@ -14,8 +14,22 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                 name: "PendingTagIdsJson",
                 table: "knowledge_index_job",
                 type: "json",
+                nullable: true);
+
+            migrationBuilder.Sql("""
+                UPDATE `knowledge_index_job`
+                SET `PendingTagIdsJson` = '[]'
+                WHERE `PendingTagIdsJson` IS NULL;
+                """);
+
+            migrationBuilder.AlterColumn<string>(
+                name: "PendingTagIdsJson",
+                table: "knowledge_index_job",
+                type: "json",
                 nullable: false,
-                defaultValueSql: "(JSON_ARRAY())");
+                oldClrType: typeof(string),
+                oldType: "json",
+                oldNullable: true);
         }
 
         /// <inheritdoc />

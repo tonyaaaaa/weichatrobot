@@ -57,6 +57,45 @@ public sealed class GroupOperationEndpointTests : IClassFixture<ModelConfigurati
     }
 
     [Fact]
+    public async Task Group_list_returns_display_metadata_with_the_backend_generated_id()
+    {
+        var robot = new RobotConfigEntity
+        {
+            Name = $"robot-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"robot-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test"
+        };
+        var updatedAt = new DateTime(2026, 7, 25, 1, 2, 3, DateTimeKind.Utc);
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = "技术群",
+            WorkToolGroupRemark = "tech-east",
+            IsEnabled = false,
+            UpdatedAtUtc = updatedAt
+        };
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.AddRange(robot, group);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var items = await client.GetFromJsonAsync<JsonElement[]>(
+            "/api/admin/worktool/groups",
+            TestContext.Current.CancellationToken);
+        var item = items!.Single(value => value.GetProperty("id").GetGuid() == group.Id);
+
+        Assert.Equal(robot.Id, item.GetProperty("robotConfigId").GetGuid());
+        Assert.Equal(robot.Name, item.GetProperty("robotName").GetString());
+        Assert.Equal("技术群", item.GetProperty("name").GetString());
+        Assert.Equal("tech-east", item.GetProperty("workToolGroupRemark").GetString());
+        Assert.False(item.GetProperty("isEnabled").GetBoolean());
+        Assert.Equal(updatedAt, item.GetProperty("updatedAtUtc").GetDateTime());
+    }
+
+    [Fact]
     public async Task Changed_confirmation_payload_is_rejected_and_audited_without_raw_announcement()
     {
         var robot = new RobotConfigEntity { Name = $"robot-{Guid.NewGuid():N}", WorkToolRobotId = $"robot-{Guid.NewGuid():N}", CallbackSecretHash = "test" };

@@ -1,7 +1,15 @@
 import { apiClient } from './http';
 
 export interface AuditApi {
-  capability(page?: number, pageSize?: number): Promise<AuditPage>;
+  capability(request?: AuditQuery): Promise<AuditPage>;
+}
+
+export interface AuditQuery {
+  groupId?: string;
+  fromUtc?: string;
+  toUtc?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface AuditPage {
@@ -14,8 +22,16 @@ export interface AuditPage {
 }
 
 export const auditApi: AuditApi = {
-  async capability(page = 1, pageSize = 20) {
-    const response = await apiClient.get<Omit<AuditPage, 'available'>>('/api/audit/conversations', { params: { page, pageSize } });
+  async capability(request = {}) {
+    const response = await apiClient.get<Omit<AuditPage, 'available'>>('/api/audit/conversations', {
+      params: {
+        groupId: request.groupId || undefined,
+        fromUtc: request.fromUtc || undefined,
+        toUtc: request.toUtc || undefined,
+        page: request.page ?? 1,
+        pageSize: request.pageSize ?? 20
+      }
+    });
     return { available: true, ...response.data };
   }
 };

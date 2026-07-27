@@ -73,7 +73,8 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
             excludeRules = Array.Empty<object>(),
             boundTagIds = new[] { ScopedTagId },
             context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null },
-            clearContext = false
+            clearContext = false,
+            expectedConfigurationVersion = 0
         }, TestContext.Current.CancellationToken);
 
         configured.EnsureSuccessStatusCode();
@@ -98,7 +99,8 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
         var initiallyBound = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
         {
             includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = new[] { ScopedTagId },
-            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false,
+            expectedConfigurationVersion = 0
         }, TestContext.Current.CancellationToken);
         initiallyBound.EnsureSuccessStatusCode();
 
@@ -117,16 +119,56 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
         var removeDisabledBinding = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
         {
             includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = Array.Empty<Guid>(),
-            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false,
+            expectedConfigurationVersion = 1
         }, TestContext.Current.CancellationToken);
         removeDisabledBinding.EnsureSuccessStatusCode();
 
         var addDisabledTag = await client.PutAsJsonAsync($"/api/groups/{groupId}/configuration", new
         {
             includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = new[] { ScopedTagId },
-            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null }, clearContext = false,
+            expectedConfigurationVersion = 2
         }, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, addDisabledTag.StatusCode);
+    }
+
+    [Fact]
+    public async Task Every_configuration_write_requires_the_current_version_and_returns_the_incremented_version()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        using var client = _factory.CreateClient();
+        var body = new
+        {
+            includeRules = Array.Empty<object>(),
+            excludeRules = Array.Empty<object>(),
+            boundTagIds = Array.Empty<Guid>(),
+            context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null,
+                tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null },
+            clearContext = false
+        };
+
+        var missing = await client.PutAsJsonAsync(
+            $"/api/groups/{groupId:D}/configuration", body, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        var saved = await client.PutAsJsonAsync($"/api/groups/{groupId:D}/configuration", new
+        {
+            body.includeRules, body.excludeRules, body.boundTagIds, body.context, body.clearContext,
+            expectedConfigurationVersion = 0
+        }, TestContext.Current.CancellationToken);
+        saved.EnsureSuccessStatusCode();
+        Assert.Equal(1, (await saved.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken)).GetProperty("configurationVersion").GetInt32());
+
+        var stale = await client.PutAsJsonAsync($"/api/groups/{groupId:D}/configuration", new
+        {
+            body.includeRules, body.excludeRules, body.boundTagIds, body.context, body.clearContext,
+            expectedConfigurationVersion = 0
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal(1, (await stale.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken)).GetProperty("currentVersion").GetInt32());
     }
 
     private static readonly Guid RobotId = Guid.Parse("00000000-0000-0000-0000-000000000801");

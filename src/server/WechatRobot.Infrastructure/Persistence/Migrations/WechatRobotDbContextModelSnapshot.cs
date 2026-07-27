@@ -170,6 +170,11 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<bool>("EmailConfirmed")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("IsEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true);
+
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("tinyint(1)");
 
@@ -905,9 +910,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("HeadingsJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_ARRAY())");
+                        .HasColumnType("json");
 
                     b.Property<bool>("IsTable")
                         .HasColumnType("tinyint(1)");
@@ -932,9 +935,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("SynonymsJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_ARRAY())");
+                        .HasColumnType("json");
 
                     b.Property<int?>("TableColumns")
                         .HasColumnType("int");
@@ -1252,9 +1253,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("PendingTagIdsJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_ARRAY())");
+                        .HasColumnType("json");
 
                     b.Property<bool>("PreviousActiveCollectionExclusive")
                         .HasColumnType("tinyint(1)");
@@ -1572,9 +1571,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("InputSummaryJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_OBJECT())");
+                        .HasColumnType("json");
 
                     b.Property<Guid?>("ModelConfigurationId")
                         .HasColumnType("char(36)");

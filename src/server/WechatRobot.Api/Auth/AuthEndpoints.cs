@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -31,6 +32,10 @@ public static class AuthEndpoints
         {
             return Results.Unauthorized();
         }
+        if (!user.IsEnabled)
+        {
+            return Results.Unauthorized();
+        }
 
         var passwordResult = await signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
         if (!passwordResult.Succeeded)
@@ -41,7 +46,8 @@ public static class AuthEndpoints
         var roles = await userManager.GetRolesAsync(user);
         var options = jwtOptions.Value;
         var roleList = roles.ToArray();
-        var token = CreateToken(user, roleList, options);
+        var securityStamp = await userManager.GetSecurityStampAsync(user);
+        var token = CreateToken(user, roleList, securityStamp, options);
         return Results.Ok(new LoginResponse(token, "Bearer", options.ExpirationMinutes * 60, new CurrentUserResponse(user.Id, user.Email!, user.DisplayName, roleList)));
     }
 
@@ -54,7 +60,7 @@ public static class AuthEndpoints
         }
 
         var user = await userManager.FindByIdAsync(id.ToString());
-        if (user is null)
+        if (user is null || !user.IsEnabled)
         {
             return Results.Unauthorized();
         }
@@ -63,13 +69,18 @@ public static class AuthEndpoints
         return Results.Ok(new CurrentUserResponse(user.Id, user.Email!, user.DisplayName, roles.ToArray()));
     }
 
-    private static string CreateToken(ApplicationUser user, IReadOnlyCollection<string> roles, JwtOptions options)
+    private static string CreateToken(
+        ApplicationUser user,
+        IReadOnlyCollection<string> roles,
+        string securityStamp,
+        JwtOptions options)
     {
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new(ClaimTypes.Name, user.DisplayName)
+            new(ClaimTypes.Name, user.DisplayName),
+            new("security_stamp_hash", HashSecurityStamp(securityStamp))
         };
         claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
@@ -84,6 +95,9 @@ public static class AuthEndpoints
             signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
+
+    internal static string HashSecurityStamp(string securityStamp) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(securityStamp)));
 
     public sealed record LoginRequest(string Email, string Password);
     public sealed record LoginResponse(string AccessToken, string TokenType, int ExpiresInSeconds, CurrentUserResponse User);
