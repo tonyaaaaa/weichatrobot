@@ -17,7 +17,9 @@ public sealed class SendRawMessageContractTests
 
         var result = await sut.SendTextAsync(new WorkToolSendRequest(Guid.NewGuid(), "Support Group", "fixed reply", "idem-1", ["张工"]), TestContext.Current.CancellationToken);
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Accepted);
+        Assert.Equal("command-1", result.MessageId);
+        Assert.Null(result.FailureCode);
         Assert.Equal("POST", handler.Method);
         Assert.Equal("/wework/sendRawMessage?robotId=robot-7", handler.PathAndQuery);
         using var json = JsonDocument.Parse(handler.Body);
@@ -37,8 +39,9 @@ public sealed class SendRawMessageContractTests
 
         var result = await sut.SendTextAsync(new WorkToolSendRequest(Guid.NewGuid(), "Support Group", "fixed reply", "idem-1"), TestContext.Current.CancellationToken);
 
-        Assert.False(result.Succeeded);
-        Assert.Equal("rejected", result.FailureReason);
+        Assert.False(result.Accepted);
+        Assert.Equal("worktool_code_1001", result.FailureCode);
+        Assert.False(result.DeliveryMayHaveOccurred);
     }
 
     private sealed class RecordingHandler(HttpStatusCode statusCode, string responseBody) : HttpMessageHandler

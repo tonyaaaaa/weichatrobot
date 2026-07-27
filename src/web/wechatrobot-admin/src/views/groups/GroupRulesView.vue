@@ -1,14 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, reactive, ref, watch } from 'vue';
 import { groupApi, type ContextOverrides, type EffectiveContext, type GroupApi, type GroupRule, type PatternKind } from '../../api/groups';
 import ContextPolicyForm from '../../components/groups/ContextPolicyForm.vue';
 import RuleEditor from '../../components/groups/RuleEditor.vue';
 import RulePreview from '../../components/groups/RulePreview.vue';
 
-const props = withDefaults(defineProps<{ groupId?: string; api?: GroupApi }>(), { groupId: '', api: () => groupApi });
-const route = useRoute();
-const activeGroupId = ref(props.groupId || String(route.params.id ?? ''));
+const props = withDefaults(defineProps<{ id: string; api?: GroupApi }>(), { api: () => groupApi });
 const includeRules = ref<GroupRule[]>([]);
 const excludeRules = ref<GroupRule[]>([]);
 const boundTagIds = ref<string[]>([]);
@@ -16,20 +13,52 @@ const availableTags = ref<{ id: string; name: string; isGlobalPublic: boolean; i
 const previewGroupNames = ref('');
 const previewResults = ref<{ groupName: string; isMatch: boolean; isExcluded: boolean }[]>([]);
 const notice = ref('');
+const saveError = ref('');
+const groupName = ref('');
+const configurationVersion = ref(0);
+const loading = ref(true);
+const loadError = ref('');
+const configurationLoaded = ref(false);
 const configured = reactive<ContextOverrides>({});
 const effective = ref<EffectiveContext>({ senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true });
-const canSave = computed(() => activeGroupId.value.length > 0);
+const canSave = computed(() => configurationLoaded.value && !loading.value);
 
 function addRule(direction: 'include' | 'exclude', patternKind: PatternKind) {
   (direction === 'include' ? includeRules : excludeRules).value.push({ pattern: '', patternKind, ignoreCase: true });
 }
 function removeRule(direction: 'include' | 'exclude', index: number) { (direction === 'include' ? includeRules : excludeRules).value.splice(index, 1); }
-function request(clearContext = false) { return { includeRules: includeRules.value, excludeRules: excludeRules.value, boundTagIds: boundTagIds.value, context: { ...configured }, clearContext }; }
+function request(clearContext = false) { return {
+  includeRules: includeRules.value,
+  excludeRules: excludeRules.value,
+  boundTagIds: boundTagIds.value,
+  context: { ...configured },
+  clearContext,
+  expectedConfigurationVersion: configurationVersion.value
+}; }
 async function load() {
-  if (!activeGroupId.value) return;
-  const configuration = await props.api.getConfiguration(activeGroupId.value);
-  includeRules.value = configuration.rules.include; excludeRules.value = configuration.rules.exclude; boundTagIds.value = configuration.boundTagIds;
-  availableTags.value = configuration.availableTags; Object.assign(configured, configuration.context.configured); effective.value = configuration.context.effective;
+  loading.value = true;
+  loadError.value = '';
+  configurationLoaded.value = false;
+  try {
+    const configuration = await props.api.getConfiguration(props.id);
+    groupName.value = configuration.name;
+    includeRules.value = configuration.rules.include;
+    excludeRules.value = configuration.rules.exclude;
+    boundTagIds.value = configuration.boundTagIds;
+    availableTags.value = configuration.availableTags;
+    configurationVersion.value = Number.isInteger(configuration.configurationVersion)
+      ? configuration.configurationVersion
+      : 0;
+    Object.assign(configured, configuration.context.configured);
+    effective.value = configuration.context.effective;
+    configurationLoaded.value = true;
+  } catch (error) {
+    const status = (error as { response?: { status?: number } }).response?.status;
+    groupName.value = '';
+    loadError.value = status === 404 ? '群不存在或已删除。' : '群配置加载失败，请稍后重试。';
+  } finally {
+    loading.value = false;
+  }
 }
 async function preview() {
   const groupNames = previewGroupNames.value.split('\n').map(name => name.trim()).filter(Boolean);
@@ -37,11 +66,26 @@ async function preview() {
   previewResults.value = result.results;
 }
 async function save(clearContext = false) {
-  if (!canSave.value) { notice.value = '请先输入群配置 ID。'; return; }
-  const saved = await props.api.updateConfiguration(activeGroupId.value, request(clearContext));
-  Object.assign(configured, saved.context.configured); effective.value = saved.context.effective; notice.value = clearContext ? `已清空 ${saved.clearedContextSessions} 个本群会话上下文，历史和审计记录已保留。` : '群配置已保存。';
+  if (!canSave.value) return;
+  saveError.value = '';
+  try {
+    const saved = await props.api.updateConfiguration(props.id, request(clearContext));
+    Object.assign(configured, saved.context.configured);
+    effective.value = saved.context.effective;
+    if (Number.isInteger(saved.configurationVersion))
+      configurationVersion.value = saved.configurationVersion;
+    notice.value = clearContext ? `已清空 ${saved.clearedContextSessions} 个本群会话上下文，历史和审计记录已保留。` : '群配置已保存。';
+  } catch (exception) {
+    const data = (exception as { response?: { status?: number; data?: { error?: string } } }).response;
+    if (data?.status === 409 && data.data?.error === 'group-configuration-conflict') {
+      await load();
+      saveError.value = '群配置已被其他操作员修改，已加载最新版本，请复核后重新保存。';
+      return;
+    }
+    saveError.value = '群配置保存失败，请稍后重试。';
+  }
 }
-onMounted(load);
+watch(() => props.id, load, { immediate: true });
 </script>
 
 <template>
@@ -49,19 +93,25 @@ onMounted(load);
     <header class="group-page-header">
       <div>
         <p class="eyebrow">群配置</p>
-        <h1 id="group-rules-title">群管理</h1>
+        <h1 id="group-rules-title">{{ groupName || '群配置' }}</h1>
         <p>维护群匹配、知识库标签和上下文策略。全局公开标签始终可用。</p>
       </div>
-      <RouterLink class="group-operations-link" :to="{ name: 'group-operations' }">新建群、成员和群信息操作</RouterLink>
+      <RouterLink class="group-operations-link" :to="{ name: 'group-list' }">返回群列表</RouterLink>
     </header>
 
-    <div class="group-panel group-identity-bar">
-      <label for="group-config-id">群配置 ID</label>
-      <input id="group-config-id" v-model.trim="activeGroupId" aria-label="群配置 ID" placeholder="输入群配置 ID">
-      <button type="button" @click="load">读取配置</button>
-    </div>
+    <p v-if="loading" class="group-panel" aria-live="polite">正在加载群配置…</p>
+    <section v-else-if="loadError" class="group-panel group-load-error" aria-live="assertive">
+      <p>{{ loadError }}</p>
+      <RouterLink :to="{ name: 'group-list' }">返回群列表</RouterLink>
+    </section>
 
-    <div class="group-layout">
+    <template v-if="configurationLoaded">
+      <div class="group-panel group-identity-bar">
+        <RouterLink :to="{ name: 'group-list' }">返回群列表</RouterLink>
+        <strong>{{ groupName }}</strong>
+      </div>
+
+      <div class="group-layout">
       <div class="group-primary-column">
         <RuleEditor :include-rules="includeRules" :exclude-rules="excludeRules" @add="addRule" @remove="removeRule" />
         <section class="group-panel preview-panel" aria-labelledby="preview-title">
@@ -94,13 +144,15 @@ onMounted(load);
         </section>
         <ContextPolicyForm :configured="configured" :effective="effective" @clear="save(true)" />
       </aside>
-    </div>
+      </div>
 
-    <footer class="group-panel group-save-bar">
-      <p class="group-save-hint">保存后，新规则与策略将用于该群后续消息。</p>
-      <p class="group-save-notice" aria-live="polite">{{ notice }}</p>
-      <button class="primary-action" type="button" data-testid="save-configuration" :disabled="!canSave" @click="() => save()">保存群配置</button>
-    </footer>
+      <footer class="group-panel group-save-bar">
+        <p class="group-save-hint">保存后，新规则与策略将用于该群后续消息。</p>
+        <p v-if="saveError" class="group-save-error" role="alert">{{ saveError }}</p>
+        <p class="group-save-notice" aria-live="polite">{{ notice }}</p>
+        <button class="primary-action" type="button" data-testid="save-configuration" :disabled="!canSave" @click="() => save()">保存群配置</button>
+      </footer>
+    </template>
   </section>
 </template>
 
@@ -141,12 +193,13 @@ onMounted(load);
   box-shadow: var(--shadow-sm);
 }
 .group-identity-bar {
-  display: grid;
-  grid-template-columns: auto minmax(16rem, 1fr) auto;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: var(--space-md);
 }
-.group-identity-bar label { margin: 0; white-space: nowrap; }
+.group-load-error { color: var(--color-danger); }
+.group-load-error p { margin-top: 0; }
 .group-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(18rem, 1fr);
@@ -232,15 +285,12 @@ onMounted(load);
 }
 @media (max-width: 700px) {
   .group-page-header { flex-direction: column; }
-  .group-identity-bar { grid-template-columns: 1fr auto; }
-  .group-identity-bar label { grid-column: 1 / -1; }
+  .group-identity-bar { align-items: flex-start; flex-direction: column; }
 }
 @media (max-width: 600px) {
   .group-panel { padding: var(--space-lg); }
-  .group-identity-bar,
   .preview-editor,
   .group-save-bar { grid-template-columns: 1fr; }
-  .group-identity-bar label,
   .preview-editor label,
   .group-save-notice,
   .group-save-bar button {

@@ -235,7 +235,7 @@ public sealed class ConversationSessionConcurrencyTests : IClassFixture<MySqlFix
         await using var db = Database();
         var repository = new DurableJobRepository(db);
         await repository.IngestInboundMessageAsync(new(robotId, Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), DateTime.UtcNow,
-            currentGroup, displayName, text, DateTime.UtcNow, stableId), TestContext.Current.CancellationToken);
+            currentGroup, null, displayName, text, DateTime.UtcNow, stableId), TestContext.Current.CancellationToken);
         return await db.ConversationMessages.Where(item => item.RobotConfigId == robotId && item.Text == text).Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
     }
 

@@ -9,10 +9,11 @@ public interface IDurableJobRepository
     Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken);
     Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken);
     Task<bool> EnsureSendEnabledAsync(LeasedSendCommand command, CancellationToken cancellationToken) => Task.FromResult(true);
-    Task<bool> MarkSendExternalInFlightAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken);
-    Task MarkSendDeliveryUncertainAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken);
+    Task<bool> MarkSendDispatchingAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken);
+    Task MarkSendDeliveryUnknownAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken);
+    Task MarkSendRejectedAsync(LeasedSendCommand command, string reason, DateTime rejectedAtUtc, CancellationToken cancellationToken);
+    Task MarkSendAcceptedAsync(LeasedSendCommand command, string workToolMessageId, DateTime acceptedAtUtc, CancellationToken cancellationToken);
     Task ReleaseSendGateAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-    Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken);
     Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken);
     Task<bool> RenewSendLeasesAsync(LeasedSendCommand command, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken);
 }
@@ -23,6 +24,7 @@ public sealed record InboundMessageIngestRequest(
     string FallbackHash,
     DateTime FallbackWindowStartUtc,
     string GroupName,
+    string? GroupRemark,
     string SenderDisplayName,
     string Text,
     DateTime ReceivedAtUtc,

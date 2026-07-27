@@ -29,6 +29,12 @@ public static class RobotSettingsEndpoints
             return TypedResults.BadRequest(new { error = "Robot settings are invalid." });
         var robot = await db.RobotConfigs.SingleOrDefaultAsync(item => item.Id == id, token);
         if (robot is null) return TypedResults.NotFound();
+        if (!robot.IsEnabled && request.IsEnabled)
+            return Results.Conflict(new
+            {
+                error = "robot-probe-required",
+                message = "Use the WorkTool administration endpoint and a successful connection test to enable this robot."
+            });
         robot.Name = name;
         robot.IsEnabled = request.IsEnabled;
         robot.SendRateLimitPerMinute = request.SendRateLimitPerMinute;

@@ -34,7 +34,12 @@ public sealed class InboundMessageProcessor(
         }
 
         var sessionLeaseOwner = $"{job.LeaseOwner}:{job.Id:N}";
-        var policy = await conversations.EvaluateInboundPolicyAsync(payload.MessageId, payload.GroupName, payload.WasMentioned, cancellationToken);
+        var policy = await conversations.EvaluateInboundPolicyAsync(
+            payload.MessageId,
+            payload.GroupName,
+            payload.GroupRemark,
+            payload.WasMentioned,
+            cancellationToken);
         if (policy.Kind == InboundPolicyDecisionKind.NoReply)
         {
             await conversations.PersistNoReplyTerminalAsync(policy, cancellationToken);
@@ -136,6 +141,7 @@ public sealed class InboundMessageProcessor(
         public Guid RobotConfigId { get; init; }
         public string WorkToolRobotId { get; init; } = string.Empty;
         public string GroupName { get; init; } = string.Empty;
+        public string? GroupRemark { get; init; }
         public bool WasMentioned { get; init; }
     }
 }

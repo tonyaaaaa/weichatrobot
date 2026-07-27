@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 import { describe, expect, it, vi } from 'vitest';
 import KnowledgeDocumentsView from './knowledge/KnowledgeDocumentsView.vue';
 import DocumentDetailView from './knowledge/DocumentDetailView.vue';
@@ -10,6 +11,30 @@ import ModelSettingsView from './models/ModelSettingsView.vue';
 import UserRolesView from './users/UserRolesView.vue';
 import SystemSettingsView from './settings/SystemSettingsView.vue';
 import { safeEvidence } from '../utils/evidenceRedaction';
+
+const primaryTagId = '11111111-1111-4111-8111-111111111111';
+
+function createTagOptionsApi(ids: string[]) {
+  return {
+    options: vi.fn().mockResolvedValue(ids.map((id, index) => ({
+      id,
+      name: `标签 ${index + 1}`,
+      isGlobalPublic: index === 0
+    })))
+  };
+}
+
+function createDocumentAdministrationApiStubs() {
+  return {
+    listDocuments: vi.fn(),
+    getDocument: vi.fn(),
+    getDocumentVersions: vi.fn(),
+    retryDocumentUpload: vi.fn(),
+    disableDocument: vi.fn(),
+    requestPhysicalDelete: vi.fn(),
+    deletePreview: vi.fn()
+  };
+}
 
 describe('Task 16 operational pages', () => {
   it('shows upload progress, upload errors, DOC conversion guidance and the public OSS warning', async () => {
@@ -71,6 +96,7 @@ describe('Task 16 operational pages', () => {
       ]
     };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ revision: 3, items: [preview, secondPreview] }),
       getIndexStatus: vi.fn().mockResolvedValue(failedStatus),
@@ -82,7 +108,14 @@ describe('Task 16 operational pages', () => {
       approvePreviews: vi.fn().mockResolvedValue([preview, secondPreview]),
       queueIndex: vi.fn().mockResolvedValue({ jobId: 'job-2' })
     };
-    const wrapper = mount(DocumentDetailView, { props: { documentId: 'doc-1', versionId: 'ver-1', api } });
+    const wrapper = mount(DocumentDetailView, {
+      props: {
+        documentId: 'doc-1',
+        versionId: 'ver-1',
+        api,
+        tagApi: createTagOptionsApi([primaryTagId])
+      }
+    });
     await flushPromises();
     expect(wrapper.get('[data-testid="queue-index"]').text()).toBe('重新索引');
     expect(wrapper.text()).toContain('active');
@@ -100,7 +133,8 @@ describe('Task 16 operational pages', () => {
     await flushPromises();
     await wrapper.get('[data-testid="approve-previews"]').trigger('click');
     await flushPromises();
-    await wrapper.get('#index-tag-ids').setValue('11111111-1111-4111-8111-111111111111');
+    expect(wrapper.find('#index-tag-ids').exists()).toBe(false);
+    await wrapper.get(`[data-testid="knowledge-tag-${primaryTagId}"]`).setValue(true);
     await wrapper.get('[data-testid="queue-index"]').trigger('click');
     await flushPromises();
     expect(api.editPreview).toHaveBeenCalled();
@@ -112,10 +146,11 @@ describe('Task 16 operational pages', () => {
     expect(api.queueIndex).toHaveBeenCalled();
   });
 
-  it('requires valid document tag IDs, reports the field error locally, and submits unique IDs', async () => {
+  it('requires a document tag selection and submits enabled selected IDs', async () => {
     const firstTag = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const secondTag = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ revision: 1, items: [] }),
       getIndexStatus: vi.fn().mockResolvedValue({
@@ -126,20 +161,23 @@ describe('Task 16 operational pages', () => {
       generatePreviews: vi.fn(), approvePreviews: vi.fn(),
       queueIndex: vi.fn().mockResolvedValue({ jobId: 'job-1' })
     };
-    const wrapper = mount(DocumentDetailView, { props: { documentId: 'doc-1', versionId: 'ver-1', api } });
+    const wrapper = mount(DocumentDetailView, {
+      props: {
+        documentId: 'doc-1',
+        versionId: 'ver-1',
+        api,
+        tagApi: createTagOptionsApi([firstTag, secondTag])
+      }
+    });
     await flushPromises();
 
-    await wrapper.get('#index-tag-ids').setValue('   ');
+    expect(wrapper.find('#index-tag-ids').exists()).toBe(false);
     await wrapper.get('[data-testid="queue-index"]').trigger('click');
     expect(api.queueIndex).not.toHaveBeenCalled();
-    expect(wrapper.get('[data-testid="index-tag-error"]').text()).toContain('至少填写一个有效的知识标签 ID');
+    expect(wrapper.get('[data-testid="index-tag-error"]').text()).toContain('至少选择一个已启用的知识标签');
 
-    await wrapper.get('#index-tag-ids').setValue('not-a-guid');
-    await wrapper.get('[data-testid="queue-index"]').trigger('click');
-    expect(api.queueIndex).not.toHaveBeenCalled();
-    expect(wrapper.get('[data-testid="index-tag-error"]').text()).toContain('UUID');
-
-    await wrapper.get('#index-tag-ids').setValue(`${firstTag}，${firstTag.toUpperCase()}, ${secondTag}`);
+    await wrapper.get(`[data-testid="knowledge-tag-${firstTag}"]`).setValue(true);
+    await wrapper.get(`[data-testid="knowledge-tag-${secondTag}"]`).setValue(true);
     await wrapper.get('[data-testid="queue-index"]').trigger('click');
     await flushPromises();
     expect(api.queueIndex).toHaveBeenCalledWith('doc-1', 'ver-1', [firstTag, secondTag], false);
@@ -151,6 +189,7 @@ describe('Task 16 operational pages', () => {
     const second = { id: 'p2', sequence: 2, text: 'second', status: 'draft' };
     const third = { id: 'p3', sequence: 3, text: 'third', status: 'draft' };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ revision: 2, items: [first, second, third] }),
       getIndexStatus: vi.fn().mockResolvedValue({
@@ -177,8 +216,22 @@ describe('Task 16 operational pages', () => {
     expect(api.mergePreviews).toHaveBeenCalledWith('ver-1', 'p2', 'p3', 2);
   });
 
-  it('explains that any bound tag matches and global-public content is always visible', () => {
-    const wrapper = mount(KnowledgeTagsView);
+  it('explains that any bound tag matches and global-public content is always visible', async () => {
+    const pinia = createPinia();
+    const wrapper = mount(KnowledgeTagsView, {
+      props: {
+        api: {
+          list: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
+          options: vi.fn(),
+          create: vi.fn(),
+          update: vi.fn(),
+          setEnabled: vi.fn(),
+          delete: vi.fn()
+        }
+      },
+      global: { plugins: [pinia] }
+    });
+    await flushPromises();
     expect(wrapper.text()).toContain('任一标签');
     expect(wrapper.text()).toContain('全局公开');
     expect(wrapper.text()).toContain('OR');
@@ -191,7 +244,9 @@ describe('Task 16 operational pages', () => {
       getCandidate: vi.fn().mockResolvedValue({ id: 'c1', question: '怎么退款？', answer: '联系售后', evidenceJson: '{"source":"human"}', status: 'pending', version: 2 }),
       reviewCandidate: vi.fn().mockResolvedValue({ status: 'approved_pending_index' })
     };
-    const wrapper = mount(KnowledgeReviewView, { props: { api } });
+    const wrapper = mount(KnowledgeReviewView, {
+      props: { api, tagApi: createTagOptionsApi([primaryTagId]) }
+    });
     await flushPromises();
     expect(api.listCandidates).toHaveBeenCalledWith('pending', 1, 20);
     expect(wrapper.findAllComponents({ name: 'ElOption' }).map(option => option.props('value'))).toEqual([
@@ -199,12 +254,17 @@ describe('Task 16 operational pages', () => {
     ]);
     await wrapper.get('[data-testid="candidate-c1"]').trigger('click');
     await flushPromises();
-    await wrapper.get('#candidate-tags').setValue('11111111-1111-4111-8111-111111111111');
+    expect(wrapper.find('#candidate-tags').exists()).toBe(false);
+    await wrapper.get(`[data-testid="knowledge-tag-${primaryTagId}"]`).setValue(true);
     await wrapper.get('[data-testid="approve-candidate"]').trigger('click');
-    expect(api.reviewCandidate).toHaveBeenCalledWith('c1', expect.objectContaining({ decision: 'approve', expectedVersion: 2 }));
+    expect(api.reviewCandidate).toHaveBeenCalledWith('c1', expect.objectContaining({
+      decision: 'approve',
+      tagIds: [primaryTagId],
+      expectedVersion: 2
+    }));
   });
 
-  it('requires valid unique tags for approval but permits rejecting without tags', async () => {
+  it('requires selected tags for approval but permits rejecting without tags', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const tagId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const candidate = { id: 'c1', question: 'Q', answer: 'A', evidenceJson: '{}', status: 'pending', version: 2 };
@@ -216,22 +276,19 @@ describe('Task 16 operational pages', () => {
       getCandidate: vi.fn().mockResolvedValue(candidate),
       reviewCandidate: vi.fn().mockResolvedValue({ status: 'rejected' })
     };
-    const wrapper = mount(KnowledgeReviewView, { props: { api } });
+    const wrapper = mount(KnowledgeReviewView, {
+      props: { api, tagApi: createTagOptionsApi([tagId]) }
+    });
     await flushPromises();
     await wrapper.get('[data-testid="candidate-c1"]').trigger('click');
     await flushPromises();
 
-    await wrapper.get('#candidate-tags').setValue(' ');
+    expect(wrapper.find('#candidate-tags').exists()).toBe(false);
     await wrapper.get('[data-testid="approve-candidate"]').trigger('click');
     expect(api.reviewCandidate).not.toHaveBeenCalled();
-    expect(wrapper.get('[data-testid="candidate-tag-error"]').text()).toContain('批准时至少填写一个有效的知识标签 ID');
+    expect(wrapper.get('[data-testid="candidate-tag-error"]').text()).toContain('至少选择一个已启用的知识标签');
 
-    await wrapper.get('#candidate-tags').setValue('invalid');
-    await wrapper.get('[data-testid="approve-candidate"]').trigger('click');
-    expect(api.reviewCandidate).not.toHaveBeenCalled();
-    expect(wrapper.get('[data-testid="candidate-tag-error"]').text()).toContain('UUID');
-
-    await wrapper.get('#candidate-tags').setValue(`${tagId}, ${tagId.toUpperCase()}`);
+    await wrapper.get(`[data-testid="knowledge-tag-${tagId}"]`).setValue(true);
     await wrapper.get('[data-testid="approve-candidate"]').trigger('click');
     await flushPromises();
     expect(api.reviewCandidate).toHaveBeenCalledWith('c1', expect.objectContaining({ decision: 'approve', tagIds: [tagId] }));
@@ -241,7 +298,6 @@ describe('Task 16 operational pages', () => {
     await wrapper.setProps({ api });
     await wrapper.get('[data-testid="candidate-c1"]').trigger('click');
     await flushPromises();
-    await wrapper.get('#candidate-tags').setValue(' ');
     await wrapper.get('[data-testid="reject-candidate"]').trigger('click');
     await flushPromises();
     expect(api.reviewCandidate).toHaveBeenLastCalledWith('c2', expect.objectContaining({ decision: 'reject', tagIds: [] }));
@@ -281,7 +337,13 @@ describe('Task 16 operational pages', () => {
     expect(pagination.exists()).toBe(true);
     pagination.vm.$emit('current-change', 2);
     await flushPromises();
-    expect(api.capability).toHaveBeenLastCalledWith(2, 20);
+    expect(api.capability).toHaveBeenLastCalledWith({
+      groupId: undefined,
+      fromUtc: undefined,
+      toUtc: undefined,
+      page: 2,
+      pageSize: 20
+    });
   });
 
   it('redacts secret-shaped values from review and handoff evidence', async () => {
@@ -377,6 +439,7 @@ describe('Task 16 operational pages', () => {
       approvedChunkCount: 0, activePointCount: 0, consistency: 'inactive', driftDetails: [], jobs: []
     };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ versionId: 'ver-1', revision: 2, items: [original] }),
       getIndexStatus: vi.fn().mockResolvedValue(status),
@@ -400,6 +463,7 @@ describe('Task 16 operational pages', () => {
     const first = { id: 'p1', sequence: 1, text: 'first', status: 'draft' };
     const second = { id: 'p2', sequence: 2, text: 'second', status: 'draft' };
     const api = {
+      ...createDocumentAdministrationApiStubs(),
       upload: vi.fn(),
       getPreviews: vi.fn().mockResolvedValue({ versionId: 'ver-1', revision: 2, items: [first, second] }),
       getIndexStatus: vi.fn().mockResolvedValue({
@@ -506,8 +570,15 @@ describe('Task 16 operational pages', () => {
     expect(api.testConnection).toHaveBeenCalledWith('m1');
   });
 
-  it('states unavailable backend capabilities honestly for users and system settings', () => {
-    expect(mount(UserRolesView).text()).toContain('后端暂未提供');
+  it('exposes implemented user administration while keeping unavailable system settings honest', async () => {
+    const users = mount(UserRolesView, { props: { api: {
+      list: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
+      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
+    } } });
+    await flushPromises();
+    expect(users.text()).not.toContain('后端暂未提供');
+    expect(users.find('[data-testid="create-user"]').exists()).toBe(true);
     expect(mount(SystemSettingsView).text()).toContain('后端暂未提供');
   });
 });

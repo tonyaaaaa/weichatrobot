@@ -20,8 +20,22 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                 name: "InputSummaryJson",
                 table: "retrieval_audit",
                 type: "json",
+                nullable: true);
+
+            migrationBuilder.Sql("""
+                UPDATE `retrieval_audit`
+                SET `InputSummaryJson` = '{}'
+                WHERE `InputSummaryJson` IS NULL;
+                """);
+
+            migrationBuilder.AlterColumn<string>(
+                name: "InputSummaryJson",
+                table: "retrieval_audit",
+                type: "json",
                 nullable: false,
-                defaultValueSql: "(JSON_OBJECT())");
+                oldClrType: typeof(string),
+                oldType: "json",
+                oldNullable: true);
 
             migrationBuilder.AddColumn<DateTime>(
                 name: "LeaseExpiresAtUtc",

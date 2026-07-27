@@ -19,13 +19,24 @@ public sealed class GroundedConversationRepository(
     private const int MaximumPolicyCandidateGroups = 100;
     private const int MaximumPolicyRules = 10_000;
 
-    public async Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, bool wasMentioned, CancellationToken token)
+    public async Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(
+        Guid messageId,
+        string groupName,
+        string? groupRemark,
+        bool wasMentioned,
+        CancellationToken token)
     {
         var message = await database.ConversationMessages.AsNoTracking().SingleOrDefaultAsync(item => item.Id == messageId, token)
             ?? throw new KeyNotFoundException("Inbound conversation message was not found.");
         var exactNames = await database.GroupProfiles.AsNoTracking()
-            .Where(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled && item.Name == groupName)
+            .Where(item => item.RobotConfigId == message.RobotConfigId &&
+                           item.IsEnabled &&
+                           item.Name == groupName &&
+                           (item.WorkToolGroupRemark == null || item.WorkToolGroupRemark == groupRemark))
             .OrderBy(item => item.Id).Take(2).ToArrayAsync(token);
+        if (exactNames.Length > 1)
+            return NoReply(messageId, null, "group_identity_ambiguous", "multiple_name_and_remark_candidates");
+
         GroupProfileEntity[] candidates;
         var authoritativeIdentity = exactNames.Length == 1;
         if (authoritativeIdentity)
@@ -35,7 +46,9 @@ public sealed class GroundedConversationRepository(
         else
         {
             candidates = await database.GroupProfiles.AsNoTracking()
-                .Where(item => item.RobotConfigId == message.RobotConfigId && item.IsEnabled)
+                .Where(item => item.RobotConfigId == message.RobotConfigId &&
+                               item.IsEnabled &&
+                               (item.WorkToolGroupRemark == null || item.WorkToolGroupRemark == groupRemark))
                 .OrderBy(item => item.Id).Take(MaximumPolicyCandidateGroups + 1).ToArrayAsync(token);
             if (candidates.Length > MaximumPolicyCandidateGroups)
                 return NoReply(messageId, null, "group_rule_candidate_limit", "candidate_limit_exceeded");

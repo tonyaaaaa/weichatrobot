@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Knowledge;
@@ -42,10 +43,22 @@ public static class KnowledgeIndexEndpoints
         catch (InvalidOperationException exception) { return Results.Conflict(new { error = "retry-state-conflict", message = exception.Message }); }
     }
 
-    private static async Task<IResult> DisableAsync(Guid documentId, QdrantKnowledgeService service, CancellationToken token)
+    private static async Task<IResult> DisableAsync(
+        Guid documentId,
+        KnowledgeDocumentStateRequest request,
+        ClaimsPrincipal principal,
+        QdrantKnowledgeService service,
+        CancellationToken token)
     {
-        try { await service.DisableAsync(documentId, token); return Results.Accepted($"/api/knowledge/documents/{documentId}/index-status", new { documentId, state = "disabled" }); }
+        if (!TryGetActor(principal, out var actor)) return Results.Unauthorized();
+        try
+        {
+            await service.DisableAsync(documentId, request.ExpectedStateVersion, actor, token);
+            return Results.Accepted($"/api/knowledge/documents/{documentId}/index-status", new { documentId, state = "disabled" });
+        }
         catch (KeyNotFoundException) { return Results.NotFound(); }
+        catch (DocumentConcurrencyException exception) { return Results.Conflict(new { error = "document-concurrency-conflict", current = exception.Current }); }
+        catch (DocumentDeleteRequestedException) { return Results.Conflict(new { error = "document-delete-requested" }); }
     }
 
     private static async Task<IResult> StatusAsync(Guid documentId, bool checkConsistency, QdrantKnowledgeService service, IVectorStore vectors, CancellationToken token)
@@ -53,6 +66,15 @@ public static class KnowledgeIndexEndpoints
         try { return Results.Ok(await service.GetStatusAsync(documentId, vectors, checkConsistency, token)); }
         catch (KeyNotFoundException) { return Results.NotFound(); }
         catch (VectorStoreUnavailableException exception) { return Results.Json(new { error = "qdrant-unavailable", message = exception.Message }, statusCode: 503); }
+    }
+
+    private static bool TryGetActor(ClaimsPrincipal principal, out string actor)
+    {
+        actor = principal.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? principal.Identity?.Name
+            ?? string.Empty;
+        actor = actor.Trim();
+        return actor.Length > 0;
     }
 }
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Persistence.Entities;
 
 namespace WechatRobot.IntegrationTests.WorkTool;
@@ -8,8 +9,18 @@ public static class RealAcceptanceEvidenceVerifier
     public static bool ExactOperation(IReadOnlyList<WorkToolOperationAuditEntity> audits, RealOperationExpectation expected)
     {
         var audit = audits.SingleOrDefault(item => item.Id == expected.AuditId);
-        if (audit is null || audit.Status != expected.Status || audit.WorkToolCommandNumber != expected.CommandNumber
-            || audit.Operation != expected.Operation || audit.OperatorName != expected.OperatorName)
+        if (audit is null ||
+            audit.Status != WorkToolCommandStatuses.ExecutedSucceeded ||
+            string.IsNullOrWhiteSpace(audit.WorkToolCommandMessageId) ||
+            audit.WorkToolResultCode != 0 ||
+            audit.WorkToolResultAtUtc is not { } resultAtUtc ||
+            expected.FromUtc.Kind != DateTimeKind.Utc ||
+            expected.ToUtc.Kind != DateTimeKind.Utc ||
+            resultAtUtc < expected.FromUtc ||
+            resultAtUtc > expected.ToUtc ||
+            audit.WorkToolCommandNumber != expected.CommandNumber ||
+            audit.Operation != expected.Operation ||
+            audit.OperatorName != expected.OperatorName)
             return false;
         try
         {
@@ -20,7 +31,7 @@ public static class RealAcceptanceEvidenceVerifier
                 && root.TryGetProperty("kind", out var kind) && kind.GetString() == expected.Operation
                 && root.TryGetProperty("groupIdentifier", out var group) && group.GetString() == expected.GroupIdentifier
                 && root.TryGetProperty("memberCount", out var memberCount) && memberCount.GetInt32() == expected.MemberCount
-                && root.TryGetProperty("memberIdsHash", out var memberIdsHash) && memberIdsHash.GetString() == expected.MemberIdsHash
+                && root.TryGetProperty("memberDisplayNamesHash", out var memberDisplayNamesHash) && memberDisplayNamesHash.GetString() == expected.MemberDisplayNamesHash
                 && root.TryGetProperty("valueLength", out var valueLength) && valueLength.GetInt32() == expected.ValueLength
                 && root.TryGetProperty("valueHash", out var valueHash) && valueHash.GetString() == expected.ValueHash;
         }
@@ -98,9 +109,9 @@ public sealed record RealAcceptanceEvidenceSnapshot(
     bool EnabledGlobalPublicScopeMatched = true);
 
 public sealed record RealAcceptanceEvidence(string Condition, Guid AuditId, DateTime TimestampUtc);
-public sealed record RealOperationExpectation(Guid AuditId, string Status, int CommandNumber, Guid RobotConfigId,
-    string GroupIdentifier, string Operation, int MemberCount, string MemberIdsHash, int ValueLength, string ValueHash,
-    string OperatorName);
+public sealed record RealOperationExpectation(Guid AuditId, int CommandNumber, Guid RobotConfigId,
+    string GroupIdentifier, string Operation, int MemberCount, string MemberDisplayNamesHash, int ValueLength, string ValueHash,
+    string OperatorName, DateTime FromUtc, DateTime ToUtc);
 
 public sealed class RealAcceptanceVerificationException(string code) : Exception(code)
 {

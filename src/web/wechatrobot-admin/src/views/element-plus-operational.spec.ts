@@ -88,15 +88,56 @@ describe('Task 16 Element Plus operational surfaces', () => {
     expect(documents.get('[data-testid="upload-document"]').classes()).toContain('el-button--primary');
   });
 
-  it('uses consistent Element Plus alerts and layout actions on read-only surfaces', () => {
-    for (const component of [KnowledgeTagsView, UserRolesView, SystemSettingsView]) {
-      expect(mount(component).findComponent({ name: 'ElAlert' }).exists()).toBe(true);
-    }
+  it('uses operational controls for users and keeps alerts on the remaining read-only settings surface', async () => {
+    const users = mount(UserRolesView, { props: { api: {
+      list: vi.fn().mockResolvedValue({
+        items: [{ id: 'u1', email: 'admin@example.test', displayName: 'Admin', isEnabled: true, roles: ['Admin'] }],
+        total: 1, page: 1, pageSize: 20
+      }),
+      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
+    } } });
+    await flushPromises();
+    expect(users.findComponent({ name: 'ElButton' }).exists()).toBe(true);
+    expect(users.findComponent({ name: 'ElTag' }).exists()).toBe(true);
+    expect(mount(SystemSettingsView).findComponent({ name: 'ElAlert' }).exists()).toBe(true);
 
     setActivePinia(createPinia());
     const layout = mount(AdminLayout, {
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, RouterView: true } }
     });
     expect(layout.findComponent({ name: 'ElButton' }).exists()).toBe(true);
+  });
+
+  it('uses Element Plus status and action components on knowledge tag management', async () => {
+    const pinia = createPinia();
+    const tags = mount(KnowledgeTagsView, {
+      props: {
+        api: {
+          list: vi.fn().mockResolvedValue({
+            items: [{
+              id: 'tag-1',
+              name: '产品',
+              isEnabled: true,
+              isGlobalPublic: false,
+              version: 1,
+              createdAtUtc: '2026-07-24T00:00:00Z'
+            }],
+            total: 1,
+            page: 1,
+            pageSize: 20
+          }),
+          options: vi.fn(),
+          create: vi.fn(),
+          update: vi.fn(),
+          setEnabled: vi.fn(),
+          delete: vi.fn()
+        }
+      },
+      global: { plugins: [pinia] }
+    });
+    await flushPromises();
+    expect(tags.findComponent({ name: 'ElButton' }).exists()).toBe(true);
+    expect(tags.findComponent({ name: 'ElTag' }).exists()).toBe(true);
   });
 });

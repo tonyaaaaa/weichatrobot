@@ -16,6 +16,7 @@ __pycache__/
 *.py[cod]
 .venv/
 logs/
+artifacts/
 .dev/
 *.log
 secrets.json

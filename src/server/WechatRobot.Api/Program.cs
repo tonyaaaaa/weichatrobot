@@ -1,5 +1,6 @@
 using System.Text;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Http.Features;
@@ -15,6 +16,8 @@ using WechatRobot.Api.Handoffs;
 using WechatRobot.Api.Health;
 using WechatRobot.Api.Audit;
 using WechatRobot.Api.Robots;
+using WechatRobot.Api.Dashboard;
+using WechatRobot.Api.Users;
 using WechatRobot.Api.Security;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Application.Jobs;
@@ -40,7 +43,9 @@ using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Infrastructure.Health;
 using WechatRobot.Infrastructure.Logging;
+using WechatRobot.Infrastructure.Configuration;
 
+DotEnvFileLoader.Load();
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddRedactingConsole();
 StartupConfigurationValidator.Validate(builder.Configuration, requireCors: true);
@@ -60,6 +65,10 @@ builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<RobotCredentialBackfillService>();
 builder.Services.AddScoped<ModelConfigurationService>();
 builder.Services.AddScoped<ModelConfigurationManager>();
+builder.Services.AddScoped<KnowledgeTagManager>();
+builder.Services.AddScoped<KnowledgeDocumentAdministrationQuery>();
+builder.Services.AddScoped<DashboardSummaryService>();
+builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
@@ -142,6 +151,9 @@ builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"));
 builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
+builder.Services.AddScoped<RobotCallbackConfigurationService>();
+builder.Services.AddScoped<IWorkToolCommandResultStore, EfWorkToolCommandResultStore>();
+builder.Services.AddScoped<WorkToolCommandResultProcessor>();
 builder.Services
     .AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
     {
@@ -185,6 +197,28 @@ builder.Services.AddAuthentication(options =>
             NameClaimType = ClaimTypes.Name,
             RoleClaimType = ClaimTypes.Role
         };
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var stampHash = context.Principal?.FindFirstValue("security_stamp_hash");
+                if (string.IsNullOrWhiteSpace(stampHash))
+                    return;
+                var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                var userManager = context.HttpContext.RequestServices.GetRequiredService<UserManager<ApplicationUser>>();
+                var user = userId is null ? null : await userManager.FindByIdAsync(userId);
+                if (user is null || !user.IsEnabled)
+                {
+                    context.Fail("The user is disabled or unavailable.");
+                    return;
+                }
+                var currentStamp = await userManager.GetSecurityStampAsync(user);
+                if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(stampHash),
+                    Encoding.ASCII.GetBytes(AuthEndpoints.HashSecurityStamp(currentStamp))))
+                    context.Fail("The token has been invalidated.");
+            }
+        };
     });
 builder.Services.AddAuthorization(options =>
 {
@@ -222,15 +256,19 @@ app.UseRateLimiter();
 app.MapAuthEndpoints();
 app.MapModelConfigurationEndpoints();
 app.MapRobotSettingsEndpoints();
+app.MapDashboardEndpoints();
+app.MapUserAdministrationEndpoints();
 app.MapGroupEndpoints();
 app.MapDocumentEndpoints();
 app.MapChunkPreviewEndpoints();
 app.MapKnowledgeIndexEndpoints();
+app.MapKnowledgeTagEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
 app.MapHandoffEndpoints();
 app.MapKnowledgeReviewEndpoints();
 app.MapConversationAuditEndpoints();
+app.MapAdministrationAuditEndpoints();
 app.MapWechatRobotHealthEndpoints();
 app.MapGet("/", () => Results.Ok()).RequireAuthorization();
 

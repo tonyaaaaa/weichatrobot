@@ -52,8 +52,8 @@ internal sealed class KnowledgeChunkConfiguration : IEntityTypeConfiguration<Kno
         builder.ToTable("knowledge_chunk");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Text).HasColumnType("longtext").IsRequired();
-        builder.Property(entity => entity.HeadingsJson).HasColumnType("json").HasDefaultValueSql("(JSON_ARRAY())").IsRequired();
-        builder.Property(entity => entity.SynonymsJson).HasColumnType("json").HasDefaultValueSql("(JSON_ARRAY())").IsRequired();
+        builder.Property(entity => entity.HeadingsJson).HasColumnType("json").IsRequired();
+        builder.Property(entity => entity.SynonymsJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.Question).HasMaxLength(2048);
         builder.Property(entity => entity.Answer).HasColumnType("longtext");
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
@@ -116,7 +116,7 @@ internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<
         builder.Property(entity => entity.PreviousActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.CollectionName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Distance).HasMaxLength(16).IsRequired();
-        builder.Property(entity => entity.PendingTagIdsJson).HasColumnType("json").HasDefaultValueSql("(JSON_ARRAY())").IsRequired();
+        builder.Property(entity => entity.PendingTagIdsJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
         builder.Property(entity => entity.FailureReason).HasMaxLength(1024);

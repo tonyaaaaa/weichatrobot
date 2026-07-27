@@ -204,15 +204,18 @@ public interface IKnowledgeDocumentStore
 {
     Task<PendingDocumentUpload?> StageAsync(DocumentStageRequest request, CancellationToken cancellationToken);
     Task<PendingDocumentUpload?> GetRetryableAsync(Guid documentId, CancellationToken cancellationToken);
+    Task<PendingDocumentUpload?> GetRetryableAsync(Guid documentId, int expectedStateVersion, string actor, CancellationToken cancellationToken);
     Task<PendingDocumentUpload?> GetRecoverableAsync(Guid versionId, CancellationToken cancellationToken);
     Task<bool> MarkUploadedAsync(PendingDocumentUpload upload, StoredObject stored, CancellationToken cancellationToken);
     Task MarkFailedAsync(PendingDocumentUpload upload, CancellationToken cancellationToken);
     Task<bool> RequestPhysicalDeleteAsync(Guid documentId, CancellationToken cancellationToken);
+    Task<bool> RequestPhysicalDeleteAsync(Guid documentId, int expectedStateVersion, string actor, CancellationToken cancellationToken);
 }
 
 public sealed record DocumentStageRequest(Guid? DocumentId, string DisplayName, ValidatedDocument Document);
 public sealed record PendingDocumentUpload(Guid DocumentId, Guid VersionId, int Version, string ObjectKey, string SafeFileName,
-    string ContentType, string Sha256, byte[] Content, string State = "uploading", string? PublicUrl = null);
+    string ContentType, string Sha256, byte[] Content, string State = "uploading", string? PublicUrl = null,
+    int DocumentStateVersion = 0, string? AuditActor = null);
 public sealed record DocumentUploadResult(Guid DocumentId, Guid VersionId, int Version, string State, string? PublicUrl,
     string ObjectKey, string SafeFileName, string Sha256, long SizeBytes, bool PublicReadRiskAccepted, bool ProviderSucceeded);
 
@@ -220,6 +223,11 @@ public sealed class DuplicateDocumentContentException : Exception { }
 public sealed class DocumentNotFoundException : Exception { }
 public sealed class DocumentNotRetryableException : Exception { }
 public sealed class DocumentDeletedException : Exception { }
+public sealed class DocumentDeleteRequestedException : Exception { }
+public sealed class DocumentConcurrencyException(KnowledgeDocumentCurrentState current) : Exception
+{
+    public KnowledgeDocumentCurrentState Current { get; } = current;
+}
 
 public sealed class DocumentUploadService(
     DocumentUploadOptions options,
@@ -241,6 +249,20 @@ public sealed class DocumentUploadService(
         return await UploadPendingAsync(pending, cancellationToken);
     }
 
+    public async Task<DocumentUploadResult> RetryAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        var pending = await store.GetRetryableAsync(
+            documentId,
+            expectedStateVersion,
+            actor,
+            cancellationToken) ?? throw new DocumentNotRetryableException();
+        return await UploadPendingAsync(pending, cancellationToken);
+    }
+
     public async Task<bool> RecoverAsync(LeasedDurableJob job, CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Deserialize<UploadJobPayload>(job.PayloadJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
@@ -255,6 +277,22 @@ public sealed class DocumentUploadService(
     public async Task RequestPhysicalDeleteAsync(Guid documentId, CancellationToken cancellationToken)
     {
         if (!await store.RequestPhysicalDeleteAsync(documentId, cancellationToken)) throw new DocumentNotFoundException();
+    }
+
+    public async Task RequestPhysicalDeleteAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        if (!await store.RequestPhysicalDeleteAsync(
+                documentId,
+                expectedStateVersion,
+                actor,
+                cancellationToken))
+        {
+            throw new DocumentNotFoundException();
+        }
     }
 
     private async Task<DocumentUploadResult> UploadPendingAsync(PendingDocumentUpload pending, CancellationToken cancellationToken)

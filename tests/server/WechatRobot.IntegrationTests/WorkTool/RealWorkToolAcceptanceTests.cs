@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 
@@ -50,27 +51,31 @@ public sealed class RealWorkToolAcceptanceTests
         {
             using var api = new HttpClient { BaseAddress = settings!.ApiBaseUrl };
             api.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.BearerToken);
+            var fromUtc = DateTime.UtcNow;
             var createAuditId = await ExecuteAuditedOperationAsync(api, new
             {
                 robotConfigId = settings.RobotConfigId, kind = "Create", groupIdentifier = settings.NewGroupName,
-                memberIds = settings.MemberIds, value = settings.Announcement
+                memberDisplayNames = settings.MemberDisplayNames, value = settings.Announcement
             }, TestContext.Current.CancellationToken);
             var renameAuditId = await ExecuteAuditedOperationAsync(api, new
             {
                 robotConfigId = settings.RobotConfigId, kind = "Rename", groupIdentifier = settings.NewGroupName,
-                memberIds = Array.Empty<string>(), value = settings.RenamedGroupName
+                memberDisplayNames = Array.Empty<string>(), value = settings.RenamedGroupName
             }, TestContext.Current.CancellationToken);
 
             await using var db = Database(settings.ConnectionString);
             var expectedIds = new[] { createAuditId, renameAuditId };
-            var audits = await db.WorkToolOperationAudits.AsNoTracking()
-                .Where(item => expectedIds.Contains(item.Id)).OrderBy(item => item.CreatedAtUtc)
-                .ToArrayAsync(TestContext.Current.CancellationToken);
+            var audits = await WaitForFinalOperationResultsAsync(
+                db,
+                expectedIds,
+                TimeSpan.FromMinutes(2),
+                TestContext.Current.CancellationToken);
+            var toUtc = DateTime.UtcNow;
             if (audits.Length != 2
                 || !RealAcceptanceEvidenceVerifier.ExactOperation(audits, OperationExpectation(createAuditId, 206,
-                    settings.RobotConfigId, "Create", settings.NewGroupName, settings.MemberIds, settings.Announcement, settings.OperatorName))
+                    settings.RobotConfigId, "Create", settings.NewGroupName, settings.MemberDisplayNames, settings.Announcement, settings.OperatorName, fromUtc, toUtc))
                 || !RealAcceptanceEvidenceVerifier.ExactOperation(audits, OperationExpectation(renameAuditId, 207,
-                    settings.RobotConfigId, "Rename", settings.NewGroupName, [], settings.RenamedGroupName, settings.OperatorName)))
+                    settings.RobotConfigId, "Rename", settings.NewGroupName, [], settings.RenamedGroupName, settings.OperatorName, fromUtc, toUtc)))
                 throw new RealAcceptanceVerificationException("group-mutation-exact-audit-mismatch");
             foreach (var audit in audits)
                 TestContext.Current.TestOutputHelper?.WriteLine("group-mutation utc={0:O} auditId={1:D} command={2}", audit.CreatedAtUtc, audit.Id, audit.WorkToolCommandNumber);
@@ -284,14 +289,43 @@ public sealed class RealWorkToolAcceptanceTests
         using var json = JsonDocument.Parse(payload);
         return json.RootElement.TryGetProperty("AtList", out var list) && list.ValueKind == JsonValueKind.Array && list.GetArrayLength() > 0;
     }
-    private static RealOperationExpectation OperationExpectation(Guid auditId, int command, Guid robotConfigId,
-        string operation, string groupIdentifier, IReadOnlyList<string> memberIds, string value, string operatorName)
+    private static async Task<WorkToolOperationAuditEntity[]> WaitForFinalOperationResultsAsync(
+        WechatRobotDbContext db,
+        IReadOnlyList<Guid> auditIds,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
     {
-        var normalizedMembers = memberIds.Select(item => item.Trim()).OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        var deadline = DateTime.UtcNow.Add(timeout);
+        WorkToolOperationAuditEntity[] audits;
+        do
+        {
+            audits = await db.WorkToolOperationAudits.AsNoTracking()
+                .Where(item => auditIds.Contains(item.Id))
+                .OrderBy(item => item.CreatedAtUtc)
+                .ToArrayAsync(cancellationToken);
+            if (audits.Length == auditIds.Count &&
+                audits.All(item => item.Status is
+                    WorkToolCommandStatuses.ExecutedSucceeded or
+                    WorkToolCommandStatuses.ExecutedPartially or
+                    WorkToolCommandStatuses.ExecutedFailed or
+                    WorkToolCommandStatuses.Rejected or
+                    WorkToolCommandStatuses.DeliveryUnknown or
+                    WorkToolCommandStatuses.ResultTimeout))
+                return audits;
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        } while (DateTime.UtcNow < deadline);
+        return audits;
+    }
+
+    private static RealOperationExpectation OperationExpectation(Guid auditId, int command, Guid robotConfigId,
+        string operation, string groupIdentifier, IReadOnlyList<string> memberDisplayNames, string value, string operatorName,
+        DateTime fromUtc, DateTime toUtc)
+    {
+        var normalizedMembers = memberDisplayNames.Select(item => item.Trim()).OrderBy(item => item, StringComparer.Ordinal).ToArray();
         var normalizedValue = value.Trim();
-        return new(auditId, "Succeeded", command, robotConfigId, groupIdentifier.Trim(), operation,
+        return new(auditId, command, robotConfigId, groupIdentifier.Trim(), operation,
             normalizedMembers.Length, Hash(string.Join("\n", normalizedMembers)), normalizedValue.Length,
-            Hash(normalizedValue), operatorName.Trim());
+            Hash(normalizedValue), operatorName.Trim(), fromUtc, toUtc);
     }
     private static bool WasMentioned(string payload)
     {
@@ -355,7 +389,7 @@ public sealed class RealWorkToolAcceptanceTests
 
     private sealed record MutationSettings(
         Uri ApiBaseUrl, string BearerToken, string ConnectionString, Guid RobotConfigId,
-        string NewGroupName, string RenamedGroupName, string Announcement, string[] MemberIds, string OperatorName)
+        string NewGroupName, string RenamedGroupName, string Announcement, string[] MemberDisplayNames, string OperatorName)
     {
         public static MutationSettings? TryLoad()
         {
@@ -367,14 +401,14 @@ public sealed class RealWorkToolAcceptanceTests
             var newGroup = Required("WORKTOOL_GROUP_MUTATION_NEW_GROUP");
             var renamed = Required("WORKTOOL_GROUP_MUTATION_RENAMED_GROUP");
             var announcement = Required("WORKTOOL_GROUP_MUTATION_ANNOUNCEMENT");
-            var members = Required("WORKTOOL_GROUP_MUTATION_MEMBER_IDS");
+            var members = Required("WORKTOOL_GROUP_MUTATION_MEMBER_DISPLAY_NAMES");
             var operatorName = Required("WORKTOOL_GROUP_MUTATION_OPERATOR");
             var confirmed = Required("WORKTOOL_GROUP_MUTATION_TARGET_CONFIRMED");
             if (apiBase is null || bearer is null || connection is null || !Guid.TryParse(robot, out var robotId) || newGroup is null
                 || renamed is null || announcement is null || members is null || operatorName is null || confirmed != newGroup
                 || !Uri.TryCreate(apiBase, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) return null;
-            var memberIds = members.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            return memberIds.Length == 0 ? null : new(uri, bearer, connection, robotId, newGroup, renamed, announcement, memberIds, operatorName);
+            var memberDisplayNames = members.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return memberDisplayNames.Length == 0 ? null : new(uri, bearer, connection, robotId, newGroup, renamed, announcement, memberDisplayNames, operatorName);
         }
     }
 

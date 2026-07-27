@@ -27,13 +27,13 @@ public sealed class RobotSendWorker(IServiceScopeFactory scopeFactory, TimeProvi
         {
             if (!await repository.EnsureSendEnabledAsync(command, cancellationToken)) return true;
             sendGateHeld = true;
-            if (!await repository.MarkSendExternalInFlightAsync(command, timeProvider.GetUtcNow().UtcDateTime, cancellationToken))
+            if (!await repository.MarkSendDispatchingAsync(command, timeProvider.GetUtcNow().UtcDateTime, cancellationToken))
                 return true;
             externalDispatchStarted = true;
             var client = scope.ServiceProvider.GetRequiredService<IWorkToolClient>();
             using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var renewal = RenewLeasesUntilSendCompletesAsync(repository, command, renewalCancellation.Token);
-            WorkToolSendResult result;
+            WorkToolCommandSubmission result;
             try
             {
                 result = await client.SendTextAsync(new WorkToolSendRequest(command.RobotConfigId, command.GroupName, command.Text,
@@ -44,22 +44,28 @@ public sealed class RobotSendWorker(IServiceScopeFactory scopeFactory, TimeProvi
                 renewalCancellation.Cancel();
                 await renewal;
             }
-            if (result.Succeeded)
+            if (result.Accepted &&
+                !string.IsNullOrWhiteSpace(result.MessageId) &&
+                result.MessageId.Length <= WorkToolCommandResultDto.MaximumMessageIdLength)
             {
-                await repository.CompleteSendCommandAsync(command, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+                await repository.MarkSendAcceptedAsync(
+                    command,
+                    result.MessageId,
+                    timeProvider.GetUtcNow().UtcDateTime,
+                    cancellationToken);
             }
             else
             {
-                if (result.DeliveryMayHaveOccurred)
-                    await repository.MarkSendDeliveryUncertainAsync(command, result.FailureReason ?? "WorkTool delivery outcome is unknown.", timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+                if (result.Accepted || result.DeliveryMayHaveOccurred)
+                    await repository.MarkSendDeliveryUnknownAsync(command, "WorkTool delivery outcome is unknown.", timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
                 else
-                    await repository.FailSendCommandAsync(command, result.FailureReason ?? "WorkTool send failed.", timeProvider.GetUtcNow().UtcDateTime, SendCommandService.GetRetryDelay(command.AttemptCount + 1), cancellationToken);
+                    await repository.MarkSendRejectedAsync(command, result.FailureCode ?? "worktool_rejected", timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
             }
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
             if (externalDispatchStarted)
-                await repository.MarkSendDeliveryUncertainAsync(command, "WorkTool delivery outcome is unknown.", timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+                await repository.MarkSendDeliveryUnknownAsync(command, "WorkTool delivery outcome is unknown.", timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
             else
                 await repository.FailSendCommandAsync(command, "WorkTool send failed before dispatch.", timeProvider.GetUtcNow().UtcDateTime, SendCommandService.GetRetryDelay(command.AttemptCount + 1), cancellationToken);
         }

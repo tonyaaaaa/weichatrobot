@@ -127,7 +127,7 @@ public sealed class InboundMessageProcessorTests
         public GroundedAnswerResult? Result { get; private set; }
         public GroundedAnswerResult? HandoffResult { get; private set; }
         public int RenewCount { get; private set; }
-        public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, bool wasMentioned, CancellationToken token) =>
+        public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, string? groupRemark, bool wasMentioned, CancellationToken token) =>
             Task.FromResult(new InboundPolicyDecision(messageId, InboundPolicyDecisionKind.Proceed, Request.GroupProfileId, null, "{}"));
         public Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token) => Task.CompletedTask;
         public Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token) => Task.FromResult(Request);

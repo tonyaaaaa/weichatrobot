@@ -5,14 +5,21 @@ import {
   ElSkeleton, ElTable, ElTableColumn, ElTag
 } from 'element-plus';
 import { knowledgeReviewApi, type CandidateDetail, type CandidateSummary, type KnowledgeReviewApi } from '../../api/knowledge';
+import { knowledgeTagApi, type KnowledgeTagApi } from '../../api/knowledgeTags';
+import KnowledgeTagSelector from '../../components/knowledge/KnowledgeTagSelector.vue';
 import { formatBeijingTime } from '../../utils/beijingTime';
 import { safeEvidence } from '../../utils/evidenceRedaction';
-import { parseKnowledgeTagIds } from '../../utils/knowledgeTagIds';
 
-const props = withDefaults(defineProps<{ api?: KnowledgeReviewApi }>(), { api: () => knowledgeReviewApi });
+const props = withDefaults(defineProps<{
+  api?: KnowledgeReviewApi;
+  tagApi?: Pick<KnowledgeTagApi, 'options'>;
+}>(), {
+  api: () => knowledgeReviewApi,
+  tagApi: () => knowledgeTagApi
+});
 const loading = ref(true); const busy = ref(false); const error = ref(''); const notice = ref('');
 const items = ref<CandidateSummary[]>([]); const total = ref(0); const page = ref(1); const pageSize = 20;
-const status = ref('pending'); const detail = ref<CandidateDetail>(); const revisedAnswer = ref(''); const tagText = ref('');
+const status = ref('pending'); const detail = ref<CandidateDetail>(); const revisedAnswer = ref(''); const selectedTagIds = ref<string[]>([]);
 const tagError = ref('');
 async function load() {
   loading.value = true; error.value = '';
@@ -25,22 +32,22 @@ async function select(id: string) {
   busy.value = true; error.value = '';
   try {
     detail.value = await props.api.getCandidate(id); revisedAnswer.value = detail.value.answer;
-    tagText.value = ''; tagError.value = '';
+    selectedTagIds.value = []; tagError.value = '';
   }
   catch { error.value = '候选知识详情加载失败。'; } finally { busy.value = false; }
 }
 async function review(decision: 'approve' | 'reject') {
   if (!detail.value) return;
-  const parsed = decision === 'approve'
-    ? parseKnowledgeTagIds(tagText.value, '批准时至少填写一个有效的知识标签 ID。')
-    : { tagIds: [], error: '' };
-  tagError.value = parsed.error;
+  const tagIds = decision === 'approve' ? selectedTagIds.value : [];
+  tagError.value = decision === 'approve' && tagIds.length === 0
+    ? '批准时至少选择一个已启用的知识标签。'
+    : '';
   if (tagError.value) return;
   if (!window.confirm(decision === 'approve' ? '确认批准该答案并进入索引流程？' : '确认拒绝该候选答案？')) return;
   busy.value = true; error.value = '';
   try {
     const result = await props.api.reviewCandidate(detail.value.id, {
-      decision, revisedAnswer: revisedAnswer.value, tagIds: parsed.tagIds,
+      decision, revisedAnswer: revisedAnswer.value, tagIds,
       idempotencyKey: crypto.randomUUID(), expectedVersion: detail.value.version
     });
     notice.value = `审核已提交，状态：${result.status}`; detail.value = undefined; await load();
@@ -71,9 +78,14 @@ onMounted(load);
         <template v-else>
           <dl><dt>问题</dt><dd>{{ detail.question }}</dd><dt>当前状态</dt><dd><ElTag effect="plain">{{ detail.status }}</ElTag></dd><dt>证据（已移除秘密字段）</dt><dd><pre>{{ safeEvidence(detail.evidenceJson || '无') }}</pre></dd></dl>
           <label for="revised-answer">审核后的答案</label><ElInput id="revised-answer" v-model="revisedAnswer" type="textarea" :rows="6" />
-          <label for="candidate-tags">知识标签 ID（批准时必填）</label>
-          <ElInput id="candidate-tags" v-model="tagText" :aria-invalid="Boolean(tagError)" aria-describedby="candidate-tag-help candidate-tag-error" @input="tagError = ''" />
-          <p id="candidate-tag-help" class="helper">当前页面尚未提供标签列表，请手动填写已启用标签的 UUID；多个标签用逗号分隔，采用任一标签匹配（OR），拒绝时无需填写。</p>
+          <label>知识标签（批准时必填）</label>
+          <KnowledgeTagSelector
+            v-model="selectedTagIds"
+            :api="tagApi"
+            aria-label="审核知识标签"
+            @update:model-value="tagError = ''"
+          />
+          <p class="helper">批准时至少选择一个已启用标签；多个标签采用任一匹配（OR），拒绝时无需选择。</p>
           <p v-if="tagError" id="candidate-tag-error" data-testid="candidate-tag-error" class="field-error" role="alert">{{ tagError }}</p>
           <div class="actions"><ElButton data-testid="approve-candidate" type="primary" :loading="busy" @click="review('approve')">批准并索引</ElButton><ElButton data-testid="reject-candidate" type="danger" plain :disabled="busy" @click="review('reject')">拒绝</ElButton></div>
         </template>

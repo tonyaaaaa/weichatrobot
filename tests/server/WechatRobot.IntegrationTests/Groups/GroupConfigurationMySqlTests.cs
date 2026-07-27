@@ -75,7 +75,8 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         {
             includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = new[] { product.Id, support.Id },
             context = new { senderIsolated = (bool?)null, historyTurns = (int?)null, idleTimeoutMinutes = (int?)null, tokenCap = (int?)null, summaryEnabled = (bool?)null, includeBotHistory = (bool?)null },
-            clearContext = false
+            clearContext = false,
+            expectedConfigurationVersion = 0
         }, TestContext.Current.CancellationToken);
 
         response.EnsureSuccessStatusCode();
@@ -115,7 +116,8 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         {
             includeRules = Array.Empty<object>(), excludeRules = Array.Empty<object>(), boundTagIds = Array.Empty<Guid>(),
             context = new { senderIsolated = false, historyTurns = 6, idleTimeoutMinutes = 30, tokenCap = 3000, summaryEnabled = true, includeBotHistory = true },
-            clearContext = true
+            clearContext = true,
+            expectedConfigurationVersion = 0
         }, TestContext.Current.CancellationToken);
 
         response.EnsureSuccessStatusCode();

@@ -191,18 +191,24 @@ public sealed class HealthTests
     }
 
     [Theory]
-    [InlineData("/api/auth/login", RateLimitPolicies.Login)]
-    [InlineData("/api/worktool/callback/{robotCode}", RateLimitPolicies.Callback)]
-    [InlineData("/api/knowledge/documents", RateLimitPolicies.Upload)]
-    [InlineData("/api/admin/worktool/group-operations/execute", RateLimitPolicies.WorkToolCommands)]
-    [InlineData("/api/admin/health/ready", RateLimitPolicies.Ordinary)]
-    public void Sensitive_endpoint_families_have_distinct_rate_limit_policies(string route, string policy)
+    [InlineData("POST", "/api/auth/login", RateLimitPolicies.Login)]
+    [InlineData("POST", "/api/worktool/callback/{robotCode}", RateLimitPolicies.Callback)]
+    [InlineData("POST", "/api/knowledge/documents", RateLimitPolicies.Upload)]
+    [InlineData("POST", "/api/admin/worktool/group-operations/execute", RateLimitPolicies.WorkToolCommands)]
+    [InlineData("GET", "/api/admin/health/ready", RateLimitPolicies.Ordinary)]
+    [InlineData("GET", "/api/admin/dashboard/summary", RateLimitPolicies.Ordinary)]
+    public void Sensitive_endpoint_families_have_distinct_rate_limit_policies(
+        string method,
+        string route,
+        string policy)
     {
         using var factory = new HealthApiFactory([Healthy("MySQL", true)]);
         var endpoint = factory.Services.GetServices<EndpointDataSource>()
             .SelectMany(source => source.Endpoints)
             .OfType<RouteEndpoint>()
-            .Single(value => value.RoutePattern.RawText?.TrimEnd('/') == route.TrimEnd('/'));
+            .Single(value =>
+                value.RoutePattern.RawText?.TrimEnd('/') == route.TrimEnd('/') &&
+                value.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods.Contains(method) == true);
 
         Assert.Equal(policy, endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName);
     }

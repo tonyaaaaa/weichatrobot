@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -19,7 +17,55 @@ public static class WorkToolCallbackEndpoints
         endpoints.MapPost("/api/worktool/config-callback/{robotCode}", HandleConfigurationCallbackAsync)
             .AllowAnonymous()
             .RequireRateLimiting(WorkToolCallbackRateLimitPolicy.Name);
+        endpoints.MapPost("/api/worktool/command-results/{robotCode}", HandleCommandResultAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting(WorkToolCallbackRateLimitPolicy.Name);
         return endpoints;
+    }
+
+    private static async Task<IResult> HandleCommandResultAsync(
+        string robotCode,
+        string? token,
+        WorkToolCommandResultDto result,
+        WechatRobotDbContext database,
+        WorkToolCommandResultProcessor processor,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("WorkToolCommandResultCallback");
+        if (!WorkToolCallbackDto.IsIdentifierWithinLimit(robotCode))
+            return Results.BadRequest();
+
+        var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(
+            config => config.CallbackRouteCode == robotCode && config.IsEnabled,
+            cancellationToken);
+        if (robot is null || !WorkToolCallbackSecretVerifier.Matches(
+                token,
+                robot.CallbackSecretHash,
+                robot.PreviousCallbackSecretHash,
+                robot.PreviousCallbackSecretExpiresAtUtc,
+                DateTime.UtcNow))
+        {
+            logger.LogWarning("WorkTool command-result callback rejected: authentication failed.");
+            return Results.Unauthorized();
+        }
+
+        if (!result.IsValid(out var reason))
+        {
+            logger.LogWarning("WorkTool command-result callback rejected: {Reason}.", reason);
+            return Results.BadRequest();
+        }
+
+        try
+        {
+            await processor.ProcessAsync(robot.Id, result, cancellationToken);
+            return Results.Json(new WorkToolCallbackAcceptedResponse());
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogError("WorkTool command-result callback persistence failed.");
+            return Results.StatusCode(StatusCodes.Status500InternalServerError);
+        }
     }
 
     private static async Task<IResult> HandleConfigurationCallbackAsync(
@@ -62,7 +108,12 @@ public static class WorkToolCallbackEndpoints
         try
         {
             var robot = await database.RobotConfigs.SingleOrDefaultAsync(config => config.CallbackRouteCode == robotCode && config.IsEnabled, ingestionToken);
-            if (robot is null || !SecretMatches(token, robot.CallbackSecretHash))
+            if (robot is null || !WorkToolCallbackSecretVerifier.Matches(
+                    token,
+                    robot.CallbackSecretHash,
+                    robot.PreviousCallbackSecretHash,
+                    robot.PreviousCallbackSecretExpiresAtUtc,
+                    DateTime.UtcNow))
             {
                 logger.LogWarning("WorkTool callback rejected: authentication failed.");
                 return Results.Unauthorized();
@@ -88,25 +139,6 @@ public static class WorkToolCallbackEndpoints
         }
 
         return Results.Json(new WorkToolCallbackAcceptedResponse());
-    }
-
-    private static bool SecretMatches(string? submittedSecret, string storedHash)
-    {
-        if (string.IsNullOrWhiteSpace(submittedSecret) || string.IsNullOrWhiteSpace(storedHash))
-        {
-            return false;
-        }
-
-        try
-        {
-            var submittedHash = SHA256.HashData(Encoding.UTF8.GetBytes(submittedSecret));
-            var configuredHash = Convert.FromHexString(storedHash);
-            return configuredHash.Length == submittedHash.Length && CryptographicOperations.FixedTimeEquals(submittedHash, configuredHash);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
     }
 
     private sealed class WorkToolCallbackAcceptedResponse

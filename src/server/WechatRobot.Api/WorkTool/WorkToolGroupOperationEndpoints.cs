@@ -7,6 +7,7 @@ using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
+using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Api.Security;
 using WechatRobot.Application.Security;
 
@@ -23,8 +24,12 @@ public static class WorkToolGroupOperationEndpoints
             .RequireRateLimiting(RateLimitPolicies.WorkToolCommands);
         group.MapGet("/robots", ListRobotsAsync);
         group.MapPut("/robots/{id:guid}", UpsertRobotAsync);
-        group.MapPost("/robots/{id:guid}/test-connection", TestRobotConnectionAsync);
-        group.MapPost("/robots/{id:guid}/callbacks/bind", BindRobotCallbackAsync);
+        group.MapPost("/robots/{id:guid}/test-connection", ProbeRobotAsync);
+        group.MapGet("/robots/{id:guid}/probe", ProbeRobotAsync);
+        group.MapPost("/robots/{id:guid}/message-callback/configure", ConfigureMessageCallbackAsync);
+        group.MapPost("/robots/{id:guid}/command-result-callback/configure", ConfigureCommandResultCallbackAsync);
+        group.MapGet("/robots/{id:guid}/callbacks", GetRobotCallbacksAsync);
+        group.MapDelete("/robots/{id:guid}/callbacks/{type:int}", DeleteRobotCallbackAsync);
         group.MapGet("/groups", ListGroupsAsync);
         group.MapPost("/groups/register", RegisterExistingGroupAsync);
         group.MapGet("/group-operations", ListOperationsAsync);
@@ -37,111 +42,344 @@ public static class WorkToolGroupOperationEndpoints
     private static async Task<IResult> ListRobotsAsync(WechatRobotDbContext database, CancellationToken cancellationToken)
     {
         var robots = await database.RobotConfigs.AsNoTracking().OrderBy(robot => robot.Name).ToArrayAsync(cancellationToken);
-        return Results.Ok(robots.Select(robot => new RobotResponse(robot.Id, robot.Name, "configured", robot.IsEnabled)));
+        return Results.Ok(robots.Select(ToRobotResponse));
     }
 
     private static async Task<IResult> UpsertRobotAsync(Guid id, UpdateRobotRequest request, WechatRobotDbContext database,
-        ISecretProtector protector, CancellationToken cancellationToken)
+        ISecretProtector protector, GroupOperationConfirmationService confirmation, ClaimsPrincipal user,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 || string.IsNullOrWhiteSpace(request.WorkToolRobotId) || request.WorkToolRobotId.Length > 128)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["robot"] = ["Robot name and WorkTool robot ID are required."] });
+        if (!TryGetOperator(user, out var actor)) return Results.Forbid();
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 ||
+            request.WorkToolRobotId?.Length > 128 || request.SendRateLimitPerMinute is < 1 or > 60)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["robot"] = ["Robot settings are invalid."] });
 
-        await using var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(database, id, cancellationToken);
-        await using var transaction = database.Database.IsRelational() ? await database.Database.BeginTransactionAsync(cancellationToken) : null;
+        var isMySql = string.Equals(
+                database.Database.ProviderName,
+                "MySql.EntityFrameworkCore",
+                StringComparison.Ordinal);
+        await using var sendGate = isMySql
+            ? await MySqlRobotSendCoordinator.AcquireAsync(database, id, cancellationToken)
+            : null;
+        await using var transaction = isMySql
+            ? await database.Database.BeginTransactionAsync(cancellationToken)
+            : null;
         var robot = await database.RobotConfigs.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         var wasEnabled = robot?.IsEnabled;
+        var credentialChanged = !string.IsNullOrWhiteSpace(request.WorkToolRobotId);
+        if (robot is null && !credentialChanged)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["workToolRobotId"] = ["WorkTool robot ID is required for a new robot."] });
+        if (robot is null && request.IsEnabled)
+            return Results.Conflict(new { error = "robot-probe-required", message = "Create the robot disabled, test the connection, then enable it." });
+        if (robot?.IsEnabled == true && credentialChanged)
+            return Results.Conflict(new { error = "robot-disable-before-credential-rotation", message = "Disable the robot before replacing its WorkTool robot ID." });
+        if (robot?.IsEnabled == false && request.IsEnabled &&
+            (string.IsNullOrWhiteSpace(request.EnableConfirmationToken) ||
+             !confirmation.IsValid(request.EnableConfirmationToken, actor, EnablePayload(robot), DateTime.UtcNow)))
+            return Results.Conflict(new { error = "robot-probe-required", message = "A current successful connection test is required before enabling." });
         if (robot is null)
         {
+            var callbackSecret = GenerateCallbackSecret();
             robot = new RobotConfigEntity
             {
                 Id = id,
                 WorkToolRobotId = $"migrated-{Guid.NewGuid():N}",
                 CallbackRouteCode = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant(),
-                CallbackSecretHash = Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
+                CallbackSecretHash = Hash(callbackSecret),
+                EncryptedCallbackSecret = protector.Protect(callbackSecret)
             };
             database.RobotConfigs.Add(robot);
         }
         robot.Name = request.Name.Trim();
-        robot.EncryptedWorkToolRobotId = protector.Protect(request.WorkToolRobotId.Trim());
+        if (credentialChanged)
+            robot.EncryptedWorkToolRobotId = protector.Protect(request.WorkToolRobotId!.Trim());
         robot.CallbackRouteCode ??= Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
         robot.IsEnabled = request.IsEnabled;
+        robot.SendRateLimitPerMinute = request.SendRateLimitPerMinute;
+        robot.SendRateTokens = Math.Min(robot.SendRateTokens, request.SendRateLimitPerMinute);
         robot.UpdatedAtUtc = DateTime.UtcNow;
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
+        {
+            Actor = actor,
+            Action = wasEnabled.HasValue ? "robot.update" : "robot.create",
+            TargetType = "RobotConfig",
+            TargetId = robot.Id.ToString("D"),
+            SanitizedDetailJson = JsonSerializer.Serialize(new
+            {
+                credential = credentialChanged ? (wasEnabled.HasValue ? "rotated" : "configured") : "unchanged",
+                robot.IsEnabled,
+                robot.SendRateLimitPerMinute
+            })
+        });
         await database.SaveChangesAsync(cancellationToken);
         if (wasEnabled == true && !request.IsEnabled)
         {
-            await database.SendCommands.Where(command => command.RobotConfigId == id &&
-                    (command.Status == "pending" || command.Status == "retrying" || command.Status == "leased"))
-                .ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "blocked")
+            var commands = database.SendCommands.Where(command => command.RobotConfigId == id &&
+                (command.Status == "pending" || command.Status == "retrying" || command.Status == "leased"));
+            if (isMySql)
+                await commands.ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "blocked")
                     .SetProperty(command => command.LeaseOwner, (string?)null).SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
                     .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+            else
+                foreach (var command in await commands.ToArrayAsync(cancellationToken))
+                {
+                    command.Status = "blocked";
+                    command.LeaseOwner = null;
+                    command.LeaseExpiresAtUtc = null;
+                    command.Version++;
+                }
             robot.SendLeaseOwner = null; robot.SendLeaseExpiresAtUtc = null; robot.SendCoordinationVersion++;
             await database.SaveChangesAsync(cancellationToken);
         }
         else if (wasEnabled == false && request.IsEnabled)
         {
             var now = DateTime.UtcNow;
-            await database.SendCommands.Where(command => command.RobotConfigId == id && command.Status == "blocked")
-                .ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "pending")
+            var commands = database.SendCommands.Where(command => command.RobotConfigId == id && command.Status == "blocked");
+            if (isMySql)
+                await commands.ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "pending")
                     .SetProperty(command => command.NextAttemptAtUtc, now).SetProperty(command => command.LeaseOwner, (string?)null)
                     .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
                     .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+            else
+                foreach (var command in await commands.ToArrayAsync(cancellationToken))
+                {
+                    command.Status = "pending";
+                    command.NextAttemptAtUtc = now;
+                    command.LeaseOwner = null;
+                    command.LeaseExpiresAtUtc = null;
+                    command.Version++;
+                }
+            await database.SaveChangesAsync(cancellationToken);
         }
         if (transaction is not null) await transaction.CommitAsync(cancellationToken);
-        return Results.Ok(new RobotResponse(robot.Id, robot.Name, "configured", robot.IsEnabled));
+        return Results.Ok(ToRobotResponse(robot));
     }
 
-    private static async Task<IResult> TestRobotConnectionAsync(Guid id, WechatRobotDbContext database, IWorkToolClient client, CancellationToken cancellationToken)
+    private static async Task<IResult> ProbeRobotAsync(
+        Guid id,
+        WechatRobotDbContext database,
+        RobotCallbackConfigurationService service,
+        GroupOperationConfirmationService confirmation,
+        ClaimsPrincipal user,
+        CancellationToken cancellationToken)
     {
+        if (!TryGetOperator(user, out var actor)) return Results.Forbid();
         var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (robot is null) return Results.NotFound();
         try
         {
-            var result = await client.TestConnectionAsync(robot.Id, cancellationToken);
-            return result.Succeeded ? Results.Ok(new CommandStatusResponse(true, "Connection test succeeded.")) : Results.Problem("WorkTool connection test failed.", statusCode: 502);
+            var result = await service.ProbeAsync(robot.Id, cancellationToken);
+            var expiresAtUtc = DateTime.UtcNow.Add(ConfirmationLifetime);
+            var enableToken = result.Reachable
+                ? confirmation.Issue(actor, EnablePayload(robot), DateTime.UtcNow, ConfirmationLifetime)
+                : null;
+            return Results.Ok(new RobotProbeResponse(
+                result.Reachable,
+                result.Online,
+                result.MessageCallbackEnabled,
+                result.ReplyAllEnabled,
+                result.FailureCode,
+                enableToken,
+                enableToken is null ? null : expiresAtUtc));
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { return Results.Problem("WorkTool connection test failed.", statusCode: 502); }
     }
 
-    private static async Task<IResult> BindRobotCallbackAsync(
+    private static async Task<IResult> ConfigureMessageCallbackAsync(
         Guid id,
-        BindRobotCallbackRequest request,
-        WechatRobotDbContext database,
-        IWorkToolClient client,
+        ConfigureMessageCallbackRequest request,
+        ClaimsPrincipal user,
+        RobotCallbackConfigurationService service,
         IHostEnvironment environment,
         CancellationToken cancellationToken)
     {
-        if (request.Type is not (0 or 1 or 5 or 6) ||
-            !Uri.TryCreate(request.PublicBaseUrl, UriKind.Absolute, out var baseUri) ||
-            (baseUri.Scheme != Uri.UriSchemeHttps && !(environment.IsDevelopment() || environment.IsEnvironment("Testing"))))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["callback"] = ["Type must be 0, 1, 5, or 6 and the public base URL must use HTTPS."] });
-        var robot = await database.RobotConfigs.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.Id == id && item.IsEnabled, cancellationToken);
-        if (robot is null || string.IsNullOrWhiteSpace(robot.CallbackRouteCode)) return Results.NotFound();
-        var callbackUrl = new Uri(baseUri, $"/api/worktool/config-callback/{robot.CallbackRouteCode}");
+        if (!TryGetOperator(user, out var actor)) return Results.Forbid();
+        if (!TryParsePublicBaseUri(request.PublicBaseUrl, environment, out var baseUri))
+            return InvalidCallbackBaseUrl();
         try
         {
-            var result = await client.BindCallbackAsync(id, request.Type, callbackUrl, cancellationToken);
+            var result = await service.ConfigureMessageCallbackAsync(
+                id,
+                baseUri!,
+                request.ReplyAll,
+                actor,
+                cancellationToken);
             return result.Succeeded
-                ? Results.Ok(new CallbackBindingResponse(true, request.Type, callbackUrl.AbsoluteUri, "Callback bound."))
-                : Results.Problem("WorkTool callback binding failed.", statusCode: StatusCodes.Status502BadGateway);
+                ? Results.Ok(new RobotCallbackMutationResponse(true))
+                : Results.Problem("WorkTool message callback configuration failed.", statusCode: StatusCodes.Status502BadGateway);
         }
+        catch (RobotCallbackConfigurationNotFoundException) { return Results.NotFound(); }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            return Results.Problem("WorkTool callback binding failed.", statusCode: StatusCodes.Status502BadGateway);
+            return Results.Problem("WorkTool message callback configuration failed.", statusCode: StatusCodes.Status502BadGateway);
         }
     }
 
+    private static async Task<IResult> ConfigureCommandResultCallbackAsync(
+        Guid id,
+        ConfigureCommandResultCallbackRequest request,
+        ClaimsPrincipal user,
+        RobotCallbackConfigurationService service,
+        IHostEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOperator(user, out var actor)) return Results.Forbid();
+        if (!TryParsePublicBaseUri(request.PublicBaseUrl, environment, out var baseUri))
+            return InvalidCallbackBaseUrl();
+        try
+        {
+            var result = await service.ConfigureCommandResultCallbackAsync(
+                id,
+                baseUri!,
+                actor,
+                cancellationToken);
+            return result.Succeeded
+                ? Results.Ok(new RobotCallbackMutationResponse(true))
+                : Results.Problem("WorkTool command-result callback configuration failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+        catch (RobotCallbackConfigurationNotFoundException) { return Results.NotFound(); }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Results.Problem("WorkTool command-result callback configuration failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private static async Task<IResult> GetRobotCallbacksAsync(
+        Guid id,
+        WechatRobotDbContext database,
+        RobotCallbackConfigurationService service,
+        CancellationToken cancellationToken)
+    {
+        if (!await database.RobotConfigs.AsNoTracking().AnyAsync(
+                item => item.Id == id && item.IsEnabled,
+                cancellationToken))
+            return Results.NotFound();
+        try
+        {
+            var status = await service.GetStatusAsync(id, cancellationToken);
+            return Results.Ok(new RobotCallbackStatusResponse(
+                status.MessageCallbackConfigured,
+                status.CommandResultCallbackConfigured,
+                status.ReplyAll,
+                status.CheckedAtUtc));
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Results.Problem("WorkTool callback query failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private static async Task<IResult> DeleteRobotCallbackAsync(
+        Guid id,
+        int type,
+        ClaimsPrincipal user,
+        RobotCallbackConfigurationService service,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetOperator(user, out var actor)) return Results.Forbid();
+        if (type != 1)
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["type"] = ["Only WorkTool command-result callback type 1 is managed."]
+            });
+        try
+        {
+            var result = await service.DeleteEventCallbackAsync(
+                id,
+                type,
+                actor,
+                cancellationToken);
+            return result.Succeeded
+                ? Results.Ok(new RobotCallbackMutationResponse(true))
+                : Results.Problem("WorkTool callback deletion failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Results.Problem("WorkTool callback deletion failed.", statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private static bool TryParsePublicBaseUri(
+        string value,
+        IHostEnvironment environment,
+        out Uri? uri)
+    {
+        uri = null;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var candidate) ||
+            !string.IsNullOrEmpty(candidate.UserInfo) ||
+            !string.IsNullOrEmpty(candidate.Query) ||
+            !string.IsNullOrEmpty(candidate.Fragment) ||
+            candidate.AbsolutePath != "/" ||
+            (candidate.Scheme != Uri.UriSchemeHttps &&
+             !(candidate.Scheme == Uri.UriSchemeHttp &&
+               (environment.IsDevelopment() || environment.IsEnvironment("Testing")))))
+            return false;
+        uri = candidate;
+        return true;
+    }
+
+    private static IResult InvalidCallbackBaseUrl() =>
+        Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["publicBaseUrl"] = ["Public base URL must be an HTTPS origin without credentials, path, query, or fragment."]
+        });
+
     private static async Task<IResult> ListGroupsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) =>
-        Results.Ok(await database.GroupProfiles.AsNoTracking().OrderBy(group => group.Name).Select(group => new KnownGroupResponse(group.Id, group.RobotConfigId, group.ExternalGroupId, group.Name)).ToArrayAsync(cancellationToken));
+        Results.Ok(await (
+            from profile in database.GroupProfiles.AsNoTracking()
+            join robot in database.RobotConfigs.AsNoTracking()
+                on profile.RobotConfigId equals robot.Id
+            orderby profile.Name, profile.Id
+            select new KnownGroupResponse(
+                profile.Id,
+                profile.RobotConfigId,
+                robot.Name,
+                profile.Name,
+                profile.WorkToolGroupRemark,
+                profile.IsEnabled,
+                profile.UpdatedAtUtc))
+            .ToArrayAsync(cancellationToken));
 
     private static async Task<IResult> RegisterExistingGroupAsync(RegisterExistingGroupRequest request, WechatRobotDbContext database, CancellationToken cancellationToken)
     {
-        if (!request.ManualInvitationCompleted || string.IsNullOrWhiteSpace(request.ExternalGroupId) || string.IsNullOrWhiteSpace(request.Name))
+        var name = request.Name?.Trim();
+        var remark = string.IsNullOrWhiteSpace(request.WorkToolGroupRemark)
+            ? null
+            : request.WorkToolGroupRemark.Trim();
+        if (!request.ManualInvitationCompleted || string.IsNullOrWhiteSpace(name) ||
+            name.Length > 256 || remark?.Length > 256)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["group"] = ["A human must first invite the robot in Enterprise WeChat before registering an existing group."] });
-        if (!await database.RobotConfigs.AnyAsync(robot => robot.Id == request.RobotConfigId && robot.IsEnabled, cancellationToken)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] });
-        var existing = await database.GroupProfiles.SingleOrDefaultAsync(group => group.RobotConfigId == request.RobotConfigId && group.ExternalGroupId == request.ExternalGroupId.Trim(), cancellationToken);
-        if (existing is null) { existing = new GroupProfileEntity { RobotConfigId = request.RobotConfigId, ExternalGroupId = request.ExternalGroupId.Trim(), Name = request.Name.Trim() }; database.GroupProfiles.Add(existing); await database.SaveChangesAsync(cancellationToken); }
-        return Results.Ok(new KnownGroupResponse(existing.Id, existing.RobotConfigId, existing.ExternalGroupId, existing.Name));
+        var robot = await database.RobotConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == request.RobotConfigId && item.IsEnabled, cancellationToken);
+        if (robot is null) return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] });
+        var matches = await database.GroupProfiles
+            .Where(group => group.RobotConfigId == request.RobotConfigId &&
+                            group.Name == name &&
+                            group.WorkToolGroupRemark == remark)
+            .Take(2)
+            .ToArrayAsync(cancellationToken);
+        if (matches.Length > 1)
+            return Results.Conflict(new { error = "More than one registered group has the same WorkTool name and remark." });
+        var existing = matches.SingleOrDefault();
+        if (existing is null)
+        {
+            existing = new GroupProfileEntity
+            {
+                RobotConfigId = request.RobotConfigId,
+                Name = name,
+                WorkToolGroupRemark = remark
+            };
+            database.GroupProfiles.Add(existing);
+            await database.SaveChangesAsync(cancellationToken);
+        }
+        return Results.Ok(new KnownGroupResponse(
+            existing.Id,
+            existing.RobotConfigId,
+            robot.Name,
+            existing.Name,
+            existing.WorkToolGroupRemark,
+            existing.IsEnabled,
+            existing.UpdatedAtUtc));
     }
 
     private static async Task<IResult> ListOperationsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) => Results.Ok(await database.WorkToolOperationAudits.AsNoTracking().OrderByDescending(item => item.CreatedAtUtc).Take(100).Select(item => new AuditResponse(item.Id, item.Operation, item.WorkToolCommandNumber, item.Status, item.Result, item.CreatedAtUtc, item.SanitizedRequestJson)).ToArrayAsync(cancellationToken));
@@ -170,7 +408,7 @@ public static class WorkToolGroupOperationEndpoints
         var robot = await database.RobotConfigs.AsNoTracking().SingleOrDefaultAsync(item => item.Id == request.Operation.RobotConfigId && item.IsEnabled, cancellationToken);
         if (robot is null) { database.WorkToolOperationAudits.Add(NewAudit(operatorName, operation.Kind, sanitized, "Rejected", "Enabled robot was not found.")); await database.SaveChangesAsync(cancellationToken); return Results.ValidationProblem(new Dictionary<string, string[]> { ["robotConfigId"] = ["Enabled robot was not found."] }); }
         confirmationRow!.ConsumedAtUtc = now; confirmationRow.Version++;
-        var audit = NewAudit(operatorName, operation.Kind, sanitized, "Queued", null);
+        var audit = NewAudit(operatorName, operation.Kind, sanitized, WorkToolCommandStatuses.Queued, null);
         audit.RobotConfigId = robot.Id;
         audit.EncryptedCommandJson = protector.Protect(JsonSerializer.Serialize(operation with { RobotConfigId = robot.Id }));
         database.WorkToolOperationAudits.Add(audit);
@@ -183,12 +421,12 @@ public static class WorkToolGroupOperationEndpoints
     private static bool TryBuild(GroupOperationRequest request, out WorkToolGroupOperationRequest operation, out string sanitized, out string? error)
     {
         operation = default!; sanitized = string.Empty; error = null;
-        if (!Enum.TryParse<WorkToolGroupOperationKind>(request.Kind, true, out var kind) || string.IsNullOrWhiteSpace(request.GroupIdentifier) || request.GroupIdentifier.Length > 256 || request.MemberIds.Count > 100 || request.MemberIds.Any(member => string.IsNullOrWhiteSpace(member) || member.Length > 128) || request.Value?.Length > 4000) { error = "Operation input is invalid."; return false; }
-        if (kind == WorkToolGroupOperationKind.Create && request.MemberIds.Count == 0) { error = "New groups require at least one member."; return false; }
-        if (kind is WorkToolGroupOperationKind.AddMembers or WorkToolGroupOperationKind.RemoveMembers && request.MemberIds.Count == 0) { error = "Member changes require at least one member."; return false; }
+        if (!Enum.TryParse<WorkToolGroupOperationKind>(request.Kind, true, out var kind) || string.IsNullOrWhiteSpace(request.GroupIdentifier) || request.GroupIdentifier.Length > 256 || request.MemberDisplayNames.Count > 100 || request.MemberDisplayNames.Any(member => string.IsNullOrWhiteSpace(member) || member.Length > 128) || request.Value?.Length > 4000) { error = "Operation input is invalid."; return false; }
+        if (kind == WorkToolGroupOperationKind.Create && request.MemberDisplayNames.Count == 0) { error = "New groups require at least one member."; return false; }
+        if (kind is WorkToolGroupOperationKind.AddMembers or WorkToolGroupOperationKind.RemoveMembers && request.MemberDisplayNames.Count == 0) { error = "Member changes require at least one member."; return false; }
         if (kind is WorkToolGroupOperationKind.Rename or WorkToolGroupOperationKind.UpdateAnnouncement && string.IsNullOrWhiteSpace(request.Value)) { error = "This operation requires a value."; return false; }
-        operation = new WorkToolGroupOperationRequest(request.RobotConfigId, kind, request.GroupIdentifier.Trim(), request.MemberIds.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
-        sanitized = JsonSerializer.Serialize(new { robotConfigId = request.RobotConfigId, kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberIds.Count, memberIdsHash = Hash(string.Join("\n", operation.MemberIds)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
+        operation = new WorkToolGroupOperationRequest(request.RobotConfigId, kind, request.GroupIdentifier.Trim(), request.MemberDisplayNames.Select(member => member.Trim()).OrderBy(member => member, StringComparer.Ordinal).ToArray(), request.Value?.Trim());
+        sanitized = JsonSerializer.Serialize(new { robotConfigId = request.RobotConfigId, kind = kind.ToString(), groupIdentifier = operation.GroupIdentifier, memberCount = operation.MemberDisplayNames.Count, memberDisplayNamesHash = Hash(string.Join("\n", operation.MemberDisplayNames)), valueLength = operation.Value?.Length ?? 0, valueHash = Hash(operation.Value ?? string.Empty) });
         return true;
     }
 
@@ -206,14 +444,65 @@ public static class WorkToolGroupOperationEndpoints
         return operatorName.Length > 0;
     }
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    private static string GenerateCallbackSecret() =>
+        Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
     private static string? SafeResult(string? value) => string.IsNullOrWhiteSpace(value) ? value : value.Length > 512 ? value[..512] : value;
-    public sealed record UpdateRobotRequest(string Name, string WorkToolRobotId, bool IsEnabled);
-    public sealed record BindRobotCallbackRequest(int Type, string PublicBaseUrl);
-    public sealed record CallbackBindingResponse(bool Succeeded, int Type, string CallbackUrl, string Message);
-    public sealed record RobotResponse(Guid Id, string Name, string RobotReference, bool IsEnabled);
-    public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string ExternalGroupId, string Name, bool ManualInvitationCompleted);
-    public sealed record KnownGroupResponse(Guid Id, Guid RobotConfigId, string ExternalGroupId, string Name);
-    public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberIds, string? Value) { public IReadOnlyList<string> MemberIds { get; init; } = MemberIds ?? []; }
+    private static string EnablePayload(RobotConfigEntity robot) =>
+        JsonSerializer.Serialize(new { robotId = robot.Id, updatedAtUtc = robot.UpdatedAtUtc });
+    private static RobotResponse ToRobotResponse(RobotConfigEntity robot) => new(
+        robot.Id,
+        robot.Name,
+        robot.EncryptedWorkToolRobotId is null ? "missing" : "configured",
+        robot.EncryptedWorkToolRobotId is not null,
+        robot.IsEnabled,
+        robot.SendRateLimitPerMinute,
+        robot.UpdatedAtUtc);
+    public sealed record UpdateRobotRequest(
+        string Name,
+        string? WorkToolRobotId,
+        bool IsEnabled,
+        int SendRateLimitPerMinute = 50,
+        string? EnableConfirmationToken = null);
+    public sealed record ConfigureMessageCallbackRequest(string PublicBaseUrl, bool ReplyAll);
+    public sealed record ConfigureCommandResultCallbackRequest(string PublicBaseUrl);
+    public sealed record RobotCallbackMutationResponse(bool Succeeded);
+    public sealed record RobotCallbackStatusResponse(
+        bool MessageCallbackConfigured,
+        bool CommandResultCallbackConfigured,
+        bool ReplyAll,
+        DateTime CheckedAtUtc);
+    public sealed record RobotProbeResponse(
+        bool Reachable,
+        bool? Online,
+        bool MessageCallbackEnabled,
+        bool ReplyAllEnabled,
+        string? FailureCode,
+        string? EnableConfirmationToken,
+        DateTime? EnableConfirmationExpiresAtUtc);
+    public sealed record RobotResponse(
+        Guid Id,
+        string Name,
+        string RobotReference,
+        bool HasWorkToolRobotId,
+        bool IsEnabled,
+        int SendRateLimitPerMinute,
+        DateTime UpdatedAtUtc);
+    public sealed record RegisterExistingGroupRequest(Guid RobotConfigId, string Name, string? WorkToolGroupRemark, bool ManualInvitationCompleted);
+    public sealed record KnownGroupResponse(
+        Guid Id,
+        Guid RobotConfigId,
+        string RobotName,
+        string Name,
+        string? WorkToolGroupRemark,
+        bool IsEnabled,
+        DateTime UpdatedAtUtc);
+    public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberDisplayNames, string? Value)
+    {
+        public IReadOnlyList<string> MemberDisplayNames { get; init; } = MemberDisplayNames ?? [];
+    }
     public sealed record ExecuteOperationRequest(GroupOperationRequest Operation, string ConfirmationToken);
     public sealed record PreviewResponse(string SanitizedRequest, string ConfirmationToken, DateTime ExpiresAtUtc);
     public sealed record CommandStatusResponse(bool Succeeded, string Message, Guid? AuditId = null);

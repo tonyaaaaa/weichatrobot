@@ -6,7 +6,7 @@ public sealed class MessageDeduplicationTests
     public void Message_id_is_preferred_over_fallback_deduplication_key()
     {
         var method = GetCreateDeduplicationKey();
-        var key = method.Invoke(null, ["worktool-a", "message-123", "Support", "Alice", "  Hello   world ", new DateTime(2026, 7, 21, 8, 12, 34, DateTimeKind.Utc), TimeSpan.FromMinutes(5)])!;
+        var key = method.Invoke(null, ["worktool-a", "message-123", "Support", null, "Alice", "  Hello   world ", new DateTime(2026, 7, 21, 8, 12, 34, DateTimeKind.Utc), TimeSpan.FromMinutes(5)])!;
 
         Assert.Equal("message:message-123", GetProperty<string>(key, "Key"));
         Assert.Null(GetProperty<DateTime?>(key, "FallbackWindowStartUtc"));
@@ -17,15 +17,26 @@ public sealed class MessageDeduplicationTests
     {
         var timestamp = new DateTime(2026, 7, 21, 8, 12, 34, DateTimeKind.Utc);
         var method = GetCreateDeduplicationKey();
-        var first = method.Invoke(null, ["worktool-a", null, "Support", "Alice", "  Hello   world ", timestamp, TimeSpan.FromMinutes(5)])!;
-        var equivalent = method.Invoke(null, ["worktool-a", " ", "Support", "Alice", "Hello world", timestamp.AddMinutes(2), TimeSpan.FromMinutes(5)])!;
-        var later = method.Invoke(null, ["worktool-a", null, "Support", "Alice", "Hello world", timestamp.AddMinutes(5), TimeSpan.FromMinutes(5)])!;
+        var first = method.Invoke(null, ["worktool-a", null, "Support", null, "Alice", "  Hello   world ", timestamp, TimeSpan.FromMinutes(5)])!;
+        var equivalent = method.Invoke(null, ["worktool-a", " ", "Support", null, "Alice", "Hello world", timestamp.AddMinutes(2), TimeSpan.FromMinutes(5)])!;
+        var later = method.Invoke(null, ["worktool-a", null, "Support", null, "Alice", "Hello world", timestamp.AddMinutes(5), TimeSpan.FromMinutes(5)])!;
 
         Assert.StartsWith("fallback:", GetProperty<string>(first, "Key"), StringComparison.Ordinal);
         Assert.Equal(GetProperty<string>(first, "Key"), GetProperty<string>(equivalent, "Key"));
         Assert.Equal(GetProperty<DateTime?>(first, "FallbackWindowStartUtc"), GetProperty<DateTime?>(equivalent, "FallbackWindowStartUtc"));
         Assert.NotEqual(GetProperty<string>(first, "Key"), GetProperty<string>(later, "Key"));
         Assert.NotEqual(GetProperty<DateTime?>(first, "FallbackWindowStartUtc"), GetProperty<DateTime?>(later, "FallbackWindowStartUtc"));
+    }
+
+    [Fact]
+    public void Missing_message_id_keeps_same_name_groups_with_distinct_remarks_separate()
+    {
+        var timestamp = new DateTime(2026, 7, 21, 8, 12, 34, DateTimeKind.Utc);
+        var method = GetCreateDeduplicationKey();
+        var east = method.Invoke(null, ["worktool-a", null, "Support", "support-east", "Alice", "Hello", timestamp, TimeSpan.FromMinutes(5)])!;
+        var west = method.Invoke(null, ["worktool-a", null, "Support", "support-west", "Alice", "Hello", timestamp, TimeSpan.FromMinutes(5)])!;
+
+        Assert.NotEqual(GetProperty<string>(east, "Key"), GetProperty<string>(west, "Key"));
     }
 
     private static System.Reflection.MethodInfo GetCreateDeduplicationKey()

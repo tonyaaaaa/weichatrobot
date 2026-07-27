@@ -11,7 +11,26 @@ Before setting any opt-in variable:
 3. Confirm Enterprise WeChat permissions for reading group messages, replying, and notifying the named employee.
 4. Confirm every external participant in the group expects the test and the test window.
 5. Observe WorkTool, Android/BlueStacks, and Enterprise WeChat account-risk controls. Stop immediately on a warning, verification challenge, unusual throttling, or unexpected recipient.
-6. Use non-sensitive test questions and do not copy credentials, personal data, callback secrets, robot IDs, member IDs, or message bodies into evidence committed to Git.
+6. Use non-sensitive test questions and do not copy credentials, personal data, callback secrets, robot IDs, member display names, or message bodies into evidence committed to Git.
+
+## Configure both callback channels first
+
+Message callbacks and command-result callbacks are separate WorkTool features. Before either gate, configure both through the authenticated local admin API:
+
+```powershell
+.\scripts\update-worktool-callback.ps1
+
+# Review the preview, then deliberately apply:
+.\scripts\update-worktool-callback.ps1 -Apply
+```
+
+Both origins default to `https://wxrobot.aavisa.com`. The apply flow securely
+prompts for administrator credentials and lets the operator select an enabled
+robot by name. The script calls the authenticated admin endpoints only. The API
+generates and retains callback query secrets and uses the encrypted WorkTool
+robot credential. Script output must not contain the administrator password,
+bearer token, internal robot ID, WorkTool robot ID, callback route code, or
+callback query secret.
 
 ## Ordinary existing-group gate
 
@@ -56,7 +75,7 @@ Remove-Item Env:RUN_WORKTOOL_E2E, Env:WORKTOOL_E2E_CONNECTION_STRING, Env:WORKTO
 
 ## Separate type 206/207 mutation gate
 
-Creating or modifying a group is not part of ordinary `技术部` acceptance. It requires a second approval, a disposable new group name, confirmed member identifiers, and these independent variables:
+Creating or modifying a group is not part of ordinary `技术部` acceptance. It requires a second approval, a disposable new group name, confirmed WorkTool member display names, and these independent variables:
 
 ```powershell
 $env:RUN_WORKTOOL_GROUP_MUTATION_E2E = '1'
@@ -67,10 +86,12 @@ $env:WORKTOOL_GROUP_MUTATION_ROBOT_CONFIG_ID = '<confirmed internal robot UUID>'
 $env:WORKTOOL_GROUP_MUTATION_NEW_GROUP = '<approved-disposable-group>'
 $env:WORKTOOL_GROUP_MUTATION_RENAMED_GROUP = '<approved-renamed-group>'
 $env:WORKTOOL_GROUP_MUTATION_ANNOUNCEMENT = '<approved-non-sensitive-text>'
-$env:WORKTOOL_GROUP_MUTATION_MEMBER_IDS = '<confirmed-id-1>,<confirmed-id-2>'
+$env:WORKTOOL_GROUP_MUTATION_MEMBER_DISPLAY_NAMES = '<confirmed-display-name-1>,<confirmed-display-name-2>'
 $env:WORKTOOL_GROUP_MUTATION_OPERATOR = '<authenticated stable name or user id>'
 $env:WORKTOOL_GROUP_MUTATION_TARGET_CONFIRMED = '<approved-disposable-group>'
 dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-trait 'Category=RealWorkToolGroupMutation'
 ```
 
-This test calls the audited backend preview/execute flow for command 206 Create and then command 207 Rename. Each execute response returns its newly created audit ID; the test queries only those two IDs and requires the exact successful status, command number, robot configuration, group identifier, operation/kind, member count and stable member hash, value length and stable value hash, and authenticated operator identity. Create and Rename remain distinguishable even among concurrent 207-family operations. An authenticated principal without a stable name/user identity is rejected before execution and is never recorded as `unknown`. Responses and audits never contain the WorkTool robot ID, callback secret, raw member IDs, announcement, or rename value. Never set this gate merely to make a skipped test run. Clear every `WORKTOOL_GROUP_MUTATION_*` value immediately afterward.
+This test calls the audited backend preview/execute flow for command 206 Create and then command 207 Rename. An HTTP 202 from the backend means only that the durable command was queued. WorkTool HTTP `code=0` advances it only to `accepted`; that state is not execution evidence. The test waits up to two minutes for the type-1 command-result callback and requires both exact audit IDs to have `executedSucceeded`, a non-empty correlated WorkTool `messageId`, result code 0, and a result timestamp inside the confirmed UTC test window. Legacy `Succeeded`, `accepted`, partial, failed, unknown, and timeout rows all fail the gate.
+
+The same two rows must also match the command number, robot configuration, group identifier, operation/kind, member count and display-name hash, value length and value hash, and authenticated operator identity. WorkTool `selectList` and `removeList` contain display names, not stable enterprise member IDs; duplicate or changed names are an explicit operator risk. Create and Rename remain distinguishable even among concurrent 207-family operations. An authenticated principal without a stable name/user identity is rejected before execution and is never recorded as `unknown`. Responses and audits never contain the WorkTool robot ID, callback secret, raw member display names, announcement, or rename value. Never set this gate merely to make a skipped test run. Clear every `WORKTOOL_GROUP_MUTATION_*` value immediately afterward.

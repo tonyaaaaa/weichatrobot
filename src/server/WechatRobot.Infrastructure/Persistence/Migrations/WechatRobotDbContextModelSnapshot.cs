@@ -170,6 +170,11 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<bool>("EmailConfirmed")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("IsEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true);
+
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("tinyint(1)");
 
@@ -289,6 +294,10 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid?>("GroupProfileId")
                         .HasColumnType("char(36)");
+
+                    b.Property<string>("GroupRemark")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
 
                     b.Property<Guid?>("InReplyToMessageId")
                         .HasColumnType("char(36)");
@@ -547,7 +556,6 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasColumnType("datetime(6)");
 
                     b.Property<string>("ExternalGroupId")
-                        .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
@@ -572,10 +580,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("WorkToolGroupRemark")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
+
                     b.HasKey("Id");
 
-                    b.HasIndex("RobotConfigId", "ExternalGroupId")
-                        .IsUnique();
+                    b.HasIndex("RobotConfigId", "Name", "WorkToolGroupRemark");
 
                     b.ToTable("group_profile", null, t =>
                         {
@@ -899,9 +910,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("HeadingsJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_ARRAY())");
+                        .HasColumnType("json");
 
                     b.Property<bool>("IsTable")
                         .HasColumnType("tinyint(1)");
@@ -926,9 +935,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("SynonymsJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_ARRAY())");
+                        .HasColumnType("json");
 
                     b.Property<int?>("TableColumns")
                         .HasColumnType("int");
@@ -1246,9 +1253,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("PendingTagIdsJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_ARRAY())");
+                        .HasColumnType("json");
 
                     b.Property<bool>("PreviousActiveCollectionExclusive")
                         .HasColumnType("tinyint(1)");
@@ -1566,9 +1571,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("InputSummaryJson")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("json")
-                        .HasDefaultValueSql("(JSON_OBJECT())");
+                        .HasColumnType("json");
 
                     b.Property<Guid?>("ModelConfigurationId")
                         .HasColumnType("char(36)");
@@ -1603,6 +1606,10 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("EncryptedCallbackSecret")
+                        .HasMaxLength(1024)
+                        .HasColumnType("varchar(1024)");
+
                     b.Property<string>("EncryptedWorkToolRobotId")
                         .HasMaxLength(512)
                         .HasColumnType("varchar(512)");
@@ -1612,6 +1619,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<DateTime?>("PreviousCallbackSecretExpiresAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("PreviousCallbackSecretHash")
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
@@ -1668,6 +1682,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<DateTime?>("AcceptedAtUtc")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<int>("AttemptCount")
                         .HasColumnType("int");
 
@@ -1721,6 +1738,22 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsConcurrencyToken()
                         .HasColumnType("int");
 
+                    b.Property<string>("WorkToolCommandMessageId")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<string>("WorkToolFailListJson")
+                        .HasColumnType("json");
+
+                    b.Property<DateTime?>("WorkToolResultAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("WorkToolResultCode")
+                        .HasColumnType("int");
+
+                    b.Property<string>("WorkToolSuccessListJson")
+                        .HasColumnType("json");
+
                     b.HasKey("Id");
 
                     b.HasIndex("GroupProfileId");
@@ -1729,6 +1762,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.HasIndex("RobotConfigId");
+
+                    b.HasIndex("WorkToolCommandMessageId")
+                        .IsUnique();
 
                     b.HasIndex("Status", "NextAttemptAtUtc");
 
@@ -1762,6 +1798,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
+
+                    b.Property<DateTime?>("AcceptedAtUtc")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<int>("AttemptCount")
                         .HasColumnType("int");
@@ -1816,14 +1855,33 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsConcurrencyToken()
                         .HasColumnType("int");
 
+                    b.Property<string>("WorkToolCommandMessageId")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
                     b.Property<int>("WorkToolCommandNumber")
                         .HasColumnType("int");
+
+                    b.Property<string>("WorkToolFailListJson")
+                        .HasColumnType("json");
+
+                    b.Property<DateTime?>("WorkToolResultAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("WorkToolResultCode")
+                        .HasColumnType("int");
+
+                    b.Property<string>("WorkToolSuccessListJson")
+                        .HasColumnType("json");
 
                     b.HasKey("Id");
 
                     b.HasIndex("CreatedAtUtc");
 
                     b.HasIndex("RobotConfigId");
+
+                    b.HasIndex("WorkToolCommandMessageId")
+                        .IsUnique();
 
                     b.HasIndex("Status", "CreatedAtUtc");
 

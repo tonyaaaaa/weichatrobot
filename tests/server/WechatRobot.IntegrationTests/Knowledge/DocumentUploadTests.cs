@@ -53,7 +53,7 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         }
 
         _factory.Storage.FailPut = false;
-        var retried = await client.PostAsync($"/api/knowledge/documents/{documentId}/retry-upload", null, TestContext.Current.CancellationToken);
+        var retried = await RetryAsync(client, documentId);
         retried.EnsureSuccessStatusCode();
         var retryBody = await retried.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("uploaded", retryBody.GetProperty("state").GetString());
@@ -71,7 +71,9 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         using var first = await UploadTextAsync(client, "../../client supplied.txt", "same-content");
         first.EnsureSuccessStatusCode();
         var body = await first.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        var key = body.GetProperty("objectKey").GetString()!;
+        Assert.False(body.TryGetProperty("objectKey", out _));
+        Assert.False(body.TryGetProperty("sha256", out _));
+        var key = Assert.Single(_factory.Storage.ObjectKeys);
         Assert.Matches(@"^wechatrobot/knowledge/[0-9a-f]{32}/1/source/source\.txt$", key);
         Assert.DoesNotContain("client", key, StringComparison.OrdinalIgnoreCase);
 
@@ -95,7 +97,7 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         Assert.Equal(0, _factory.Storage.Deletes);
 
         using var adminClient = CreateClient(SystemRoles.Admin);
-        var accepted = await adminClient.DeleteAsync($"/api/knowledge/documents/{documentId}/physical", TestContext.Current.CancellationToken);
+        var accepted = await RequestPhysicalDeleteAsync(adminClient, documentId);
         Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
         Assert.Equal(0, _factory.Storage.Deletes);
         await using var scope = _factory.Services.CreateAsyncScope();
@@ -191,14 +193,18 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         var documentId = body.GetProperty("documentId").GetGuid();
         await using (var scope = _factory.Services.CreateAsyncScope())
         {
-            var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
-            Assert.Null(await repository.LeaseNextJobAsync("ParseKnowledgeDocument", "parser", DateTime.UtcNow.AddMinutes(1), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var parseJob = await database.DurableJobs.AsNoTracking().SingleAsync(
+                job => job.JobType == "ParseKnowledgeDocument" &&
+                       job.PayloadJson.Contains(documentId.ToString()),
+                TestContext.Current.CancellationToken);
+            Assert.Equal("blocked", parseJob.Status);
         }
 
         using var adminClient = CreateClient(SystemRoles.Admin);
-        Assert.Equal(HttpStatusCode.Accepted, (await adminClient.DeleteAsync($"/api/knowledge/documents/{documentId}/physical", TestContext.Current.CancellationToken)).StatusCode);
-        Assert.Equal(HttpStatusCode.Accepted, (await adminClient.DeleteAsync($"/api/knowledge/documents/{documentId}/physical", TestContext.Current.CancellationToken)).StatusCode);
-        Assert.Equal(HttpStatusCode.Conflict, (await operatorClient.PostAsync($"/api/knowledge/documents/{documentId}/retry-upload", null, TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await RequestPhysicalDeleteAsync(adminClient, documentId)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await RequestPhysicalDeleteAsync(adminClient, documentId)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await RetryAsync(operatorClient, documentId)).StatusCode);
 
         await using var verify = _factory.Services.CreateAsyncScope();
         var db = verify.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
@@ -246,6 +252,7 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         var pending = await store.GetRecoverableAsync(version.Id, TestContext.Current.CancellationToken);
         Assert.NotNull(pending);
         Assert.True(await store.MarkUploadedAsync(pending!, new StoredObject(pending!.ObjectKey, new Uri($"https://public.example.test/{pending.ObjectKey}")), TestContext.Current.CancellationToken));
+        Assert.True(await store.MarkUploadedAsync(pending, new StoredObject(pending.ObjectKey, new Uri($"https://public.example.test/{pending.ObjectKey}")), TestContext.Current.CancellationToken));
 
         await store.MarkFailedAsync(pending, TestContext.Current.CancellationToken);
         db.ChangeTracker.Clear();
@@ -274,10 +281,10 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PostAsync($"/api/knowledge/documents/{adminId}/retry-upload", null, TestContext.Current.CancellationToken)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await human.PostAsync($"/api/knowledge/documents/{adminId}/retry-upload", null, TestContext.Current.CancellationToken)).StatusCode);
         _factory.Storage.FailPut = false;
-        Assert.True((await admin.PostAsync($"/api/knowledge/documents/{adminId}/retry-upload", null, TestContext.Current.CancellationToken)).IsSuccessStatusCode);
-        Assert.True((await knowledgeOperator.PostAsync($"/api/knowledge/documents/{operatorId}/retry-upload", null, TestContext.Current.CancellationToken)).IsSuccessStatusCode);
+        Assert.True((await RetryAsync(admin, adminId)).IsSuccessStatusCode);
+        Assert.True((await RetryAsync(knowledgeOperator, operatorId)).IsSuccessStatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await knowledgeOperator.DeleteAsync($"/api/knowledge/documents/{operatorId}/physical", TestContext.Current.CancellationToken)).StatusCode);
-        Assert.Equal(HttpStatusCode.Accepted, (await admin.DeleteAsync($"/api/knowledge/documents/{operatorId}/physical", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await RequestPhysicalDeleteAsync(admin, operatorId)).StatusCode);
     }
 
     private async Task AssertUploadedWithOneParseJobAsync(Guid documentId)
@@ -305,6 +312,27 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
         file.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
         form.Add(file, "file", name);
         return client.PostAsync("/api/knowledge/documents", form, TestContext.Current.CancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> RetryAsync(HttpClient client, Guid documentId) =>
+        await client.PostAsJsonAsync(
+            $"/api/knowledge/documents/{documentId}/retry-upload",
+            new { expectedStateVersion = await StateVersionAsync(documentId) },
+            TestContext.Current.CancellationToken);
+
+    private async Task<HttpResponseMessage> RequestPhysicalDeleteAsync(HttpClient client, Guid documentId) =>
+        await client.DeleteAsync(
+            $"/api/knowledge/documents/{documentId}/physical?expectedStateVersion={await StateVersionAsync(documentId)}",
+            TestContext.Current.CancellationToken);
+
+    private async Task<int> StateVersionAsync(Guid documentId)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        return await database.KnowledgeDocuments.AsNoTracking()
+            .Where(document => document.Id == documentId)
+            .Select(document => document.StateVersion)
+            .SingleAsync(TestContext.Current.CancellationToken);
     }
 }
 
@@ -398,9 +426,10 @@ public sealed class InMemoryKnowledgeJobRepository(WechatRobotDbContext database
     public Task<InboundMessageIngestResult> IngestInboundMessageAsync(InboundMessageIngestRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task<bool> MarkSendExternalInFlightAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task MarkSendDeliveryUncertainAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task CompleteSendCommandAsync(LeasedSendCommand command, DateTime completedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<bool> MarkSendDispatchingAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task MarkSendDeliveryUnknownAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task MarkSendAcceptedAsync(LeasedSendCommand command, string workToolMessageId, DateTime acceptedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task MarkSendRejectedAsync(LeasedSendCommand command, string reason, DateTime rejectedAtUtc, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<bool> RenewSendLeasesAsync(LeasedSendCommand command, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken) => throw new NotSupportedException();
 }
@@ -435,7 +464,10 @@ public sealed class RoleHeaderAuthenticationHandler(IOptionsMonitor<Authenticati
     {
         var role = Request.Headers["X-Test-Role"].ToString();
         if (string.IsNullOrWhiteSpace(role)) return Task.FromResult(AuthenticateResult.NoResult());
-        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.Name, "document-user"), new Claim(ClaimTypes.Role, role)], Scheme.Name));
+        var claims = Request.Headers.ContainsKey("X-Test-No-Name")
+            ? [new Claim(ClaimTypes.Role, role)]
+            : new[] { new Claim(ClaimTypes.Name, "document-user"), new Claim(ClaimTypes.Role, role) };
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name)));
     }
 }

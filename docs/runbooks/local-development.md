@@ -37,8 +37,16 @@ The following commands perform no process, Docker, network, callback, or WorkToo
 .\scripts\start-dev.ps1 -WhatIf
 .\scripts\stop-dev.ps1 -WhatIf
 .\scripts\stop-dev.ps1 -WhatIf
-.\scripts\update-worktool-callback.ps1 -TunnelUrl https://example.trycloudflare.com -CallbackToken fake-token -WorkToolRobotId fake-id -WorkToolUpdateUri https://127.0.0.1/never-called -WhatIf
+.\scripts\update-worktool-callback.ps1
+.\scripts\update-worktool-callback.ps1 -WhatIf
 .\tests\operations\task17-operations.Tests.ps1
 ```
 
-The callback script uses `WorkToolRobotId` as the sole authoritative payload and callback-route identity. The preview shows only a `{robot-code}` placeholder, redacted token, and one-way route fingerprint. `TunnelUrl` must be an HTTPS origin with no path, query, fragment, or user info. The script is preview-only unless `-Apply` is present. Applying requires the operator to type `UPDATE`; the bounded HTTP call is accepted only for a 2xx response containing JSON `{"success":true}`. Tests and routine development must use loopback fake endpoints or `-WhatIf`; never use a real WorkTool target without explicit approval.
+The callback script defaults both the API and public callback origins to
+`https://wxrobot.aavisa.com`. Preview and `-WhatIf` perform no network requests.
+With `-Apply`, the script securely prompts for administrator credentials, lists
+enabled robot configurations, and configures both the message callback and the
+command-result callback after the operator types `UPDATE`. The script talks only
+to authenticated WechatRobot admin endpoints; it never receives or prints the
+WorkTool robot ID, callback route code, callback query secret, administrator
+password, or bearer token.

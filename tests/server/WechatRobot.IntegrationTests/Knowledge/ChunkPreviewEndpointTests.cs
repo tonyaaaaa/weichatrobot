@@ -51,6 +51,43 @@ public sealed class ChunkPreviewEndpointTests : IClassFixture<DocumentUploadApiF
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Chunk_policy_boundary_accepts_each_discriminator_and_rejects_mixed_or_unknown_fields()
+    {
+        using var client = Client(SystemRoles.KnowledgeOperator);
+        var versionId = Guid.NewGuid();
+        var url = $"/api/knowledge/versions/{versionId:D}/previews/generate";
+
+        foreach (var policy in new object[]
+        {
+            new { kind = "smart", targetTokens = 800, overlapTokens = 120, maximumTokens = 1000 },
+            new { kind = "separator", targetTokens = 800, overlapTokens = 120, maximumTokens = 1000, separator = "\n---\n" },
+            new { kind = "regex", targetTokens = 800, overlapTokens = 120, maximumTokens = 1000, regexPattern = "\\n#{1,3}\\s" },
+            new { kind = "qa", targetTokens = 800, overlapTokens = 120, maximumTokens = 1000,
+                qaEntries = new[] { new { question = "如何退款？", synonyms = new[] { "怎么退" }, answer = "联系人工客服。" } } }
+        })
+        {
+            var response = await client.PostAsJsonAsync(url,
+                new { expectedRevision = 0, policy }, TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+
+        var unknown = await client.PostAsJsonAsync(url, new
+        {
+            expectedRevision = 0,
+            policy = new { kind = "invented", targetTokens = 800, overlapTokens = 120, maximumTokens = 1000 }
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
+
+        var mixed = await client.PostAsJsonAsync(url, new
+        {
+            expectedRevision = 0,
+            policy = new { kind = "separator", targetTokens = 800, overlapTokens = 120, maximumTokens = 1000,
+                separator = "\n", regexPattern = "\\n+" }
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, mixed.StatusCode);
+    }
+
     private HttpClient Client(string role)
     {
         var client = _factory.CreateClient();

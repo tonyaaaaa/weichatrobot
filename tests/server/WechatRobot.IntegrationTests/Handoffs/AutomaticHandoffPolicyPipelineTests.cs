@@ -56,7 +56,7 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
             });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
-                robot.Id, $"handoff-message-{suffix}", $"handoff-fallback-{suffix}", DateTime.UtcNow, group.Name, "Alice",
+                robot.Id, $"handoff-message-{suffix}", $"handoff-fallback-{suffix}", DateTime.UtcNow, group.Name, null, "Alice",
                 "请转人工", DateTime.UtcNow, stableSenderId, true), TestContext.Current.CancellationToken);
             groupId = group.Id;
         }
