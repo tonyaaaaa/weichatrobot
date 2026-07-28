@@ -2,6 +2,10 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 import GroupListView from './GroupListView.vue';
 
+vi.mock('../../utils/dialogs', () => ({
+  confirmAction: vi.fn().mockResolvedValue(true)
+}));
+
 const routerLinkStub = {
   props: ['to'],
   template: '<a :data-to="JSON.stringify(to)"><slot /></a>'
@@ -18,6 +22,9 @@ describe('GroupListView', () => {
         name: '技术群',
         workToolGroupRemark: 'tech-east',
         isEnabled: true,
+        state: 'enabled',
+        stateVersion: 2,
+        configurationVersion: 3,
         updatedAtUtc: '2026-07-25T01:02:03Z'
       }])
     };
@@ -30,8 +37,80 @@ describe('GroupListView', () => {
     expect(wrapper.text()).toContain('技术群');
     expect(wrapper.text()).toContain('客服机器人');
     expect(wrapper.text()).toContain('启用');
+    expect(wrapper.text()).toContain('停用');
+    expect(wrapper.text()).toContain('会话');
+    expect(wrapper.text()).toContain('上下文');
+    expect(wrapper.text()).toContain('记忆');
     expect(wrapper.get('[data-testid="configure-group"]').attributes('data-to')).toContain(id);
     expect(wrapper.find('[aria-label="群配置 ID"]').exists()).toBe(false);
+  });
+
+  it('changes lifecycle state with the current state version and reloads the current filter', async () => {
+    const id = '00000000-0000-0000-0000-000000000802';
+    const api = {
+      listGroups: vi.fn().mockResolvedValue([{
+        id,
+        robotConfigId: 'robot-1',
+        robotName: '客服机器人',
+        name: '停用测试群',
+        isEnabled: true,
+        state: 'enabled',
+        stateVersion: 4,
+        configurationVersion: 1,
+        updatedAtUtc: '2026-07-25T01:02:03Z'
+      }])
+    };
+    const lifecycleApi = {
+      changeState: vi.fn().mockResolvedValue({
+        id,
+        state: 'disabled',
+        isEnabled: false,
+        stateVersion: 5
+      })
+    };
+    const wrapper = mount(GroupListView, {
+      props: { api, lifecycleApi },
+      global: { stubs: { RouterLink: routerLinkStub } }
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="disable-group"]').trigger('click');
+    await flushPromises();
+
+    expect(lifecycleApi.changeState).toHaveBeenCalledWith(id, 'disable', 4);
+    expect(api.listGroups).toHaveBeenLastCalledWith('current');
+  });
+
+  it('hides archived groups by default and can explicitly display them', async () => {
+    const api = {
+      listGroups: vi.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{
+          id: 'archived-1',
+          robotConfigId: 'robot-1',
+          robotName: '客服机器人',
+          name: '已归档群',
+          isEnabled: false,
+          state: 'archived',
+          stateVersion: 7,
+          configurationVersion: 2,
+          archivedAtUtc: '2026-07-25T01:02:03Z',
+          updatedAtUtc: '2026-07-25T01:02:03Z'
+        }])
+    };
+    const wrapper = mount(GroupListView, {
+      props: { api, lifecycleApi: { changeState: vi.fn() } },
+      global: { stubs: { RouterLink: routerLinkStub } }
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="group-status-filter"]').setValue('archived');
+    await flushPromises();
+
+    expect(api.listGroups).toHaveBeenLastCalledWith('archived');
+    expect(wrapper.text()).toContain('已归档群');
+    expect(wrapper.text()).toContain('恢复');
+    expect(wrapper.find('[data-testid="configure-group"]').exists()).toBe(false);
   });
 
   it('shows an actionable empty state when no group is registered', async () => {

@@ -101,11 +101,15 @@ export interface IndexStatus {
   driftDetails: string[];
   jobs: IndexJobStatus[];
 }
-export interface CandidateSummary { id: string; question: string; status: string; version: number; updatedAtUtc: string }
+export interface CandidateSummary { id: string; question: string; sourceType?: 'HistoricalHandoff' | 'MemoryExtraction' | 'ManualCorrection'; status: string; version: number; updatedAtUtc: string }
 export interface CandidateDetail extends CandidateSummary { answer: string; evidenceJson: string }
 
 export interface KnowledgeApi {
-  upload(file: File, onProgress: (value: number) => void): Promise<UploadResult>;
+  upload(
+    file: File,
+    onProgress: (value: number) => void,
+    documentId?: string
+  ): Promise<UploadResult>;
   listDocuments(request: KnowledgeDocumentListRequest): Promise<KnowledgeDocumentPage>;
   getDocument(documentId: string): Promise<KnowledgeDocumentDetail>;
   getDocumentVersions(documentId: string): Promise<KnowledgeDocumentVersionSummary[]>;
@@ -116,7 +120,7 @@ export interface KnowledgeApi {
   generatePreviews(versionId: string, revision: number, policy?: ChunkPolicy): Promise<PreviewSet>;
   editPreview(versionId: string, previewId: string, text: string, revision: number): Promise<PreviewSet>;
   splitPreview(versionId: string, previewId: string, offset: number, revision: number): Promise<PreviewSet>;
-  mergePreviews(versionId: string, firstId: string, secondId: string, revision: number): Promise<PreviewSet>;
+  mergePreviews(versionId: string, previewIds: string[], revision: number): Promise<PreviewSet>;
   deletePreview(versionId: string, previewId: string, revision: number): Promise<PreviewSet>;
   approvePreviews(versionId: string, revision: number): Promise<PreviewItem[]>;
   getIndexStatus(documentId: string): Promise<IndexStatus>;
@@ -125,9 +129,10 @@ export interface KnowledgeApi {
 }
 
 export const knowledgeApi: KnowledgeApi = {
-  async upload(file, onProgress) {
+  async upload(file, onProgress, documentId) {
     const form = new FormData();
     form.append('file', file);
+    if (documentId) form.append('documentId', documentId);
     const response = await apiClient.post<UploadResult>('/api/knowledge/documents', form, {
       onUploadProgress: event => onProgress(event.total ? Math.round(event.loaded * 100 / event.total) : 0)
     });
@@ -183,8 +188,8 @@ export const knowledgeApi: KnowledgeApi = {
   async splitPreview(versionId, previewId, offset, expectedRevision) {
     return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/${encodeURIComponent(previewId)}/split`, { offset, expectedRevision })).data;
   },
-  async mergePreviews(versionId, firstId, secondId, expectedRevision) {
-    return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/merge`, { firstId, secondId, expectedRevision })).data;
+  async mergePreviews(versionId, previewIds, expectedRevision) {
+    return (await apiClient.post(`/api/knowledge/versions/${encodeURIComponent(versionId)}/previews/merge`, { previewIds, expectedRevision })).data;
   },
   async deletePreview(versionId, previewId, expectedRevision) {
     return (await apiClient.delete(

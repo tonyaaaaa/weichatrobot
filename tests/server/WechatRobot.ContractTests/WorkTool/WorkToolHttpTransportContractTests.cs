@@ -8,7 +8,7 @@ namespace WechatRobot.ContractTests.WorkTool;
 public sealed class WorkToolHttpTransportContractTests
 {
     [Fact]
-    public void Windows_uses_the_WinHTTP_transport_required_by_the_WorkTool_gateway()
+    public void Windows_uses_the_sockets_transport_to_avoid_WinHTTP_gateway_failures()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -17,7 +17,7 @@ public sealed class WorkToolHttpTransportContractTests
 
         using var handler = WorkToolHttpTransport.CreatePrimaryHandler();
 
-        Assert.Equal("System.Net.Http.WinHttpHandler", handler.GetType().FullName);
+        Assert.IsType<SocketsHttpHandler>(handler);
     }
 
     [Fact]

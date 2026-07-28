@@ -29,43 +29,30 @@ public sealed class ConversationAuditQuery(WechatRobotDbContext database) : ICon
             .GroupBy(item => item.InReplyToMessageId!.Value)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.CreatedAtUtc).First());
 
-        var handoffs = await database.HandoffCases.AsNoTracking()
-            .Where(GuidBatchQuery.BuildPredicate<HandoffCaseEntity>(messageIds, item => item.QuestionMessageId)).ToArrayAsync(token);
-        var handoffByMessage = handoffs.ToDictionary(item => item.QuestionMessageId);
-        var sendKeys = messageIds.Select(item => $"grounded-reply:{item:D}")
-            .Concat(handoffs.Select(item => item.StartIdempotencyKey).Where(item => !string.IsNullOrWhiteSpace(item)).Select(item => item!))
-            .Distinct(StringComparer.Ordinal).ToArray();
+        var sendKeys = messageIds.Select(item => $"grounded-reply:{item:D}").ToArray();
         var sends = await database.SendCommands.AsNoTracking().Where(SendKeyPredicate(sendKeys)).ToArrayAsync(token);
         var sendByKey = sends.ToDictionary(item => item.IdempotencyKey, StringComparer.Ordinal);
 
-        var handoffIds = handoffs.Select(item => item.Id).ToArray();
-        var transitions = handoffIds.Length == 0 ? [] : await database.HandoffTransitions.AsNoTracking()
-            .Where(GuidBatchQuery.BuildPredicate<HandoffTransitionEntity>(handoffIds, item => item.HandoffCaseId)).OrderBy(item => item.Sequence).ToArrayAsync(token);
-        var transitionsByHandoff = transitions.GroupBy(item => item.HandoffCaseId).ToDictionary(group => group.Key,
-            group => (IReadOnlyList<ConversationAuditTransition>)group.Select(item =>
-                new ConversationAuditTransition(item.Sequence, item.FromState, item.ToState, item.ReasonCode, item.CreatedAtUtc)).ToArray());
-        var candidates = handoffIds.Length == 0 ? [] : await database.KnowledgeCandidates.AsNoTracking()
-            .Where(GuidBatchQuery.BuildPredicate<KnowledgeCandidateEntity>(handoffIds, item => item.HandoffCaseId)).ToArrayAsync(token);
-        var candidateByHandoff = candidates.ToDictionary(item => item.HandoffCaseId);
+        var candidates = await database.KnowledgeCandidates.AsNoTracking()
+            .Where(GuidBatchQuery.BuildPredicate<KnowledgeCandidateEntity>(messageIds, item => item.QuestionMessageId))
+            .ToArrayAsync(token);
+        var candidateByMessage = candidates
+            .GroupBy(item => item.QuestionMessageId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.UpdatedAtUtc).First());
 
         var items = audits.Select(audit =>
         {
             var question = questions[audit.ConversationMessageId];
             answers.TryGetValue(question.Id, out var answer);
-            handoffByMessage.TryGetValue(question.Id, out var handoff);
             var sendKey = $"grounded-reply:{question.Id:D}";
-            if (!sendByKey.TryGetValue(sendKey, out var send) && handoff?.StartIdempotencyKey is { Length: > 0 } handoffKey)
-                sendByKey.TryGetValue(handoffKey, out send);
-            var handoffResult = handoff is null ? null : new ConversationAuditHandoff(
-                handoff.State, handoff.ReasonCode, handoff.PauseScope, handoff.EvidenceJson, handoff.CreatedAtUtc, handoff.UpdatedAtUtc,
-                transitionsByHandoff.GetValueOrDefault(handoff.Id, []));
-            candidateByHandoff.TryGetValue(handoff?.Id ?? Guid.Empty, out var candidate);
+            sendByKey.TryGetValue(sendKey, out var send);
+            candidateByMessage.TryGetValue(question.Id, out var candidate);
             return new ConversationAuditItem(
-                audit.Id, audit.GroupProfileId, question.Id, question.WorkToolMessageId, question.Text, answer?.Text,
+                audit.Id, audit.GroupProfileId, question.Id, audit.ModelConfigurationId, question.WorkToolMessageId, question.Text, answer?.Text,
                 audit.Decision, audit.ConfidenceThreshold, audit.ConfidenceValue, audit.ContextPolicy, audit.FailureCode,
-                audit.EvidenceJson, audit.InputSummaryJson,
+                audit.AnswerSource, audit.WebSearchFailureCode, audit.WebSearchSourcesJson,
+                audit.MemoryRecallJson, audit.EvidenceJson, audit.InputSummaryJson,
                 send is null ? null : new(send.Status, send.AttemptCount, send.SentAtUtc, send.CompletedAtUtc),
-                handoffResult,
                 candidate is null ? null : new(candidate.Status, candidate.KnowledgeDocumentVersionId, candidate.PublishedAtUtc,
                     candidate.CreatedAtUtc, candidate.UpdatedAtUtc),
                 audit.CreatedAtUtc);

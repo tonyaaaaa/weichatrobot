@@ -91,14 +91,21 @@ public sealed class ConversationAuditEndpointTests : IClassFixture<ConversationA
         response.EnsureSuccessStatusCode();
         Assert.DoesNotContain("provider-secret", json, StringComparison.Ordinal);
         Assert.DoesNotContain("raw-signature", json, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"url\"", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("WorkToolRobotId", json, StringComparison.OrdinalIgnoreCase);
         using var document = JsonDocument.Parse(json);
         var item = Assert.Single(document.RootElement.GetProperty("items").EnumerateArray());
         Assert.Equal("如何重置密码？", item.GetProperty("question").GetString());
         Assert.Equal("请使用安全重置页面。", item.GetProperty("answer").GetString());
         Assert.Equal("completed", item.GetProperty("send").GetProperty("status").GetString());
-        Assert.Equal("Resolved", item.GetProperty("handoff").GetProperty("state").GetString());
+        Assert.Equal("web_search", item.GetProperty("answerSource").GetString());
+        Assert.Equal("web_search_no_sources", item.GetProperty("webSearchFailureCode").GetString());
+        Assert.Equal(
+            "https://example.com/public",
+            Assert.Single(item.GetProperty("webSearchSources").EnumerateArray()).GetProperty("url").GetString());
+        Assert.Equal(
+            "00000000-0000-0000-0000-000000000456",
+            item.GetProperty("modelConfigurationId").GetGuid().ToString("D"));
+        Assert.False(item.TryGetProperty("handoff", out _));
         Assert.Equal("approved_pending_index", item.GetProperty("knowledgeCandidate").GetProperty("status").GetString());
         Assert.NotEmpty(item.GetProperty("sources").EnumerateArray());
         Assert.Contains("00000000-0000-0000-0000-000000000123",
@@ -165,8 +172,11 @@ public sealed class ConversationAuditApiFactory : WebApplicationFactory<Program>
         var outbound = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, Direction = "outbound", Role = "assistant",
             InReplyToMessageId = inbound.Id, FallbackHash = "audit-out", FallbackWindowStartUtc = at, GroupName = group.Name,
             SenderDisplayName = "机器人", Text = "请使用安全重置页面。", ReceivedAtUtc = at.AddSeconds(1), CreatedAtUtc = at.AddSeconds(1) };
-        var audit = new RetrievalAuditEntity { ConversationMessageId = inbound.Id, GroupProfileId = group.Id, Decision = "Answer",
+        var audit = new RetrievalAuditEntity { ConversationMessageId = inbound.Id, GroupProfileId = group.Id,
+            ModelConfigurationId = Guid.Parse("00000000-0000-0000-0000-000000000456"), Decision = "Answer",
             ConfidenceThreshold = .7, ConfidenceValue = .9, ContextPolicy = "group", CreatedAtUtc = at.AddSeconds(1),
+            AnswerSource = "web_search", WebSearchFailureCode = "web_search_no_sources",
+            WebSearchSourcesJson = """[{"title":"公开来源","url":"https://example.com/public","site":"Example","index":1},{"title":"秘密来源","url":"https://example.com/private?Signature=raw-signature","index":2}]""",
             EvidenceJson = """[{"documentId":"d1","chunkId":"c1","title":"安全手册","url":"https://oss.test/doc?Signature=raw-signature","apiKey":"provider-secret"},{"documentId":"00000000-0000-0000-0000-000000000123","chunkId":"c2"}]""",
             InputSummaryJson = """{"modelConfigurationId":"m1","authorization":"Bearer provider-secret"}""" };
         var send = new SendCommandEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, IdempotencyKey = $"grounded-reply:{inbound.Id:D}",

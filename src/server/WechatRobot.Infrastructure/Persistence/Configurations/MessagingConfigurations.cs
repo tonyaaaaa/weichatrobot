@@ -38,6 +38,12 @@ internal sealed class GroupProfileConfiguration : IEntityTypeConfiguration<Group
         builder.Property(entity => entity.WorkToolGroupRemark).HasMaxLength(256);
         builder.Property(entity => entity.HandoffPausePolicy).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
         builder.Property(entity => entity.ConfigurationVersion).HasDefaultValue(0).IsConcurrencyToken();
+        builder.Property(entity => entity.StateVersion).HasDefaultValue(0).IsConcurrencyToken();
+        builder.Property(entity => entity.WebSearchResultCount).HasDefaultValue(5);
+        builder.Property(entity => entity.WebSearchRecency).HasMaxLength(16).HasDefaultValue("NoLimit").IsRequired();
+        builder.Property(entity => entity.WebSearchDomainFilter).HasMaxLength(512);
+        builder.Property(entity => entity.WebSearchContentSize).HasMaxLength(16).HasDefaultValue("Medium").IsRequired();
+        builder.Property(entity => entity.FinalNoEvidencePolicy).HasMaxLength(32).HasDefaultValue("InsufficientEvidence").IsRequired();
         builder.Property(entity => entity.RegistrationSource)
             .HasMaxLength(32)
             .HasDefaultValue("Manual")
@@ -140,6 +146,10 @@ internal sealed class RetrievalAuditConfiguration : IEntityTypeConfiguration<Ret
         builder.Property(entity => entity.Decision).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.ContextPolicy).HasMaxLength(1024).IsRequired();
         builder.Property(entity => entity.FailureCode).HasMaxLength(64);
+        builder.Property(entity => entity.AnswerSource).HasMaxLength(32).HasDefaultValue("none").IsRequired();
+        builder.Property(entity => entity.WebSearchFailureCode).HasMaxLength(64);
+        builder.Property(entity => entity.WebSearchSourcesJson).HasColumnType("json").IsRequired();
+        builder.Property(entity => entity.MemoryRecallJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.EvidenceJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.InputSummaryJson).HasColumnType("json").IsRequired();
         builder.HasIndex(entity => entity.ConversationMessageId).IsUnique();
@@ -161,6 +171,7 @@ internal sealed class DurableJobConfiguration : IEntityTypeConfiguration<Durable
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
         builder.Property(entity => entity.Version).IsConcurrencyToken();
+        builder.HasIndex(entity => entity.GroupProfileId);
         builder.HasIndex(entity => new { entity.Status, entity.NextAttemptAtUtc });
         builder.HasIndex(entity => entity.RelatedConversationMessageId).IsUnique();
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.RelatedConversationMessageId).OnDelete(DeleteBehavior.Restrict);
@@ -220,6 +231,7 @@ internal sealed class ModelConfigConfiguration : IEntityTypeConfiguration<ModelC
                 stored: true);
         builder.Property(entity => entity.BaseUrl).HasMaxLength(2048).IsRequired();
         builder.Property(entity => entity.Model).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.WebSearchMode).HasMaxLength(32).HasDefaultValue("None").IsRequired();
         builder.Property(entity => entity.EncryptedApiKey).HasColumnType("longtext");
         builder.Property(entity => entity.TimeoutSeconds).IsRequired();
         builder.Property(entity => entity.MaxRetries).IsRequired();

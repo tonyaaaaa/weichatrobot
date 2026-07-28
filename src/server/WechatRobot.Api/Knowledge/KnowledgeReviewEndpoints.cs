@@ -25,7 +25,8 @@ public static class KnowledgeReviewEndpoints
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         var total = await query.CountAsync(token);
         var items = await query.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).Skip(skip).Take(pageSize)
-            .Select(x => new { x.Id, x.HandoffCaseId, x.QuestionMessageId, x.Question, x.Status, x.KnowledgeDocumentVersionId,
+            .Select(x => new { x.Id, x.HandoffCaseId, x.SourceType, x.SourceConversationMessageId, x.SourceMemoryCandidateId,
+                x.QuestionMessageId, x.Question, x.Status, x.KnowledgeDocumentVersionId,
                 x.Version, x.CreatedAtUtc, x.UpdatedAtUtc, x.PublishedAtUtc }).ToArrayAsync(token);
         return TypedResults.Ok(new { items, total, page, pageSize });
     }
@@ -33,6 +34,7 @@ public static class KnowledgeReviewEndpoints
     private static async Task<IResult> DetailAsync(Guid id, WechatRobotDbContext db, CancellationToken token)
     {
         var item = await db.KnowledgeCandidates.AsNoTracking().Where(x => x.Id == id).Select(x => new { x.Id, x.HandoffCaseId,
+            x.SourceType, x.SourceConversationMessageId, x.SourceMemoryCandidateId,
             x.QuestionMessageId, x.Question, x.Answer, x.EvidenceJson, x.Status, x.KnowledgeDocumentVersionId, x.Version,
             x.CreatedAtUtc, x.UpdatedAtUtc, x.PublishedAtUtc }).SingleOrDefaultAsync(token);
         return item is null ? TypedResults.NotFound() : TypedResults.Ok(item);

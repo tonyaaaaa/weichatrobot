@@ -55,10 +55,11 @@ public sealed class ConversationAuditQueryTests(MySqlFixture fixture) : IClassFi
         counter.Reset();
         var fullPage = await query.ListAsync(new(group.Id, null, null, 1, 20), TestContext.Current.CancellationToken);
 
-        Assert.Equal(7, oneItemQueries);
+        Assert.Equal(5, oneItemQueries);
         Assert.Equal(oneItemQueries, counter.Count);
         Assert.Equal(2, fullPage.Total);
-        Assert.Equal("retrying", fullPage.Items.Single(item => item.MessageId == second.Id).Send?.Status);
+        Assert.Null(fullPage.Items.Single(item => item.MessageId == second.Id).Send);
+        Assert.NotNull(fullPage.Items.Single(item => item.MessageId == second.Id).KnowledgeCandidate);
         Assert.Equal("completed", fullPage.Items.Single(item => item.MessageId == first.Id).Send?.Status);
         Assert.DoesNotContain(fullPage.Items, item => item.Send?.Status == "dead_letter");
     }

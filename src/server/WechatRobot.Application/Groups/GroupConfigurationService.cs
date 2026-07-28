@@ -1,9 +1,8 @@
 using WechatRobot.Domain.Groups;
 using WechatRobot.Domain.Knowledge;
+using System.Globalization;
 
 namespace WechatRobot.Application.Groups;
-
-public enum HandoffPausePolicy { Group, Sender }
 
 public sealed class GroupConfigurationService
 {
@@ -46,6 +45,49 @@ public sealed class GroupConfigurationService
         return GroupConfigurationValidation.Valid;
     }
 
+    public GroupAnswerFallbackValidation ValidateAnswerFallback(
+        GroupAnswerFallbackSettings settings)
+    {
+        if (settings.WebSearchResultCount is < 1 or > 20)
+            return GroupAnswerFallbackValidation.Invalid(
+                "Web Search result count must be between 1 and 20.");
+        if (settings.WebSearchRecency is not ("NoLimit" or "OneDay" or "OneWeek" or "OneMonth" or "OneYear"))
+            return GroupAnswerFallbackValidation.Invalid("Web Search recency is invalid.");
+        if (settings.WebSearchContentSize is not ("Medium" or "High"))
+            return GroupAnswerFallbackValidation.Invalid("Web Search content size is invalid.");
+        if (settings.FinalNoEvidencePolicy is not ("InsufficientEvidence" or "Clarification"))
+            return GroupAnswerFallbackValidation.Invalid("Final no-evidence policy is invalid.");
+
+        var domains = new List<string>();
+        foreach (var raw in (settings.WebSearchDomainFilter ?? string.Empty)
+            .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (raw.Length > 253
+                || raw.Contains("://", StringComparison.Ordinal)
+                || raw.IndexOfAny(['/', '\\', '@', '*', '?', '#', ':']) >= 0
+                || Uri.CheckHostName(raw) == UriHostNameType.Unknown)
+                return GroupAnswerFallbackValidation.Invalid(
+                    "Web Search domain filter must contain host names only.");
+            try
+            {
+                domains.Add(new IdnMapping().GetAscii(raw).ToLowerInvariant());
+            }
+            catch (ArgumentException)
+            {
+                return GroupAnswerFallbackValidation.Invalid(
+                    "Web Search domain filter contains an invalid host name.");
+            }
+        }
+        var normalized = string.Join(',', domains.Distinct(StringComparer.Ordinal).Take(20));
+        if (normalized.Length > 512)
+            return GroupAnswerFallbackValidation.Invalid(
+                "Web Search domain filter is too long.");
+        return GroupAnswerFallbackValidation.Valid(settings with
+        {
+            WebSearchDomainFilter = string.IsNullOrEmpty(normalized) ? null : normalized
+        });
+    }
+
     public GroupRuleMatchResult Preview(IEnumerable<GroupPatternRule> includeRules, IEnumerable<GroupPatternRule> excludeRules, string groupName)
     {
         var include = includeRules.Select(rule => GroupRuleMatcher.Match(new GroupRule(Guid.NewGuid(), rule.Pattern, rule.PatternKind, ignoreCase: rule.IgnoreCase), groupName)).ToArray();
@@ -68,6 +110,25 @@ public sealed class GroupConfigurationService
 public sealed record GroupPatternRule(string Pattern, GroupRulePatternKind PatternKind, bool IgnoreCase = true);
 public sealed record GroupContextOverrides(bool? SenderIsolated, int? HistoryTurns, int? IdleTimeoutMinutes, int? TokenCap, bool? SummaryEnabled, bool? IncludeBotHistory);
 public sealed record GroupContextSettings(bool SenderIsolated, int HistoryTurns, int IdleTimeoutMinutes, int TokenCap, bool SummaryEnabled, bool IncludeBotHistory);
+public sealed record GroupAnswerFallbackSettings(
+    bool WebSearchEnabled,
+    bool ModelKnowledgeFallbackEnabled,
+    bool WebSearchShowSources,
+    int WebSearchResultCount,
+    string WebSearchRecency,
+    string? WebSearchDomainFilter,
+    string WebSearchContentSize,
+    string FinalNoEvidencePolicy);
+public sealed record GroupAnswerFallbackValidation(
+    bool IsValid,
+    GroupAnswerFallbackSettings? Settings,
+    string? Error)
+{
+    public static GroupAnswerFallbackValidation Valid(GroupAnswerFallbackSettings settings) =>
+        new(true, settings, null);
+    public static GroupAnswerFallbackValidation Invalid(string error) =>
+        new(false, null, error);
+}
 public sealed record GroupConfigurationValidation(bool IsValid, string? Error)
 {
     public static GroupConfigurationValidation Valid { get; } = new(true, null);

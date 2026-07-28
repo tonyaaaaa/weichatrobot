@@ -7,15 +7,40 @@ public sealed record ConversationProcessingRequest(Guid MessageId, Guid RobotCon
     string GroupName, string SenderDisplayName, string? StableSenderId, ConversationScope Scope, string Question, DateTime ReceivedAtUtc, IReadOnlyList<Guid> AllowedTagIds,
     IReadOnlyList<ConversationHistoryMessage> History, string? Summary, GroupContextSettings ContextPolicy,
     ModelProviderConfiguration ChatConfiguration, Guid ModelConfigurationId = default, Guid ConversationSessionId = default,
-    string? SessionLeaseOwner = null, int SessionVersion = 0, HandoffPausePolicy HandoffPausePolicy = HandoffPausePolicy.Group);
+    string? SessionLeaseOwner = null, int SessionVersion = 0,
+    GroupAnswerFallbackSettings? AnswerFallback = null,
+    int ModelConfigurationVersion = 0);
 
 public sealed record ConversationPageItem(Guid Id, Guid GroupProfileId, Guid? ConversationSessionId, string Direction, string Role, string SenderDisplayName, string? StableSenderId,
     string Text, DateTime CreatedAtUtc);
 public sealed record RetrievalAuditPageItem(Guid Id, Guid MessageId, Guid GroupProfileId, string Decision, double ConfidenceThreshold,
     double? ConfidenceValue, string? FailureCode, string EvidenceJson, DateTime CreatedAtUtc);
+public sealed record ConversationContextSessionSource(
+    Guid SessionId,
+    string SenderScopeKey,
+    string SenderDisplayName,
+    string? Summary,
+    DateTime? ClearedAtUtc,
+    long ClearedThroughSequence,
+    DateTime LastActivityAtUtc,
+    int Version,
+    IReadOnlyList<ConversationHistoryMessage> Messages);
+public sealed record GroupConversationContextSourcePage(
+    Guid GroupId,
+    int ConfigurationVersion,
+    GroupContextOverrides ConfiguredContext,
+    IReadOnlyList<ConversationContextSessionSource> Items,
+    int Total,
+    int Page,
+    int PageSize);
 public sealed record PageResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 public enum InboundPolicyDecisionKind { Proceed, NoReply }
 public sealed record InboundPolicyDecision(Guid MessageId, InboundPolicyDecisionKind Kind, Guid? GroupProfileId, string? Reason, string EvidenceJson);
+public enum ClearConversationContextStatus { Cleared, NotFound, Conflict }
+public sealed record ClearConversationContextResult(
+    ClearConversationContextStatus Status,
+    int ClearedSessions = 0,
+    int? CurrentConfigurationVersion = null);
 
 public interface IGroundedConversationRepository
 {
@@ -26,12 +51,16 @@ public interface IGroundedConversationRepository
     Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token);
     Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token);
     Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token);
-    Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token);
     Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token);
+    Task<GroupConversationContextSourcePage?> GetGroupContextAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token);
+    Task<ClearConversationContextResult> ClearGroupContextAsync(
+        Guid groupProfileId,
+        int expectedConfigurationVersion,
+        DateTime clearedAtUtc,
+        CancellationToken token);
     Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token);
     Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token);
 }
 
 public sealed class ConversationSessionBusyException(string message) : Exception(message);
 public sealed class ConversationSessionOwnershipLostException(string message) : Exception(message);
-public sealed class ConversationHandoffRaceException(string message) : Exception(message);

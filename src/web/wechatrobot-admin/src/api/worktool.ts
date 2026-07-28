@@ -7,6 +7,10 @@ export interface KnownGroup {
   name: string;
   workToolGroupRemark?: string;
   isEnabled: boolean;
+  archivedAtUtc?: string | null;
+  state: 'enabled' | 'disabled' | 'archived';
+  stateVersion: number;
+  configurationVersion: number;
   updatedAtUtc: string;
 }
 export interface WorkToolRobotOption {
@@ -56,7 +60,7 @@ export interface WorkToolOperationAudit {
 }
 export interface WorkToolOperationsApi {
   listRobots(): Promise<WorkToolRobotOption[]>;
-  listGroups(): Promise<KnownGroup[]>;
+  listGroups(status?: 'current' | 'enabled' | 'disabled' | 'archived' | 'all'): Promise<KnownGroup[]>;
   listRemoteGroups(robotId: string, params: {
     query?: string;
     page: number;
@@ -74,7 +78,9 @@ export interface WorkToolOperationsApi {
 }
 export const workToolOperationsApi: WorkToolOperationsApi = {
   async listRobots() { return (await apiClient.get<WorkToolRobotOption[]>('/api/admin/worktool/robots')).data; },
-  async listGroups() { return (await apiClient.get<KnownGroup[]>('/api/admin/worktool/groups')).data; },
+  async listGroups(status = 'current') {
+    return (await apiClient.get<KnownGroup[]>('/api/admin/worktool/groups', { params: { status } })).data;
+  },
   async listRemoteGroups(robotId, params) {
     return (await apiClient.get<RemoteWorkToolGroupPage>(
       `/api/admin/worktool/robots/${encodeURIComponent(robotId)}/groups`,

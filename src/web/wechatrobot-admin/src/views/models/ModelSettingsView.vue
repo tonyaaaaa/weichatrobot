@@ -10,13 +10,14 @@ import {
   type ModelConfigurationType
 } from '../../api/models';
 import ModelConfigurationDialog from './ModelConfigurationDialog.vue';
+import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
 const props = withDefaults(defineProps<{
   api?: ModelApi;
   confirmAction?: (message: string) => boolean | Promise<boolean>;
 }>(), {
   api: () => modelApi,
-  confirmAction: (message: string) => window.confirm(message)
+  confirmAction: defaultConfirmAction
 });
 
 const loading = ref(true);
@@ -92,6 +93,20 @@ async function testConnection(configuration: ModelConfiguration): Promise<void> 
   await run(configuration, 'test', () => props.api.testConnection(configuration.id), updated => {
     notice.value = `${updated.name} 连接测试成功。`;
   });
+}
+
+async function testWebSearch(configuration: ModelConfiguration): Promise<void> {
+  if (!props.api.testWebSearch) return;
+  busyId.value = `${configuration.id}:web-search`;
+  error.value = '';
+  try {
+    const result = await props.api.testWebSearch(configuration.id);
+    notice.value = `${configuration.name} Web Search 测试成功，返回 ${result.sourceCount} 个合法来源。`;
+  } catch {
+    error.value = `${configuration.name} Web Search 测试失败；普通连接状态不受影响。`;
+  } finally {
+    busyId.value = '';
+  }
 }
 
 async function toggleEnabled(configuration: ModelConfiguration): Promise<void> {
@@ -245,6 +260,8 @@ onMounted(load);
             <dl class="model-summary">
               <div><dt>接口地址</dt><dd class="mono" :title="item.baseUrl">{{ item.baseUrl }}</dd></div>
               <div><dt>模型名称</dt><dd class="mono">{{ item.model }}</dd></div>
+              <div v-if="item.configurationType === 'embedding'"><dt>向量维度</dt><dd>{{ item.embeddingDimension ?? '未配置' }}</dd></div>
+              <div v-if="item.configurationType === 'chat'"><dt>Web Search</dt><dd>{{ item.webSearchMode === 'ZaiChatCompletions' ? 'Z.AI Chat Completions' : '未启用' }}</dd></div>
               <div><dt>API Key</dt><dd class="mono">{{ keyText(item) }}</dd></div>
               <div><dt>调用策略</dt><dd>{{ item.timeoutSeconds }} 秒超时 · {{ item.maxRetries }} 次重试</dd></div>
             </dl>
@@ -260,6 +277,12 @@ onMounted(load);
                 :loading="busyId === `${item.id}:test`"
                 @click="testConnection(item)"
               >测试连接</ElButton>
+              <ElButton
+                v-if="item.configurationType === 'chat' && item.webSearchMode === 'ZaiChatCompletions'"
+                :data-testid="`test-web-search-${item.id}`"
+                :loading="busyId === `${item.id}:web-search`"
+                @click="testWebSearch(item)"
+              >测试 Web Search</ElButton>
               <ElButton
                 :data-testid="`enable-${item.id}`"
                 :disabled="item.connectionStatus !== 'Succeeded' || item.isDefault"

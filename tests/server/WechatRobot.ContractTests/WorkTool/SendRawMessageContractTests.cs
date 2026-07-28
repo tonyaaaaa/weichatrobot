@@ -22,6 +22,10 @@ public sealed class SendRawMessageContractTests
         Assert.Null(result.FailureCode);
         Assert.Equal("POST", handler.Method);
         Assert.Equal("/wework/sendRawMessage?robotId=robot-7", handler.PathAndQuery);
+        Assert.Equal(HttpVersion.Version11, handler.Version);
+        Assert.Equal(HttpVersionPolicy.RequestVersionExact, handler.VersionPolicy);
+        Assert.True(handler.ConnectionClose);
+        Assert.Equal(Encoding.UTF8.GetByteCount(handler.Body), handler.ContentLength);
         using var json = JsonDocument.Parse(handler.Body);
         Assert.Equal(2, json.RootElement.GetProperty("socketType").GetInt32());
         var command = json.RootElement.GetProperty("list")[0];
@@ -29,6 +33,30 @@ public sealed class SendRawMessageContractTests
         Assert.Equal("Support Group", command.GetProperty("titleList")[0].GetString());
         Assert.Equal("fixed reply", command.GetProperty("receivedContent").GetString());
         Assert.Equal("张工", command.GetProperty("atList")[0].GetString());
+    }
+
+    [Fact]
+    public async Task SendTextAsync_accepts_observed_success_code_200()
+    {
+        using var client = new HttpClient(new RecordingHandler(
+            HttpStatusCode.OK,
+            """{"code":200,"message":"操作成功","data":"command-200"}"""))
+        {
+            BaseAddress = new Uri("https://fake.worktool.test/")
+        };
+        var sut = new WorkToolClient(client, new FixedCredentials());
+
+        var result = await sut.SendTextAsync(
+            new WorkToolSendRequest(
+                Guid.NewGuid(),
+                "Support Group",
+                "fixed reply",
+                "idem-200"),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Accepted);
+        Assert.Equal("command-200", result.MessageId);
+        Assert.Null(result.FailureCode);
     }
 
     [Fact]
@@ -105,12 +133,20 @@ public sealed class SendRawMessageContractTests
         public string? Method { get; private set; }
         public string? PathAndQuery { get; private set; }
         public string Body { get; private set; } = string.Empty;
+        public Version? Version { get; private set; }
+        public HttpVersionPolicy VersionPolicy { get; private set; }
+        public bool? ConnectionClose { get; private set; }
+        public long? ContentLength { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Method = request.Method.Method;
             PathAndQuery = request.RequestUri!.PathAndQuery;
             Body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+            Version = request.Version;
+            VersionPolicy = request.VersionPolicy;
+            ConnectionClose = request.Headers.ConnectionClose;
+            ContentLength = request.Content?.Headers.ContentLength;
             return new HttpResponseMessage(statusCode) { Content = new StringContent(responseBody, Encoding.UTF8, "application/json") };
         }
     }

@@ -21,6 +21,66 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
 
     public InboundGroupRulePipelineTests(MySqlFixture fixture) => this.fixture = fixture;
 
+    [Fact]
+    public async Task Disabled_group_message_reaches_a_terminal_no_reply_without_entering_a_session()
+    {
+        await using var database = new WechatRobotDbContext(
+            new DbContextOptionsBuilder<WechatRobotDbContext>()
+                .UseMySQL(fixture.ConnectionString)
+                .Options);
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var robot = new RobotConfigEntity
+        {
+            Name = $"disabled-group-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"disabled-group-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test"
+        };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = "停用测试群",
+            IsEnabled = false
+        };
+        var message = new ConversationMessageEntity
+        {
+            RobotConfigId = robot.Id,
+            GroupProfileId = group.Id,
+            Direction = "inbound",
+            Role = "user",
+            GroupName = group.Name,
+            SenderDisplayName = "Alice",
+            Text = "问题",
+            FallbackHash = Guid.NewGuid().ToString("N"),
+            ProcessingState = "pending"
+        };
+        database.AddRange(robot, group, message);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var repository = new GroundedConversationRepository(
+            database,
+            new ModelConfigurationService(new PassThroughProtector()),
+            TimeProvider.System);
+
+        var decision = await repository.EvaluateInboundPolicyAsync(
+            message.Id,
+            group.Name,
+            null,
+            wasMentioned: true,
+            TestContext.Current.CancellationToken);
+        await repository.PersistNoReplyTerminalAsync(
+            decision,
+            TestContext.Current.CancellationToken);
+
+        database.ChangeTracker.Clear();
+        var stored = await database.ConversationMessages.SingleAsync(
+            item => item.Id == message.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("group_disabled", stored.TerminalReason);
+        Assert.Equal("completed", stored.ProcessingState);
+        Assert.Empty(await database.ConversationSessions.Where(
+            session => session.GroupProfileId == group.Id).ToArrayAsync(
+            TestContext.Current.CancellationToken));
+    }
+
     public static TheoryData<string, string, GroupRulePatternKind, string?, GroupRulePatternKind, bool, bool, string?> Cases => new()
     {
         { "技术部", "技术部", GroupRulePatternKind.Exact, null, GroupRulePatternKind.Exact, true, true, null },
@@ -217,6 +277,50 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
+    public async Task Unique_visible_name_matches_when_callback_omits_configured_remark()
+    {
+        using var services = Services();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var suffix = Guid.NewGuid().ToString("N");
+        var robot = new RobotConfigEntity { Name = suffix, WorkToolRobotId = suffix, CallbackSecretHash = "test" };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            ExternalGroupId = $"legacy-{suffix}",
+            Name = $"unique-{suffix}",
+            WorkToolGroupRemark = $"configured-remark-{suffix}"
+        };
+        db.AddRange(robot, group);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+        var externalMessageId = $"missing-remark-{suffix}";
+        await repository.IngestInboundMessageAsync(new InboundMessageIngestRequest(
+            robot.Id,
+            externalMessageId,
+            $"fallback-{suffix}",
+            DateTime.UtcNow,
+            group.Name,
+            null,
+            "Alice",
+            "question",
+            DateTime.UtcNow,
+            "stable",
+            true), TestContext.Current.CancellationToken);
+        var messageId = await db.ConversationMessages.Where(item => item.WorkToolMessageId == externalMessageId)
+            .Select(item => item.Id).SingleAsync(TestContext.Current.CancellationToken);
+
+        var decision = await scope.ServiceProvider.GetRequiredService<IGroundedConversationRepository>()
+            .EvaluateInboundPolicyAsync(messageId, group.Name, null, true, TestContext.Current.CancellationToken);
+
+        Assert.Equal(InboundPolicyDecisionKind.Proceed, decision.Kind);
+        Assert.Equal(group.Id, decision.GroupProfileId);
+        await DeletePendingJobAsync(db, messageId);
+    }
+
+    [Fact]
     public async Task Duplicate_visible_names_without_a_usable_remark_are_rejected_as_ambiguous()
     {
         using var services = Services();
@@ -310,9 +414,9 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
     private static Task<int> DeletePendingJobAsync(
         WechatRobotDbContext database,
         Guid messageId) =>
-        database.DurableJobs
-            .Where(job => job.RelatedConversationMessageId == messageId)
-            .ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        database.Database.ExecuteSqlInterpolatedAsync(
+            $"DELETE FROM `durable_job` WHERE `RelatedConversationMessageId` = {messageId};",
+            TestContext.Current.CancellationToken);
 
     private ServiceProvider Services() => new ServiceCollection()
         .AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(fixture.ConnectionString))

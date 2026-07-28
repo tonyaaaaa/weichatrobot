@@ -46,6 +46,24 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
         Set<WorkToolRateLimitBucketEntity>();
     public DbSet<GroupHumanAgentEntity> GroupHumanAgents =>
         Set<GroupHumanAgentEntity>();
+    public DbSet<MemoryCandidateEntity> MemoryCandidates => Set<MemoryCandidateEntity>();
+    public DbSet<MemoryObservationEntity> MemoryObservations => Set<MemoryObservationEntity>();
+    public DbSet<MemoryEntryEntity> MemoryEntries => Set<MemoryEntryEntity>();
+    public DbSet<MemoryAuditEntity> MemoryAudits => Set<MemoryAuditEntity>();
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        ValidatePersistenceInvariants();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        ValidatePersistenceInvariants();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -66,6 +84,41 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
                     property.SetValueConverter(new UtcNullableDateTimeConverter());
                     property.SetColumnType("datetime(6)");
                 }
+            }
+        }
+    }
+
+    private void ValidatePersistenceInvariants()
+    {
+        foreach (var entry in ChangeTracker.Entries()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            switch (entry.Entity)
+            {
+                case RobotConfigEntity robot
+                    when robot.SendRateLimitPerMinute is < 1 or > 60:
+                    throw new InvalidOperationException(
+                        $"{nameof(RobotConfigEntity.SendRateLimitPerMinute)} must be between 1 and 60.");
+
+                case GroupProfileEntity group
+                    when group.HandoffPausePolicy is not ("Group" or "Sender"):
+                    throw new InvalidOperationException(
+                        $"{nameof(GroupProfileEntity.HandoffPausePolicy)} must be Group or Sender.");
+
+                case GroupProfileEntity group
+                    when group.ArchivedAtUtc is not null && group.IsEnabled:
+                    throw new InvalidOperationException(
+                        $"{nameof(GroupProfileEntity.ArchivedAtUtc)} requires a disabled group.");
+
+                case GroupProfileEntity group
+                    when group.RegistrationSource is not ("Manual" or "WorkToolImport"):
+                    throw new InvalidOperationException(
+                        $"{nameof(GroupProfileEntity.RegistrationSource)} must be Manual or WorkToolImport.");
+
+                case GroupHumanAgentEntity agent
+                    when agent.VerificationStatus is not ("Verified" or "Missing" or "Conflict" or "Stale"):
+                    throw new InvalidOperationException(
+                        $"{nameof(GroupHumanAgentEntity.VerificationStatus)} must be Verified, Missing, Conflict, or Stale.");
             }
         }
     }

@@ -126,8 +126,10 @@ public sealed class WorkToolClient(
             cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new WorkToolRawResultException(HttpFailure(response));
-        if (!parsed.Parsed || parsed.Envelope?.Code != 200
-                           || parsed.Envelope.Data is null)
+        if (!parsed.Parsed ||
+            parsed.Envelope is not { } envelope ||
+            !IsSuccessCode(envelope.Code) ||
+            envelope.Data is null)
         {
             throw new WorkToolRawResultException(
                 parsed.Parsed
@@ -136,7 +138,7 @@ public sealed class WorkToolClient(
                     : "worktool_invalid_response");
         }
 
-        return parsed.Envelope.Data.Select(item =>
+        return envelope.Data.Select(item =>
         {
             if (string.IsNullOrWhiteSpace(item.MessageId))
                 throw new WorkToolRawResultException("worktool_invalid_response");
@@ -184,13 +186,16 @@ public sealed class WorkToolClient(
 
         if (!response.IsSuccessStatusCode)
             throw new WorkToolGroupListException(HttpFailure(response));
-        if (!parsed.Parsed || parsed.Envelope?.Code != 0 || parsed.Envelope.Data is null)
+        if (!parsed.Parsed ||
+            parsed.Envelope is not { } envelope ||
+            !IsSuccessCode(envelope.Code) ||
+            envelope.Data is null)
             throw new WorkToolGroupListException(
                 parsed.Parsed
                     ? SafeFailureCode(parsed.Envelope?.Code) ?? "worktool_invalid_response"
                     : "worktool_invalid_response");
 
-        var data = parsed.Envelope.Data;
+        var data = envelope.Data;
         if (data.PageNum < 0
             || data.PageSize < 0
             || data.TotalPage < 0
@@ -233,7 +238,10 @@ public sealed class WorkToolClient(
             return new(false, null, false, false, HttpFailure(response));
         }
 
-        if (!parsed.Parsed || parsed.Envelope?.Code != 200 || parsed.Envelope.Data is null)
+        if (!parsed.Parsed ||
+            parsed.Envelope is not { } envelope ||
+            !IsSuccessCode(envelope.Code) ||
+            envelope.Data is null)
         {
             return new(
                 false,
@@ -245,7 +253,7 @@ public sealed class WorkToolClient(
                     : "worktool_invalid_response");
         }
 
-        var data = parsed.Envelope.Data;
+        var data = envelope.Data;
         return new(
             true,
             data.RobotId,
@@ -318,13 +326,14 @@ public sealed class WorkToolClient(
 
         if (!response.IsSuccessStatusCode ||
             !parsed.Parsed ||
-            parsed.Envelope?.Code != 0 ||
-            parsed.Envelope.Data is null)
+            parsed.Envelope is not { } envelope ||
+            !IsSuccessCode(envelope.Code) ||
+            envelope.Data is null)
         {
             return [];
         }
 
-        return parsed.Envelope.Data
+        return envelope.Data
             .Where(callback => callback.Type == 1)
             .Select(callback => new WorkToolEventCallbackRegistration(
                 callback.Type,
@@ -402,15 +411,18 @@ public sealed class WorkToolClient(
         object command,
         CancellationToken cancellationToken)
     {
+        var body = JsonSerializer.Serialize(
+            new { socketType = 2, list = new[] { command } },
+            JsonOptions);
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             $"wework/sendRawMessage?robotId={Escape(robotId)}")
         {
-            Content = JsonContent.Create(
-                new { socketType = 2, list = new[] { command } },
-                mediaType: null,
-                options: JsonOptions)
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
         };
+        request.Headers.ConnectionClose = true;
         using var response = await httpClient.SendAsync(request, cancellationToken);
         var parsed = await ReadEnvelopeAsync<string>(response, "submit_command", cancellationToken);
         return ToSubmission(response, parsed.Envelope, parsed.Parsed);
@@ -473,10 +485,22 @@ public sealed class WorkToolClient(
 
         if (!parsed.Parsed || parsed.Envelope is null)
         {
+            logger?.LogWarning(
+                "WorkTool mutation endpoint {Endpoint} returned an unreadable response body.",
+                endpoint);
             return new(false, "worktool_invalid_response");
         }
 
-        return parsed.Envelope.Code == 0
+        if (!IsSuccessCode(parsed.Envelope.Code))
+        {
+            logger?.LogWarning(
+                "WorkTool mutation endpoint {Endpoint} rejected the request with code {Code} and message {Message}.",
+                endpoint,
+                parsed.Envelope.Code,
+                parsed.Envelope.Message);
+        }
+
+        return IsSuccessCode(parsed.Envelope.Code)
             ? new(true, null)
             : new(false, SafeFailureCode(parsed.Envelope.Code));
     }
@@ -491,7 +515,7 @@ public sealed class WorkToolClient(
             var envelope = await response.Content.ReadFromJsonAsync<Envelope<T>>(
                 JsonOptions,
                 cancellationToken);
-            if (envelope?.Code is not (0 or 200))
+            if (!IsSuccessCode(envelope?.Code))
             {
                 LogFailure(endpoint, envelope?.Code);
             }
@@ -523,7 +547,7 @@ public sealed class WorkToolClient(
             return new(false, null, "worktool_invalid_response", true);
         }
 
-        if (envelope.Code != 0)
+        if (!IsSuccessCode(envelope.Code))
         {
             return new(false, null, SafeFailureCode(envelope.Code), false);
         }
@@ -549,8 +573,10 @@ public sealed class WorkToolClient(
     private static string HttpFailure(HttpResponseMessage response) =>
         $"worktool_http_{(int)response.StatusCode}";
 
+    private static bool IsSuccessCode(int? code) => code is 0 or 200;
+
     private static string? SafeFailureCode(int? code) =>
-        code is 0 or 200 ? null : code is null ? "worktool_invalid_response" : $"worktool_code_{code}";
+        IsSuccessCode(code) ? null : code is null ? "worktool_invalid_response" : $"worktool_code_{code}";
 
     private static void EnsureSupportedEventType(int type)
     {

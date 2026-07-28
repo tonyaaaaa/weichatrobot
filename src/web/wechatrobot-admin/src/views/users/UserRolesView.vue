@@ -9,13 +9,14 @@ import {
   type UserAdministrationApi,
   type UserStateFilter
 } from '../../api/users';
+import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
 const props = withDefaults(defineProps<{
   api?: UserAdministrationApi;
   confirmAction?: (message: string) => boolean | Promise<boolean>;
 }>(), {
   api: () => userAdministrationApi,
-  confirmAction: (message: string) => window.confirm(message)
+  confirmAction: defaultConfirmAction
 });
 
 const filters = reactive<{
@@ -37,8 +38,6 @@ const createPassword = ref('');
 const createRoles = ref<SystemRole[]>([]);
 const roleUser = ref<ManagedUser>();
 const selectedRoles = ref<SystemRole[]>([]);
-const nicknameUser = ref<ManagedUser>();
-const workToolDisplayName = ref('');
 const totalPages = computed(() => Math.max(1, Math.ceil(page.value.total / page.value.pageSize)));
 
 async function load(): Promise<void> {
@@ -142,52 +141,6 @@ async function saveRoles(): Promise<void> {
   }
 }
 
-function canBindWorkToolName(user: ManagedUser): boolean {
-  return user.isEnabled
-    && user.roles.some(role => role === 'Admin' || role === 'HumanAgent');
-}
-
-function openWorkToolName(user: ManagedUser): void {
-  nicknameUser.value = user;
-  workToolDisplayName.value = user.workToolDisplayName ?? '';
-  error.value = '';
-}
-
-async function saveWorkToolName(): Promise<void> {
-  if (!nicknameUser.value) return;
-  const normalized = workToolDisplayName.value.trim();
-  if (!normalized) {
-    error.value = '请输入企业微信中的客服显示名。';
-    return;
-  }
-  busy.value = `${nicknameUser.value.id}:worktool-name`;
-  error.value = '';
-  try {
-    await props.api.setWorkToolDisplayName(nicknameUser.value.id, normalized);
-    notice.value = `${nicknameUser.value.displayName} 已绑定 WorkTool 昵称。`;
-    nicknameUser.value = undefined;
-    await load();
-  } catch (exception) {
-    handleError(exception, 'WorkTool 昵称绑定失败。');
-  } finally {
-    busy.value = '';
-  }
-}
-
-async function clearWorkToolName(user: ManagedUser): Promise<void> {
-  if (!await props.confirmAction(`确认清除“${user.displayName}”的 WorkTool 昵称绑定？`)) return;
-  busy.value = `${user.id}:worktool-name`;
-  error.value = '';
-  try {
-    await props.api.clearWorkToolDisplayName(user.id);
-    notice.value = `${user.displayName} 的 WorkTool 昵称已清除。`;
-    await load();
-  } catch (exception) {
-    handleError(exception, 'WorkTool 昵称清除失败。');
-  } finally {
-    busy.value = '';
-  }
-}
 
 function handleError(exception: unknown, fallback: string): void {
   const data = (exception as {
@@ -202,12 +155,6 @@ function handleError(exception: unknown, fallback: string): void {
       break;
     case 'identity-validation':
       error.value = `账号创建不符合身份规则${data.errors?.length ? `：${data.errors.join('、')}` : '。'}`;
-      break;
-    case 'worktool-display-name-conflict':
-      error.value = '该昵称已绑定其他账号。';
-      break;
-    case 'worktool-agent-ineligible':
-      error.value = '只有已启用的 Admin 或 HumanAgent 用户可以绑定客服昵称。';
       break;
     default:
       error.value = fallback;
@@ -227,7 +174,7 @@ onMounted(load);
       <div>
         <p class="eyebrow">身份与权限</p>
         <h1 id="users-title">用户与角色</h1>
-        <p>管理后台账号、权限和 WorkTool 客服显示名；群成员自动验证仍需完成昵称快照。</p>
+        <p>管理后台登录账号、启停状态和系统权限。</p>
       </div>
       <div class="header-actions">
         <ElButton :loading="loading" @click="load">刷新</ElButton>
@@ -270,7 +217,7 @@ onMounted(load);
       <div v-else class="table-scroll">
         <table>
           <thead>
-            <tr><th>用户</th><th>角色</th><th>WorkTool 昵称</th><th>状态</th><th>操作</th></tr>
+            <tr><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody>
             <tr v-for="user in page.items" :key="user.id">
@@ -281,25 +228,10 @@ onMounted(load);
                   <span v-if="user.roles.length === 0">未分配角色</span>
                 </div>
               </td>
-              <td>
-                <strong v-if="user.workToolDisplayName">{{ user.workToolDisplayName }}</strong>
-                <span v-else-if="canBindWorkToolName(user)">未绑定</span>
-                <small v-else>仅 Admin 或 HumanAgent 可绑定</small>
-              </td>
               <td><ElTag :type="user.isEnabled ? 'success' : 'info'">{{ user.isEnabled ? '已启用' : '已停用' }}</ElTag></td>
               <td>
                 <div class="row-actions">
                   <ElButton :data-testid="`edit-roles-${user.id}`" @click="openRoles(user)">编辑角色</ElButton>
-                  <ElButton
-                    v-if="canBindWorkToolName(user)"
-                    :data-testid="`bind-worktool-${user.id}`"
-                    @click="openWorkToolName(user)"
-                  >{{ user.workToolDisplayName ? '修改昵称' : '绑定昵称' }}</ElButton>
-                  <ElButton
-                    v-if="user.workToolDisplayName"
-                    :loading="busy === `${user.id}:worktool-name`"
-                    @click="clearWorkToolName(user)"
-                  >清除昵称</ElButton>
                   <ElButton
                     :data-testid="`toggle-user-${user.id}`"
                     :loading="busy === `${user.id}:enabled`"
@@ -351,30 +283,6 @@ onMounted(load);
       </section>
     </div>
 
-    <div v-if="nicknameUser" class="dialog-backdrop">
-      <section class="dialog" role="dialog" aria-modal="true">
-        <header><h2>绑定 {{ nicknameUser.displayName }} 的 WorkTool 昵称</h2><button type="button" aria-label="关闭" @click="nicknameUser = undefined">×</button></header>
-        <label>
-          <span>企业微信显示名</span>
-          <input
-            v-model="workToolDisplayName"
-            data-testid="worktool-display-name"
-            maxlength="128"
-            autocomplete="off"
-          >
-        </label>
-        <p class="field-help">必须与企业微信中的公司级唯一显示名完全一致；改名后需要重新绑定并验证。</p>
-        <footer>
-          <ElButton @click="nicknameUser = undefined">取消</ElButton>
-          <ElButton
-            data-testid="save-worktool-display-name"
-            type="primary"
-            :loading="busy === `${nicknameUser.id}:worktool-name`"
-            @click="saveWorkToolName"
-          >保存绑定</ElButton>
-        </footer>
-      </section>
-    </div>
   </section>
 </template>
 
@@ -399,6 +307,5 @@ td small { display: block; margin-top: .25rem; }
 .dialog header button { border: 0; background: transparent; font-size: 1.5rem; cursor: pointer; }
 .dialog fieldset { display: grid; gap: var(--space-sm); padding: var(--space-md); border: 1px solid var(--color-border); border-radius: .5rem; }
 .checkbox-line { display: flex; align-items: center; gap: var(--space-sm); }
-.field-help { margin: 0; color: var(--color-muted-text); line-height: 1.6; }
 @media (max-width: 720px) { .page-header, .pagination-bar { align-items: stretch; flex-direction: column; } .filter-bar { grid-template-columns: 1fr; } }
 </style>

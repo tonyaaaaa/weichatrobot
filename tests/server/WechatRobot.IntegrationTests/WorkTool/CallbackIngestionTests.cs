@@ -316,10 +316,14 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         var robot = await SeedRobotAsync(factory, "callback-rollback", "callback-secret");
         await using var triggerScope = factory.Services.CreateAsyncScope();
         var triggerDatabase = triggerScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-        var checkConstraint = $"CHECK (PayloadJson NOT LIKE '%{robot.Id:D}%')";
-#pragma warning disable EF1002 // The value is a locally generated Guid and MySQL does not parameterize DDL constraint expressions.
-        await triggerDatabase.Database.ExecuteSqlRawAsync($"ALTER TABLE durable_job ADD CONSTRAINT fail_callback_durable_job {checkConstraint};", TestContext.Current.CancellationToken);
-#pragma warning restore EF1002
+        await triggerDatabase.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TRIGGER `fail_callback_durable_job`
+            BEFORE INSERT ON `durable_job`
+            FOR EACH ROW
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback durable job failure';
+            """,
+            TestContext.Current.CancellationToken);
         using var client = factory.CreateClient();
 
         try
@@ -330,7 +334,9 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         }
         finally
         {
-            await triggerDatabase.Database.ExecuteSqlRawAsync("ALTER TABLE durable_job DROP CHECK fail_callback_durable_job;", TestContext.Current.CancellationToken);
+            await triggerDatabase.Database.ExecuteSqlRawAsync(
+                "DROP TRIGGER IF EXISTS `fail_callback_durable_job`;",
+                TestContext.Current.CancellationToken);
         }
     }
 

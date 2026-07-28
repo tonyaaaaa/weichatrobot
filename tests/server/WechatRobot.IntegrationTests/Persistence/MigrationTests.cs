@@ -74,7 +74,7 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
-    public async Task Existing_group_receives_safe_group_handoff_policy_and_zero_configuration_version()
+    public async Task Existing_group_receives_safe_defaults_without_changing_configuration_version()
     {
         var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString).Options;
         await using var context = new WechatRobotDbContext(options);
@@ -94,5 +94,7 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
         var group = await context.GroupProfiles.AsNoTracking().SingleAsync(item => item.Id == groupId, TestContext.Current.CancellationToken);
         Assert.Equal("Group", group.HandoffPausePolicy);
         Assert.Equal(0, group.ConfigurationVersion);
+        Assert.Null(group.ArchivedAtUtc);
+        Assert.Equal(0, group.StateVersion);
     }
 }

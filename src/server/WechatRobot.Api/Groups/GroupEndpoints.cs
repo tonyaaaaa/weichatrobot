@@ -1,3 +1,5 @@
+using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
@@ -20,62 +22,138 @@ public static class GroupEndpoints
         var groups = endpoints.MapGroup("/api/groups").RequireAuthorization(SystemRoles.Admin);
         groups.MapGet("{id:guid}/configuration", GetConfigurationAsync);
         groups.MapPut("{id:guid}/configuration", UpdateConfigurationAsync);
-        groups.MapGet("{id:guid}/eligible-human-agents", GetEligibleHumanAgentsAsync);
-        groups.MapPut("{id:guid}/human-agents", UpdateHumanAgentsAsync);
+        groups.MapPost("{id:guid}/disable", DisableAsync);
+        groups.MapPost("{id:guid}/enable", EnableAsync);
+        groups.MapPost("{id:guid}/archive", ArchiveAsync);
+        groups.MapPost("{id:guid}/restore", RestoreAsync);
+        groups.MapGet("{id:guid}/conversation-context", GetConversationContextAsync);
+        groups.MapPost("{id:guid}/conversation-context/clear", ClearConversationContextAsync);
         endpoints.MapPost("/api/group-rules/preview", PreviewAsync).RequireAuthorization(SystemRoles.Admin);
         return endpoints;
     }
 
-    private static async Task<IResult> GetEligibleHumanAgentsAsync(
+    private static async Task<IResult> GetConversationContextAsync(
         Guid id,
-        WechatRobotDbContext database,
-        CancellationToken cancellationToken)
+        int page,
+        int pageSize,
+        ConversationContextQueryService service,
+        CancellationToken token)
     {
-        if (!await database.GroupProfiles.AsNoTracking().AnyAsync(group => group.Id == id, cancellationToken))
-            return Results.NotFound();
-
-        var eligibleRoleNames = new[] { SystemRoles.Admin, SystemRoles.HumanAgent };
-        var candidates = await (
-                from user in database.Users.AsNoTracking()
-                join userRole in database.UserRoles.AsNoTracking() on user.Id equals userRole.UserId
-                join role in database.Roles.AsNoTracking() on userRole.RoleId equals role.Id
-                where user.IsEnabled
-                    && user.WorkToolDisplayName != null
-                    && eligibleRoleNames.Contains(role.Name!)
-                select new EligibleHumanAgentResponse(
-                    user.Id,
-                    user.DisplayName,
-                    user.WorkToolDisplayName!,
-                    "Stale",
-                    false,
-                    false))
-            .Distinct()
-            .OrderBy(candidate => candidate.DisplayName)
-            .ToArrayAsync(cancellationToken);
-
-        return Results.Ok(new EligibleHumanAgentsResponse(
-            candidates,
-            false,
-            "需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。"));
+        var result = await service.GetAsync(id, page, pageSize, token);
+        return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
-    private static async Task<IResult> UpdateHumanAgentsAsync(
+    private static async Task<IResult> ClearConversationContextAsync(
         Guid id,
-        UpdateGroupHumanAgentsRequest request,
+        ClearConversationContextRequest request,
+        ConversationContextQueryService service,
         WechatRobotDbContext database,
-        CancellationToken cancellationToken)
+        ClaimsPrincipal user,
+        CancellationToken token)
     {
-        if (!await database.GroupProfiles.AsNoTracking().AnyAsync(group => group.Id == id, cancellationToken))
-            return Results.NotFound();
+        if (request.ExpectedConfigurationVersion < 0)
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["expectedConfigurationVersion"] = ["Configuration version must be zero or greater."]
+            });
 
-        // WorkTool only documents how to request the type=512 result. It does not
-        // document a stable member-nickname response schema. Until a captured
-        // result has passed the evidence gate, no assignment may be enabled.
-        return Results.Conflict(new
+        var result = await service.ClearAsync(id, request.ExpectedConfigurationVersion, token);
+        if (result.Status == ClearConversationContextStatus.NotFound)
+            return Results.NotFound();
+        if (result.Status == ClearConversationContextStatus.Conflict)
+            return Results.Conflict(new
+            {
+                error = "group-configuration-conflict",
+                currentVersion = result.CurrentConfigurationVersion
+            });
+
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
         {
-            error = "worktool-member-snapshot-unavailable",
-            message = "需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。"
+            Actor = user.Identity?.Name ?? "unknown",
+            Action = "group.context.clear",
+            TargetType = "GroupProfile",
+            TargetId = id.ToString("D"),
+            SanitizedDetailJson = JsonSerializer.Serialize(new
+            {
+                result.ClearedSessions,
+                configurationVersion = result.CurrentConfigurationVersion
+            })
         });
+        await database.SaveChangesAsync(token);
+        return Results.Ok(new
+        {
+            result.ClearedSessions,
+            configurationVersion = result.CurrentConfigurationVersion
+        });
+    }
+
+    private static Task<IResult> DisableAsync(
+        Guid id, ChangeGroupStateRequest request, GroupLifecycleService service,
+        WechatRobotDbContext database, ClaimsPrincipal user, CancellationToken token) =>
+        ChangeStateAsync(id, request, "disable", service, database, user, token);
+
+    private static Task<IResult> EnableAsync(
+        Guid id, ChangeGroupStateRequest request, GroupLifecycleService service,
+        WechatRobotDbContext database, ClaimsPrincipal user, CancellationToken token) =>
+        ChangeStateAsync(id, request, "enable", service, database, user, token);
+
+    private static Task<IResult> ArchiveAsync(
+        Guid id, ChangeGroupStateRequest request, GroupLifecycleService service,
+        WechatRobotDbContext database, ClaimsPrincipal user, CancellationToken token) =>
+        ChangeStateAsync(id, request, "archive", service, database, user, token);
+
+    private static Task<IResult> RestoreAsync(
+        Guid id, ChangeGroupStateRequest request, GroupLifecycleService service,
+        WechatRobotDbContext database, ClaimsPrincipal user, CancellationToken token) =>
+        ChangeStateAsync(id, request, "restore", service, database, user, token);
+
+    private static async Task<IResult> ChangeStateAsync(
+        Guid id,
+        ChangeGroupStateRequest request,
+        string action,
+        GroupLifecycleService service,
+        WechatRobotDbContext database,
+        ClaimsPrincipal user,
+        CancellationToken token)
+    {
+        if (request.ExpectedStateVersion < 0)
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["expectedStateVersion"] = ["State version must be zero or greater."]
+            });
+
+        var result = action switch
+        {
+            "disable" => await service.DisableAsync(id, request.ExpectedStateVersion, token),
+            "enable" => await service.EnableAsync(id, request.ExpectedStateVersion, token),
+            "archive" => await service.ArchiveAsync(id, request.ExpectedStateVersion, token),
+            "restore" => await service.RestoreAsync(id, request.ExpectedStateVersion, token),
+            _ => throw new ArgumentOutOfRangeException(nameof(action))
+        };
+        if (result.Status == GroupLifecycleResult.NotFound)
+            return Results.NotFound();
+        if (result.Status == GroupLifecycleResult.Conflict)
+            return Results.Conflict(new
+            {
+                error = result.ErrorCode,
+                currentState = result.State,
+                blockers = result.Blockers
+            });
+
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
+        {
+            Actor = user.Identity?.Name ?? "unknown",
+            Action = $"group.{action}",
+            TargetType = "GroupProfile",
+            TargetId = id.ToString("D"),
+            SanitizedDetailJson = JsonSerializer.Serialize(new
+            {
+                result.State!.State,
+                result.State.StateVersion
+            })
+        });
+        await database.SaveChangesAsync(token);
+        return Results.Ok(result.State);
     }
 
     private static async Task<IResult> GetConfigurationAsync(Guid id, WechatRobotDbContext database, GroupConfigurationService service, CancellationToken cancellationToken)
@@ -113,15 +191,22 @@ public static class GroupEndpoints
         }
 
         var context = ToContext(request.Context);
-        if (request.HandoffPausePolicy is not null &&
-            !Enum.TryParse<HandoffPausePolicy>(request.HandoffPausePolicy, true, out _))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["handoffPausePolicy"] = ["Handoff pause policy must be group or sender."] });
-        }
         var validation = service.Validate(context, include, exclude);
         if (!validation.IsValid)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["configuration"] = [validation.Error!] });
+        }
+        GroupAnswerFallbackSettings? answerFallback = null;
+        if (request.AnswerFallback is not null)
+        {
+            var fallbackValidation = service.ValidateAnswerFallback(
+                ToAnswerFallback(request.AnswerFallback));
+            if (!fallbackValidation.IsValid)
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["answerFallback"] = [fallbackValidation.Error!]
+                });
+            answerFallback = fallbackValidation.Settings;
         }
 
         var group = await database.GroupProfiles.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
@@ -146,8 +231,7 @@ public static class GroupEndpoints
         database.GroupProfileTags.AddRange(selectedTagIds.Select(tagId => new GroupProfileTagEntity { GroupProfileId = id, KnowledgeTagId = tagId }));
 
         ApplyContext(group, context);
-        if (request.HandoffPausePolicy is not null)
-            group.HandoffPausePolicy = Enum.Parse<HandoffPausePolicy>(request.HandoffPausePolicy, true).ToString();
+        if (answerFallback is not null) ApplyAnswerFallback(group, answerFallback);
         group.ConfigurationVersion++;
         group.UpdatedAtUtc = DateTime.UtcNow;
         try { await database.SaveChangesAsync(cancellationToken); }
@@ -217,8 +301,8 @@ public static class GroupEndpoints
                 .Select(tag => new KnowledgeTagResponse(tag.Id, tag.Name, tag.IsGlobalPublic, tag.IsEnabled, boundTagIds.Contains(tag.Id))).ToArray(),
             AnyBoundTagOrGlobalPublic,
             new GroupContextResponse(configured, service.GetEffectiveContext(configured)),
+            ToAnswerFallback(group),
             clearedSessions,
-            group.HandoffPausePolicy,
             group.ConfigurationVersion);
     }
 
@@ -236,6 +320,42 @@ public static class GroupEndpoints
         group.ContextTokenCap = context.TokenCap;
         group.ContextSummaryEnabled = context.SummaryEnabled;
         group.ContextIncludeBotHistory = context.IncludeBotHistory;
+    }
+
+    private static GroupAnswerFallbackSettings ToAnswerFallback(
+        AnswerFallbackRequest request) => new(
+        request.WebSearchEnabled,
+        request.ModelKnowledgeFallbackEnabled,
+        request.WebSearchShowSources,
+        request.WebSearchResultCount,
+        request.WebSearchRecency,
+        request.WebSearchDomainFilter,
+        request.WebSearchContentSize,
+        request.FinalNoEvidencePolicy);
+
+    private static GroupAnswerFallbackSettings ToAnswerFallback(
+        GroupProfileEntity group) => new(
+        group.WebSearchEnabled,
+        group.ModelKnowledgeFallbackEnabled,
+        group.WebSearchShowSources,
+        group.WebSearchResultCount,
+        group.WebSearchRecency,
+        group.WebSearchDomainFilter,
+        group.WebSearchContentSize,
+        group.FinalNoEvidencePolicy);
+
+    private static void ApplyAnswerFallback(
+        GroupProfileEntity group,
+        GroupAnswerFallbackSettings settings)
+    {
+        group.WebSearchEnabled = settings.WebSearchEnabled;
+        group.ModelKnowledgeFallbackEnabled = settings.ModelKnowledgeFallbackEnabled;
+        group.WebSearchShowSources = settings.WebSearchShowSources;
+        group.WebSearchResultCount = settings.WebSearchResultCount;
+        group.WebSearchRecency = settings.WebSearchRecency;
+        group.WebSearchDomainFilter = settings.WebSearchDomainFilter;
+        group.WebSearchContentSize = settings.WebSearchContentSize;
+        group.FinalNoEvidencePolicy = settings.FinalNoEvidencePolicy;
     }
 
     private static GroupPatternRule[]? ToRules(IEnumerable<RuleRequest> requests)
@@ -264,7 +384,7 @@ public static class GroupEndpoints
 
     public sealed record UpdateGroupConfigurationRequest(IReadOnlyList<RuleRequest>? IncludeRules, IReadOnlyList<RuleRequest>? ExcludeRules,
         IReadOnlyList<Guid>? BoundTagIds, ContextOverridesRequest? Context, bool ClearContext,
-        string? HandoffPausePolicy = null, int? ExpectedConfigurationVersion = null)
+        int? ExpectedConfigurationVersion = null, AnswerFallbackRequest? AnswerFallback = null)
     {
         public IReadOnlyList<RuleRequest> IncludeRules { get; init; } = IncludeRules ?? [];
         public IReadOnlyList<RuleRequest> ExcludeRules { get; init; } = ExcludeRules ?? [];
@@ -278,32 +398,27 @@ public static class GroupEndpoints
         public IReadOnlyList<string> GroupNames { get; init; } = GroupNames ?? [];
     }
     public sealed record RuleRequest(string Pattern, string PatternKind, bool IgnoreCase = true);
+    public sealed record ChangeGroupStateRequest(int ExpectedStateVersion);
+    public sealed record ClearConversationContextRequest(int ExpectedConfigurationVersion);
     public sealed record ContextOverridesRequest(bool? SenderIsolated, int? HistoryTurns, int? IdleTimeoutMinutes, int? TokenCap, bool? SummaryEnabled, bool? IncludeBotHistory);
+    public sealed record AnswerFallbackRequest(
+        bool WebSearchEnabled = false,
+        bool ModelKnowledgeFallbackEnabled = false,
+        bool WebSearchShowSources = false,
+        int WebSearchResultCount = 5,
+        string WebSearchRecency = "NoLimit",
+        string? WebSearchDomainFilter = null,
+        string WebSearchContentSize = "Medium",
+        string FinalNoEvidencePolicy = "InsufficientEvidence");
     public sealed record GroupConfigurationResponse(Guid Id, string Name, GroupRulesResponse Rules, IReadOnlyList<Guid> BoundTagIds, IReadOnlyList<Guid> AllowedTagIds,
-        IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context, int ClearedContextSessions,
-        string HandoffPausePolicy, int ConfigurationVersion);
+        IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context,
+        GroupAnswerFallbackSettings AnswerFallback, int ClearedContextSessions,
+        int ConfigurationVersion);
     public sealed record GroupRulesResponse(IReadOnlyList<RuleResponse> Include, IReadOnlyList<RuleResponse> Exclude);
     public sealed record RuleResponse(Guid Id, string Pattern, string PatternKind, bool IgnoreCase);
     public sealed record KnowledgeTagResponse(Guid Id, string Name, bool IsGlobalPublic, bool IsEnabled, bool IsBound);
     public sealed record GroupContextResponse(GroupContextOverrides Configured, GroupContextSettings Effective);
     public sealed record PreviewGroupRulesResponse(IReadOnlyList<GroupRulePreviewResult> Results);
     public sealed record GroupRulePreviewResult(string GroupName, bool IsMatch, bool IsExcluded);
-    public sealed record EligibleHumanAgentsResponse(
-        IReadOnlyList<EligibleHumanAgentResponse> Candidates,
-        bool CanConfigure,
-        string GateMessage);
-    public sealed record EligibleHumanAgentResponse(
-        Guid UserId,
-        string DisplayName,
-        string WorkToolDisplayName,
-        string VerificationStatus,
-        bool IsEnabled,
-        bool IsDefault);
-    public sealed record UpdateGroupHumanAgentsRequest(
-        IReadOnlyList<Guid>? UserIds,
-        Guid? DefaultUserId = null)
-    {
-        public IReadOnlyList<Guid> UserIds { get; init; } = UserIds ?? [];
-    }
     private enum GroupRuleDirection { Include, Exclude }
 }

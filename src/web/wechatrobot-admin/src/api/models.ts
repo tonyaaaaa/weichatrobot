@@ -2,6 +2,7 @@ import { apiClient } from './http';
 
 export type ModelConfigurationType = 'chat' | 'embedding';
 export type ModelConnectionStatus = 'Untested' | 'Succeeded' | 'Failed';
+export type WebSearchMode = 'None' | 'ZaiChatCompletions';
 
 export interface ModelConfiguration {
   id: string;
@@ -10,6 +11,8 @@ export interface ModelConfiguration {
   configurationType: ModelConfigurationType;
   baseUrl: string;
   model: string;
+  embeddingDimension?: number | null;
+  webSearchMode?: WebSearchMode;
   timeoutSeconds: number;
   maxRetries: number;
   isEnabled: boolean;
@@ -28,6 +31,8 @@ export interface ModelConfigurationDraft {
   configurationType: ModelConfigurationType;
   baseUrl: string;
   model: string;
+  embeddingDimension?: number | null;
+  webSearchMode?: WebSearchMode;
   apiKey?: string;
   timeoutSeconds: number;
   maxRetries: number;
@@ -46,6 +51,7 @@ export interface ModelApi {
   create(value: ModelConfigurationDraft): Promise<ModelConfiguration>;
   update(id: string, value: ModelConfigurationDraft): Promise<ModelConfiguration>;
   testConnection(id: string): Promise<ModelConfiguration>;
+  testWebSearch?(id: string): Promise<{ succeeded: boolean; sourceCount: number }>;
   setEnabled(id: string, enabled: boolean, version: number): Promise<ModelConfiguration>;
   setDefault(id: string, isDefault: boolean, version: number): Promise<ModelConfiguration>;
   clearApiKey(id: string, version: number): Promise<ModelConfiguration>;
@@ -68,6 +74,11 @@ export const modelApi: ModelApi = {
   async testConnection(id) {
     return (await apiClient.post<ModelConfiguration>(
       `/api/admin/model-configurations/${encodeURIComponent(id)}/test-connection`
+    )).data;
+  },
+  async testWebSearch(id) {
+    return (await apiClient.post<{ succeeded: boolean; sourceCount: number }>(
+      `/api/admin/model-configurations/${encodeURIComponent(id)}/test-web-search`
     )).data;
   },
   async setEnabled(id, enabled, version) {

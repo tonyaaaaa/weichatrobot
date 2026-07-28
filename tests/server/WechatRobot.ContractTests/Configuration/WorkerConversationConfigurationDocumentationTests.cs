@@ -20,7 +20,7 @@ public sealed class WorkerConversationConfigurationDocumentationTests
         AssertDocumented(grounded, "MaximumEvidence");
         AssertDocumented(grounded, "InsufficientEvidenceText");
         AssertDocumented(grounded, "SystemFailureText");
-        AssertDocumented(grounded, "SensitiveHandoffText");
+        AssertDocumented(grounded, "SensitiveQuestionText");
         AssertDocumented(grounded, "SensitiveTerms");
         Assert.Equal(.7, grounded.GetProperty("ConfidenceThreshold").GetDouble());
         Assert.Equal(8, grounded.GetProperty("MaximumEvidence").GetInt32());

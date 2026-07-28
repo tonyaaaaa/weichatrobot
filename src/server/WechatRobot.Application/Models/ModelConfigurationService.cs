@@ -21,7 +21,8 @@ public sealed class ModelConfigurationService(ISecretProtector secretProtector)
             record.Model,
             record.EncryptedApiKey,
             TimeSpan.FromSeconds(record.TimeoutSeconds),
-            record.MaxRetries);
+            record.MaxRetries,
+            record.WebSearchMode);
     }
 
     public string ComputeFingerprint(ModelConfigurationRecord record, string configurationType, int apiKeyVersion)
@@ -32,6 +33,8 @@ public sealed class ModelConfigurationService(ISecretProtector secretProtector)
             record.Provider.Trim().ToUpperInvariant(),
             record.BaseUrl.TrimEnd('/').ToUpperInvariant(),
             record.Model.Trim(),
+            record.EmbeddingDimension?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            record.WebSearchMode.Trim().ToUpperInvariant(),
             apiKeyVersion.ToString(CultureInfo.InvariantCulture));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
@@ -62,4 +65,6 @@ public sealed record ModelConfigurationRecord(
     int TimeoutSeconds,
     int MaxRetries,
     bool IsEnabled,
-    bool IsDefault);
+    bool IsDefault,
+    int? EmbeddingDimension = null,
+    string WebSearchMode = "None");

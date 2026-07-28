@@ -36,13 +36,13 @@ describe('userAdministrationApi', () => {
       email: 'agent@example.test',
       displayName: 'Agent',
       temporaryPassword: 'Temporary1!Password',
-      roles: ['HumanAgent']
+      roles: ['KnowledgeOperator']
     });
     expect(apiClient.post).toHaveBeenCalledWith('/api/admin/users', {
       email: 'agent@example.test',
       displayName: 'Agent',
       temporaryPassword: 'Temporary1!Password',
-      roles: ['HumanAgent']
+      roles: ['KnowledgeOperator']
     });
 
     await userAdministrationApi.setEnabled('user/unsafe', false);

@@ -31,7 +31,7 @@ public static class ChunkPreviewEndpoints
     private static async Task<IResult> SplitAsync(Guid versionId, Guid previewId, SplitPreviewRequest request, ChunkPreviewRepository repository, CancellationToken token) =>
         await ExecuteAsync(() => repository.SplitAsync(versionId, previewId, request.Offset, request.ExpectedRevision, token));
     private static async Task<IResult> MergeAsync(Guid versionId, MergePreviewRequest request, ChunkPreviewRepository repository, CancellationToken token) =>
-        await ExecuteAsync(() => repository.MergeAsync(versionId, request.FirstId, request.SecondId, request.ExpectedRevision, token));
+        await ExecuteAsync(() => repository.MergeAsync(versionId, request.PreviewIds ?? [], request.ExpectedRevision, token));
     private static async Task<IResult> DeleteAsync(Guid versionId, Guid previewId, int expectedRevision, ChunkPreviewRepository repository, CancellationToken token) =>
         await ExecuteAsync(() => repository.DeleteAsync(versionId, previewId, expectedRevision, token));
     private static async Task<IResult> ApproveAsync(Guid versionId, ApprovePreviewRequest request, ChunkPreviewRepository repository, CancellationToken token) =>
@@ -93,6 +93,6 @@ public sealed record ChunkPolicyRequest(
 }
 public sealed record EditPreviewRequest(string Text, int ExpectedRevision);
 public sealed record SplitPreviewRequest(int Offset, int ExpectedRevision);
-public sealed record MergePreviewRequest(Guid FirstId, Guid SecondId, int ExpectedRevision);
+public sealed record MergePreviewRequest(IReadOnlyList<Guid>? PreviewIds, int ExpectedRevision);
 public sealed record ApprovePreviewRequest(int ExpectedRevision);
 public sealed record ApprovedChunkResponse(Guid Id, int Sequence, string Text, int? PageNumber, string Status);

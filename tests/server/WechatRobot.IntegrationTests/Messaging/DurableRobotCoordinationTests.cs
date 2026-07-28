@@ -31,11 +31,92 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
     public DurableRobotCoordinationTests(MySqlFixture fixture) => _fixture = fixture;
 
     [Fact]
+    public async Task Disabled_group_blocks_a_leased_send_before_external_dispatch()
+    {
+        await using var database = CreateDatabase();
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var robot = new RobotConfigEntity
+        {
+            Name = $"group-send-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"group-send-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test",
+            IsEnabled = true
+        };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = "已停用群",
+            IsEnabled = false
+        };
+        database.AddRange(robot, group, new SendCommandEntity
+        {
+            RobotConfigId = robot.Id,
+            GroupProfileId = group.Id,
+            IdempotencyKey = $"disabled-group-{Guid.NewGuid():N}",
+            PayloadJson = """{"GroupName":"已停用群","Text":"不应发送"}""",
+            Status = "pending",
+            NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(-1)
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var repository = new DurableJobRepository(database);
+        var leased = await repository.LeaseNextSendCommandAsync(
+            "disabled-group",
+            DateTime.UtcNow,
+            TimeSpan.FromMinutes(1),
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(leased);
+        Assert.False(await repository.EnsureSendEnabledAsync(
+            leased,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(
+            "blocked",
+            await database.SendCommands.Where(command => command.Id == leased.Id)
+                .Select(command => command.Status)
+                .SingleAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Group_disabled_after_answer_generation_does_not_enqueue_the_answer()
+    {
+        var seed = await SeedProductionEntryAsync(enabled: true, "group-disable-before-enqueue");
+        await using (var state = CreateDatabase())
+        {
+            await state.GroupProfiles.Where(group => group.Id == seed.Group.Id)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(group => group.IsEnabled, false),
+                    TestContext.Current.CancellationToken);
+        }
+        await using (var producer = CreateDatabase())
+        {
+            await new GroundedConversationRepository(
+                    producer,
+                    new ModelConfigurationService(new FakeProtector()),
+                    TimeProvider.System)
+                .PersistAnswerAndEnqueueAsync(
+                    CreateRequest(seed),
+                    CreateAnswer(),
+                    TestContext.Current.CancellationToken);
+        }
+        await using var verify = CreateDatabase();
+        Assert.False(await verify.SendCommands.AnyAsync(
+            command => command.GroupProfileId == seed.Group.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(
+            "group_disabled",
+            await verify.ConversationMessages.Where(message => message.Id == seed.Message.Id)
+                .Select(message => message.TerminalReason)
+                .SingleAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Disabled_robot_blocks_both_production_entry_points_and_manual_actor_is_idempotent()
     {
         await using var setup = CreateDatabase();
         await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
-        await setup.SendCommands.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await setup.Database.ExecuteSqlRawAsync(
+            "DELETE FROM `send_command`;",
+            TestContext.Current.CancellationToken);
         var handoff = CreateProductionSeed(enabled: false, "handoff");
         var grounded = CreateProductionSeed(enabled: false, "grounded");
         var actor = Guid.NewGuid();
@@ -359,6 +440,49 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
     }
 
     [Fact]
+    public async Task Delivery_unknown_is_quarantined_without_blocking_the_next_command()
+    {
+        using var provider = CreateProvider();
+        var now = TruncateToMicroseconds(DateTime.UtcNow.AddMinutes(1));
+        await SeedRobotAndCommandsAsync(provider, 50, now, 2);
+        await using var scope = provider.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
+
+        var first = Assert.IsType<LeasedSendCommand>(
+            await repository.LeaseNextSendCommandAsync(
+                "unknown-worker",
+                now,
+                TimeSpan.FromMinutes(1),
+                TestContext.Current.CancellationToken));
+        Assert.True(await repository.MarkSendDispatchingAsync(
+            first,
+            now,
+            TestContext.Current.CancellationToken));
+        await repository.MarkSendDeliveryUnknownAsync(
+            first,
+            "delivery_outcome_unknown",
+            now,
+            TestContext.Current.CancellationToken);
+
+        var second = Assert.IsType<LeasedSendCommand>(
+            await repository.LeaseNextSendCommandAsync(
+                "next-worker",
+                now.AddSeconds(1),
+                TimeSpan.FromMinutes(1),
+                TestContext.Current.CancellationToken));
+
+        Assert.NotEqual(first.Id, second.Id);
+        await using var verifyScope = provider.CreateAsyncScope();
+        var database = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var quarantined = await database.SendCommands.AsNoTracking()
+            .SingleAsync(
+                command => command.Id == first.Id,
+                TestContext.Current.CancellationToken);
+        Assert.Equal(WorkToolCommandStatuses.DeliveryUnknown, quarantined.Status);
+        Assert.Equal(0, quarantined.AttemptCount);
+    }
+
+    [Fact]
     public async Task Retry_waiting_earlier_command_blocks_later_command_until_it_completes()
     {
         using var firstProvider = CreateProvider();
@@ -498,8 +622,12 @@ public sealed class DurableRobotCoordinationTests : IClassFixture<MySqlFixture>
         await using var scope = provider.CreateAsyncScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
-        await database.DeadLetters.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
-        await database.SendCommands.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await database.Database.ExecuteSqlRawAsync(
+            "DELETE FROM `dead_letter`;",
+            TestContext.Current.CancellationToken);
+        await database.Database.ExecuteSqlRawAsync(
+            "DELETE FROM `send_command`;",
+            TestContext.Current.CancellationToken);
         var robotId = $"coordination-{Guid.NewGuid():N}";
         var robot = new RobotConfigEntity
         {

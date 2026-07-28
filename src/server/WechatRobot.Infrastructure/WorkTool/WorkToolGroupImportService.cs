@@ -27,13 +27,18 @@ public sealed class WorkToolGroupImportService(
             cancellationToken);
         await using var database = await databaseFactory.CreateDbContextAsync(
             cancellationToken);
-        var localNames = await database.GroupProfiles.AsNoTracking()
+        var localGroups = await database.GroupProfiles.AsNoTracking()
             .Where(group => group.RobotConfigId == robotConfigId)
-            .Select(group => group.Name)
+            .Select(group => new { group.Name, group.ArchivedAtUtc })
             .ToArrayAsync(cancellationToken);
-        var counts = localNames
-            .GroupBy(name => name.Trim(), StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+        var states = localGroups
+            .GroupBy(group => group.Name.Trim(), StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Count() == 1 && group.Single().ArchivedAtUtc is not null
+                    ? "Available"
+                    : group.Count() == 1 ? "Imported" : "Conflict",
+                StringComparer.Ordinal);
 
         return new(
             remote.PageNumber,
@@ -45,12 +50,7 @@ public sealed class WorkToolGroupImportService(
                 group.MasterName,
                 group.MembersCount,
                 group.GroupAnnouncement,
-                counts.GetValueOrDefault(group.GroupName.Trim()) switch
-                {
-                    0 => "Available",
-                    1 => "Imported",
-                    _ => "Conflict"
-                })).ToArray());
+                states.GetValueOrDefault(group.GroupName.Trim(), "Available"))).ToArray());
     }
 
     public async Task<IReadOnlyList<GroupImportResult>> ImportAsync(
@@ -145,12 +145,33 @@ public sealed class WorkToolGroupImportService(
         }
         if (matches.Length == 1)
         {
-            matches[0].WorkToolLastSeenAtUtc = now;
-            matches[0].UpdatedAtUtc = now;
+            var matched = matches[0];
+            if (matched.ArchivedAtUtc is not null)
+            {
+                matched.ArchivedAtUtc = null;
+                matched.IsEnabled = false;
+                matched.StateVersion++;
+                matched.WorkToolImportedAtUtc = now;
+                database.AdministrationAudits.Add(new AdministrationAuditEntity
+                {
+                    Actor = actor,
+                    Action = "worktool_group_restored",
+                    TargetType = "GroupProfile",
+                    TargetId = matched.Id.ToString("D"),
+                    SanitizedDetailJson = JsonSerializer.Serialize(new
+                    {
+                        groupProfileId = matched.Id,
+                        stateVersion = matched.StateVersion
+                    }),
+                    CreatedAtUtc = now
+                });
+            }
+            matched.WorkToolLastSeenAtUtc = now;
+            matched.UpdatedAtUtc = now;
             await database.SaveChangesAsync(cancellationToken);
             if (transaction is not null)
                 await transaction.CommitAsync(cancellationToken);
-            return new(name, "Imported", matches[0].Id, null);
+            return new(name, "Imported", matched.Id, null);
         }
 
         var entity = new GroupProfileEntity

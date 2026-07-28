@@ -50,14 +50,15 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
         var create = await client.PostAsJsonAsync("/api/admin/users", new
         {
             email = "agent@example.test",
-            displayName = "客服一号",
+            displayName = "知识运营一号",
             temporaryPassword,
-            roles = new[] { SystemRoles.HumanAgent }
+            roles = new[] { SystemRoles.KnowledgeOperator }
         }, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
         var createJson = await create.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.DoesNotContain(temporaryPassword, createJson, StringComparison.Ordinal);
         Assert.DoesNotContain("passwordHash", createJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("workToolDisplayName", createJson, StringComparison.OrdinalIgnoreCase);
         var created = JsonSerializer.Deserialize<ManagedUserResponse>(createJson, JsonOptions)!;
 
         var list = await client.GetFromJsonAsync<ManagedUserPageResponse>(
@@ -73,12 +74,12 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
             JsonOptions, TestContext.Current.CancellationToken))!.IsEnabled);
 
         var updateRoles = await client.PutAsJsonAsync($"/api/admin/users/{created.Id:D}/roles",
-            new { roles = new[] { SystemRoles.HumanAgent, SystemRoles.KnowledgeOperator } },
+            new { roles = new[] { SystemRoles.Admin, SystemRoles.KnowledgeOperator } },
             TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, updateRoles.StatusCode);
         var updated = await updateRoles.Content.ReadFromJsonAsync<ManagedUserResponse>(
             JsonOptions, TestContext.Current.CancellationToken);
-        Assert.Equal([SystemRoles.HumanAgent, SystemRoles.KnowledgeOperator], updated!.Roles);
+        Assert.Equal([SystemRoles.Admin, SystemRoles.KnowledgeOperator], updated!.Roles);
 
         var auditJson = string.Join('\n', await _factory.ReadAuditDetailsAsync());
         Assert.DoesNotContain(temporaryPassword, auditJson, StringComparison.Ordinal);
@@ -95,7 +96,8 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
 
         var roles = await client.GetFromJsonAsync<string[]>(
             "/api/admin/users/roles", TestContext.Current.CancellationToken);
-        Assert.Equal(SystemRoles.All, roles);
+        Assert.NotNull(roles);
+        Assert.Equal([SystemRoles.Admin, SystemRoles.KnowledgeOperator], roles);
 
         var disable = await client.PutAsJsonAsync($"/api/admin/users/{admin.Id:D}/enabled",
             new { isEnabled = false }, TestContext.Current.CancellationToken);
@@ -128,7 +130,7 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
     }
 
     [Fact]
-    public async Task Admin_can_bind_and_clear_a_unique_WorkTool_display_name()
+    public async Task Human_agent_cannot_be_newly_assigned_and_nickname_binding_routes_are_retired()
     {
         await _factory.ResetAsync();
         var admin = await _factory.CreateUserAsync(
@@ -136,32 +138,30 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
             "Admin",
             "Temporary1!Password",
             [SystemRoles.Admin]);
-        var agent = await _factory.CreateUserAsync(
-            "nickname-agent@example.test",
-            "后台名称",
-            "Temporary1!Password",
-            [SystemRoles.HumanAgent]);
         using var client = _factory.CreateAdminClient(admin);
 
+        var create = await client.PostAsJsonAsync(
+            "/api/admin/users",
+            new
+            {
+                email = "retired-agent@example.test",
+                displayName = "历史客服",
+                temporaryPassword = "Temporary1!Password",
+                roles = new[] { SystemRoles.HumanAgent }
+            },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, create.StatusCode);
+
         var bind = await client.PutAsJsonAsync(
-            $"/api/admin/users/{agent.Id:D}/worktool-display-name",
-            new { displayName = "企微客服甲" },
+            $"/api/admin/users/{Guid.NewGuid():D}/worktool-display-name",
+            new { displayName = "历史昵称" },
             TestContext.Current.CancellationToken);
-
-        bind.EnsureSuccessStatusCode();
-        var bound = await bind.Content.ReadFromJsonAsync<ManagedUserResponse>(
-            JsonOptions,
-            TestContext.Current.CancellationToken);
-        Assert.Equal("企微客服甲", bound!.WorkToolDisplayName);
-
         var clear = await client.DeleteAsync(
-            $"/api/admin/users/{agent.Id:D}/worktool-display-name",
+            $"/api/admin/users/{Guid.NewGuid():D}/worktool-display-name",
             TestContext.Current.CancellationToken);
-        clear.EnsureSuccessStatusCode();
-        var cleared = await clear.Content.ReadFromJsonAsync<ManagedUserResponse>(
-            JsonOptions,
-            TestContext.Current.CancellationToken);
-        Assert.Null(cleared!.WorkToolDisplayName);
+
+        Assert.Equal(HttpStatusCode.NotFound, bind.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, clear.StatusCode);
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -170,7 +170,6 @@ public sealed class UserAdministrationEndpointTests : IClassFixture<UserAdminist
         string Email,
         string DisplayName,
         bool IsEnabled,
-        string? WorkToolDisplayName,
         string[] Roles);
     private sealed record ManagedUserPageResponse(ManagedUserResponse[] Items, int Total, int Page, int PageSize);
 }

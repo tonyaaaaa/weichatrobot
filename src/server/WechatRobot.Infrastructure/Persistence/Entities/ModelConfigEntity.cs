@@ -10,6 +10,8 @@ public sealed class ModelConfigEntity
     public string? DefaultConfigurationType { get; private set; }
     public string BaseUrl { get; set; } = string.Empty;
     public string Model { get; set; } = string.Empty;
+    public int? EmbeddingDimension { get; set; }
+    public string WebSearchMode { get; set; } = "None";
     public string? EncryptedApiKey { get; set; }
     public int TimeoutSeconds { get; set; } = 30;
     public int MaxRetries { get; set; }

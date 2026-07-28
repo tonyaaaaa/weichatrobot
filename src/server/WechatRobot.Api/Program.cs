@@ -12,13 +12,14 @@ using WechatRobot.Api.Groups;
 using WechatRobot.Api.Knowledge;
 using WechatRobot.Api.Models;
 using WechatRobot.Api.WorkTool;
-using WechatRobot.Api.Handoffs;
 using WechatRobot.Api.Health;
 using WechatRobot.Api.Audit;
 using WechatRobot.Api.Robots;
 using WechatRobot.Api.Dashboard;
 using WechatRobot.Api.Users;
+using WechatRobot.Api.Operations;
 using WechatRobot.Api.Security;
+using WechatRobot.Api.Memory;
 using WechatRobot.Application.Handoffs;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Conversations;
@@ -42,8 +43,11 @@ using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Infrastructure.Health;
+using WechatRobot.Infrastructure.Groups;
 using WechatRobot.Infrastructure.Logging;
 using WechatRobot.Infrastructure.Configuration;
+using WechatRobot.Application.Memory;
+using WechatRobot.Infrastructure.Memory;
 
 DotEnvFileLoader.Load();
 var builder = WebApplication.CreateBuilder(args);
@@ -64,17 +68,24 @@ var secretProtector = new AesGcmSecretProtector();
 builder.Services.AddSingleton<ISecretProtector>(secretProtector);
 builder.Services.AddScoped<RobotCredentialBackfillService>();
 builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddSingleton<MemoryExtractionValidator>();
+builder.Services.AddScoped<IMemoryStore, EfMemoryStore>();
+builder.Services.AddScoped<MemoryOrganizationService>();
+builder.Services.AddScoped<IMemoryRecallService, MemoryRecallService>();
+builder.Services.AddScoped<MemoryAdministrationService>();
 builder.Services.AddScoped<ModelConfigurationManager>();
 builder.Services.AddScoped<KnowledgeTagManager>();
 builder.Services.AddScoped<KnowledgeDocumentAdministrationQuery>();
 builder.Services.AddScoped<DashboardSummaryService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
+builder.Services.AddScoped<IGroupLifecycleStore, EfGroupLifecycleStore>();
+builder.Services.AddScoped<GroupLifecycleService>();
 builder.Services.AddSingleton(sp => new GroupOperationConfirmationService(builder.Configuration["Jwt:SigningKey"] ?? throw new InvalidOperationException("JWT signing key must be configured.")));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
 builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
-builder.Services.AddScoped<IHandoffStore, EfHandoffStore>();
-builder.Services.AddScoped<HandoffService>();
+builder.Services.AddSingleton<ConversationContextService>();
+builder.Services.AddScoped<ConversationContextQueryService>();
 builder.Services.AddScoped<IKnowledgeCandidateStore, EfKnowledgeCandidateStore>();
 builder.Services.AddScoped<KnowledgeCandidateService>();
 builder.Services.AddScoped<IConversationAuditQuery, ConversationAuditQuery>();
@@ -154,6 +165,12 @@ builder.Services.AddApiRateLimits(builder.Environment.IsEnvironment("Testing"));
 builder.Services.AddWechatRobotHealth(builder.Configuration);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddHttpClient<IMemoryVectorIndex, QdrantMemoryVectorIndex>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");
+    var apiKey = builder.Configuration["Qdrant:ApiKey"];
+    if (!string.IsNullOrWhiteSpace(apiKey)) client.DefaultRequestHeaders.Add("api-key", apiKey);
+});
 builder.Services
     .AddHttpClient<IWorkToolClient, WorkToolClient>(
         client => client.BaseAddress = new Uri(builder.Configuration["WorkTool:BaseUrl"] ?? "https://api.worktool.ymdyes.cn/"))
@@ -234,7 +251,6 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy(SystemRoles.Admin, policy => policy.RequireRole(SystemRoles.Admin));
     options.AddPolicy(SystemRoles.KnowledgeOperator, policy => policy.RequireRole(SystemRoles.Admin, SystemRoles.KnowledgeOperator));
-    options.AddPolicy(SystemRoles.HumanAgent, policy => policy.RequireRole(SystemRoles.Admin, SystemRoles.HumanAgent));
 });
 builder.Services.AddCors(options => options.AddPolicy("AdminSpa", policy => policy
     .WithOrigins(allowedOrigins)
@@ -268,6 +284,7 @@ app.MapModelConfigurationEndpoints();
 app.MapRobotSettingsEndpoints();
 app.MapDashboardEndpoints();
 app.MapUserAdministrationEndpoints();
+app.MapSendCommandOperationsEndpoints();
 app.MapGroupEndpoints();
 app.MapDocumentEndpoints();
 app.MapChunkPreviewEndpoints();
@@ -275,10 +292,10 @@ app.MapKnowledgeIndexEndpoints();
 app.MapKnowledgeTagEndpoints();
 app.MapWorkToolCallbackEndpoints();
 app.MapWorkToolGroupOperationEndpoints();
-app.MapHandoffEndpoints();
 app.MapKnowledgeReviewEndpoints();
 app.MapConversationAuditEndpoints();
 app.MapAdministrationAuditEndpoints();
+app.MapMemoryEndpoints();
 app.MapWechatRobotHealthEndpoints();
 app.MapGet("/", () => Results.Ok()).RequireAuthorization();
 

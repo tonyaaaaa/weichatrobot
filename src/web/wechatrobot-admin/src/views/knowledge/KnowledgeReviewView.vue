@@ -9,13 +9,16 @@ import { knowledgeTagApi, type KnowledgeTagApi } from '../../api/knowledgeTags';
 import KnowledgeTagSelector from '../../components/knowledge/KnowledgeTagSelector.vue';
 import { formatBeijingTime } from '../../utils/beijingTime';
 import { safeEvidence } from '../../utils/evidenceRedaction';
+import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
 const props = withDefaults(defineProps<{
   api?: KnowledgeReviewApi;
   tagApi?: Pick<KnowledgeTagApi, 'options'>;
+  confirmAction?: (message: string) => boolean | Promise<boolean>;
 }>(), {
   api: () => knowledgeReviewApi,
-  tagApi: () => knowledgeTagApi
+  tagApi: () => knowledgeTagApi,
+  confirmAction: defaultConfirmAction
 });
 const loading = ref(true); const busy = ref(false); const error = ref(''); const notice = ref('');
 const items = ref<CandidateSummary[]>([]); const total = ref(0); const page = ref(1); const pageSize = 20;
@@ -43,7 +46,7 @@ async function review(decision: 'approve' | 'reject') {
     ? '批准时至少选择一个已启用的知识标签。'
     : '';
   if (tagError.value) return;
-  if (!window.confirm(decision === 'approve' ? '确认批准该答案并进入索引流程？' : '确认拒绝该候选答案？')) return;
+  if (!await props.confirmAction(decision === 'approve' ? '确认批准该答案并进入索引流程？' : '确认拒绝该候选答案？')) return;
   busy.value = true; error.value = '';
   try {
     const result = await props.api.reviewCandidate(detail.value.id, {
@@ -58,7 +61,7 @@ onMounted(load);
 
 <template>
   <section class="ops-page" aria-labelledby="review-title">
-    <header class="page-header"><div><p class="eyebrow">人工答案学习</p><h1 id="review-title">知识审核</h1><p>人工回答必须经授权人员审核并成功建立索引后，才会用于后续机器人检索。</p></div><ElButton @click="load">刷新</ElButton></header>
+    <header class="page-header"><div><p class="eyebrow">业务事实学习</p><h1 id="review-title">知识学习审核</h1><p>自动整理或管理员纠错产生的业务事实必须经授权人员审核并成功建立索引后，才会用于后续机器人检索。</p></div><ElButton @click="load">刷新</ElButton></header>
     <section class="split-layout">
       <div class="panel">
         <div class="toolbar"><label for="review-status">状态</label><ElSelect id="review-status" v-model="status" aria-label="审核状态" @change="changeStatus"><ElOption value="pending" label="待审核" /><ElOption value="revision" label="待修订" /><ElOption value="approved_pending_index" label="待索引" /><ElOption value="indexing" label="索引中" /><ElOption value="published" label="已发布" /><ElOption value="rejected" label="已拒绝" /></ElSelect></div>
@@ -67,6 +70,7 @@ onMounted(load);
         <ElEmpty v-else-if="!items.length" description="当前筛选条件下暂无候选知识。" />
         <ElTable v-else :data="items" row-key="id" table-layout="auto">
           <ElTableColumn prop="question" label="问题" min-width="180" />
+          <ElTableColumn label="来源" width="130"><template #default="{ row }">{{ row.sourceType === 'MemoryExtraction' ? '自动记忆整理' : row.sourceType === 'ManualCorrection' ? '管理员纠错' : '历史人工转接' }}</template></ElTableColumn>
           <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag effect="plain">{{ row.status }}</ElTag></template></ElTableColumn>
           <ElTableColumn label="更新时间" min-width="160"><template #default="{ row }">{{ formatBeijingTime(row.updatedAtUtc) }}</template></ElTableColumn>
           <ElTableColumn label="操作" width="92"><template #default="{ row }"><ElButton :data-testid="`candidate-${row.id}`" @click="select(row.id)">查看</ElButton></template></ElTableColumn>

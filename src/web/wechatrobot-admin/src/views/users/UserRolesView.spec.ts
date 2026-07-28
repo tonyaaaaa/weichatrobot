@@ -35,7 +35,7 @@ function createApi(initial = [user()]): UserAdministrationApi {
       };
     }),
     roles: vi.fn(async (): Promise<SystemRole[]> =>
-      ['Admin', 'KnowledgeOperator', 'HumanAgent']),
+      ['Admin', 'KnowledgeOperator']),
     create: vi.fn(async request => {
       const created = user({
         id: `user-${items.length + 1}`,
@@ -55,16 +55,6 @@ function createApi(initial = [user()]): UserAdministrationApi {
       const target = items.find(item => item.id === id)!;
       target.roles = [...roles];
       return { ...target };
-    }),
-    setWorkToolDisplayName: vi.fn(async (id, displayName) => {
-      const target = items.find(item => item.id === id)!;
-      target.workToolDisplayName = displayName;
-      return { ...target };
-    }),
-    clearWorkToolDisplayName: vi.fn(async id => {
-      const target = items.find(item => item.id === id)!;
-      target.workToolDisplayName = null;
-      return { ...target };
     })
   };
 }
@@ -80,7 +70,7 @@ describe('UserRolesView', () => {
     await wrapper.get('[data-testid="user-email"]').setValue('agent@example.test');
     await wrapper.get('[data-testid="user-display-name"]').setValue('客服一号');
     await wrapper.get('[data-testid="user-temporary-password"]').setValue('Temporary1!Password');
-    await wrapper.get('[data-testid="create-role-HumanAgent"]').setValue(true);
+    await wrapper.get('[data-testid="create-role-KnowledgeOperator"]').setValue(true);
     await wrapper.get('[data-testid="save-user"]').trigger('click');
     await flushPromises();
 
@@ -88,7 +78,7 @@ describe('UserRolesView', () => {
       email: 'agent@example.test',
       displayName: '客服一号',
       temporaryPassword: 'Temporary1!Password',
-      roles: ['HumanAgent']
+      roles: ['KnowledgeOperator']
     });
   });
 
@@ -142,13 +132,12 @@ describe('UserRolesView', () => {
     expect(wrapper.text()).toContain('系统必须保留至少一个已启用的管理员。');
   });
 
-  it('binds an explicit WorkTool nickname only for eligible users', async () => {
+  it('does not expose retired WorkTool customer-service nickname bindings', async () => {
     const api = createApi([
       user({
         id: 'agent-1',
         displayName: '后台客服名称',
-        roles: ['HumanAgent'],
-        workToolDisplayName: null
+        roles: ['Admin']
       }),
       user({
         id: 'operator-1',
@@ -159,17 +148,7 @@ describe('UserRolesView', () => {
     const wrapper = mount(UserRolesView, { props: { api } });
     await flushPromises();
 
-    expect(wrapper.text()).toContain('仅 Admin 或 HumanAgent 可绑定');
-    await wrapper.get('[data-testid="bind-worktool-agent-1"]').trigger('click');
-    await wrapper.get('[data-testid="worktool-display-name"]').setValue('  企微客服甲  ');
-    await wrapper.get('[data-testid="save-worktool-display-name"]').trigger('click');
-    await flushPromises();
-
-    expect(api.setWorkToolDisplayName).toHaveBeenCalledWith('agent-1', '企微客服甲');
-    expect(wrapper.text()).toContain('企微客服甲');
-    expect(api.setWorkToolDisplayName).not.toHaveBeenCalledWith(
-      'agent-1',
-      '后台客服名称'
-    );
+    expect(wrapper.text()).not.toContain('仅 Admin 或 HumanAgent 可绑定');
+    expect(wrapper.find('[data-testid="bind-worktool-agent-1"]').exists()).toBe(false);
   });
 });

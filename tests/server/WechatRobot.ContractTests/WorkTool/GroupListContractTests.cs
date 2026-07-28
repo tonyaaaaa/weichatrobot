@@ -65,6 +65,41 @@ public sealed class GroupListContractTests
                 || property.Name.Contains("ParentId", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task ListGroupsAsync_accepts_observed_success_code_200()
+    {
+        using var handler = new CapturingHandler(
+            """
+            {
+              "code": 200,
+              "message": "操作成功",
+              "data": {
+                "pageNum": 1,
+                "pageSize": 50,
+                "totalPage": 1,
+                "total": 1,
+                "list": [{
+                  "groupName": "Support",
+                  "masterName": "成员甲",
+                  "membersNum": 12,
+                  "groupAnnouncement": "服务公告"
+                }]
+              }
+            }
+            """);
+
+        var result = await Client(handler).ListGroupsAsync(
+            Guid.NewGuid(),
+            null,
+            1,
+            50,
+            TestContext.Current.CancellationToken);
+
+        var group = Assert.Single(result.Items);
+        Assert.Equal("Support", group.GroupName);
+        Assert.Equal(1, result.Total);
+    }
+
     [Theory]
     [InlineData(0, 50)]
     [InlineData(1, 0)]

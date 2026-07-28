@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElAlert, ElButton, ElEmpty, ElProgress, ElSkeleton, ElTag } from 'element-plus';
+import { getActivePinia } from 'pinia';
 import {
   knowledgeApi,
   type KnowledgeApi,
@@ -8,10 +9,12 @@ import {
   type KnowledgeDocumentSummary,
   type UploadResult
 } from '../../api/knowledge';
+import { useAuthStore } from '../../stores/auth';
+import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
 type DocumentsApi = Pick<
   KnowledgeApi,
-  'upload' | 'listDocuments' | 'retryDocumentUpload'
+  'upload' | 'listDocuments' | 'retryDocumentUpload' | 'requestPhysicalDelete'
 >;
 
 interface DocumentMutationError {
@@ -23,7 +26,14 @@ interface DocumentMutationError {
   };
 }
 
-const props = defineProps<{ api?: Partial<DocumentsApi> }>();
+const props = withDefaults(defineProps<{
+  api?: Partial<DocumentsApi>;
+  confirmAction?: (message: string) => boolean | Promise<boolean>;
+}>(), {
+  confirmAction: defaultConfirmAction
+});
+const activePinia = getActivePinia();
+const auth = activePinia ? useAuthStore(activePinia) : undefined;
 const selectedFile = ref<File>();
 const progress = ref(0);
 const uploading = ref(false);
@@ -43,9 +53,12 @@ const page = ref<KnowledgeDocumentPage>({
 });
 const loading = ref(props.api?.listDocuments !== undefined || props.api === undefined);
 const busyId = ref('');
+const busyOperation = ref('');
 const listError = ref('');
 const actionError = ref('');
 const notice = ref('');
+const canRequestPhysicalDelete = computed(() =>
+  auth?.user?.roles.includes('Admin') === true);
 const isLegacyDoc = computed(() =>
   selectedFile.value?.name.toLowerCase().endsWith('.doc') ?? false);
 const totalPages = computed(() =>
@@ -118,6 +131,7 @@ async function goToPage(value: number): Promise<void> {
 async function retryUpload(document: KnowledgeDocumentSummary): Promise<void> {
   const retryMethod = props.api?.retryDocumentUpload ?? knowledgeApi.retryDocumentUpload;
   busyId.value = document.id;
+  busyOperation.value = 'retry';
   actionError.value = '';
   notice.value = '';
   try {
@@ -145,6 +159,44 @@ async function retryUpload(document: KnowledgeDocumentSummary): Promise<void> {
     }
   } finally {
     busyId.value = '';
+    busyOperation.value = '';
+  }
+}
+
+async function requestPhysicalDelete(document: KnowledgeDocumentSummary): Promise<void> {
+  if (!canRequestPhysicalDelete.value) return;
+  const confirmed = await props.confirmAction(
+    '这会停用文档并提交异步物理清理，期间不可上传新版本。确认继续？');
+  if (!confirmed) return;
+
+  const deleteMethod = props.api?.requestPhysicalDelete ??
+    knowledgeApi.requestPhysicalDelete;
+  busyId.value = document.id;
+  busyOperation.value = 'physical-delete';
+  actionError.value = '';
+  notice.value = '';
+  try {
+    await deleteMethod(document.id, document.stateVersion);
+    notice.value = `${document.title} 删除请求已受理，等待后台清理。`;
+    await load();
+  } catch (exception) {
+    const response = (exception as {
+      response?: {
+        data?: DocumentMutationError;
+      };
+    })?.response;
+    if (response?.data?.error === 'document-concurrency-conflict' &&
+        response.data.current) {
+      replaceCurrent(response.data.current);
+      notice.value = '文档已被其他操作员修改，当前行已刷新为最新状态。';
+    } else if (response?.data?.error === 'document-delete-requested') {
+      actionError.value = '文档已经提交物理删除请求，请刷新查看清理状态。';
+    } else {
+      actionError.value = `${document.title} 删除请求提交失败，请稍后重试。`;
+    }
+  } finally {
+    busyId.value = '';
+    busyOperation.value = '';
   }
 }
 
@@ -375,9 +427,17 @@ onMounted(() => {
                   <ElButton
                     v-if="document.canRetryUpload"
                     :data-testid="`retry-document-${document.id}`"
-                    :loading="busyId === document.id"
+                    :loading="busyId === document.id && busyOperation === 'retry'"
                     @click="retryUpload(document)"
                   >重试上传</ElButton>
+                  <ElButton
+                    v-if="canRequestPhysicalDelete"
+                    :data-testid="`delete-document-${document.id}`"
+                    type="danger"
+                    plain
+                    :loading="busyId === document.id && busyOperation === 'physical-delete'"
+                    @click="requestPhysicalDelete(document)"
+                  >提交物理删除</ElButton>
                 </div>
               </td>
             </tr>

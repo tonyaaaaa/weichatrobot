@@ -72,7 +72,20 @@ public sealed class KnowledgeRetrievalVisibilityTests
         version.IndexCollectionName = document.ActiveCollectionName; version.EmbeddingDimension = 3; version.VectorDistance = "cosine"; version.IndexGeneration = 1;
         document.ActiveVersionId = version.Id;
         var chunk = Chunk(version.Id);
-        database.AddRange(tag, document, version, chunk, new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tag.Id });
+        var embeddingConfiguration = new ModelConfigEntity
+        {
+            Name = "replacement-embedding",
+            NormalizedName = "REPLACEMENT-EMBEDDING",
+            Provider = "fake",
+            ConfigurationType = "embedding",
+            BaseUrl = "https://fake.invalid",
+            Model = "replacement",
+            EmbeddingDimension = 4,
+            IsEnabled = true,
+            IsDefault = true
+        };
+        database.AddRange(tag, document, version, chunk, embeddingConfiguration,
+            new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tag.Id });
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
         var vectors = new RecordingVectorStore(new VectorSearchHit(chunk.Id, document.Id, version.Id, 1));
         var changedRuntime = new QdrantKnowledgeService(database, new ModelConfigurationService(new PassThroughProtector()),

@@ -174,6 +174,117 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
     }
 
     [Fact]
+    public async Task Web_search_mode_is_validated_by_configuration_type_and_can_be_tested_separately()
+    {
+        using var client = _factory.CreateClient();
+        var invalidMode = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"invalid-search-{Guid.NewGuid():N}",
+            provider = "OpenAI compatible",
+            configurationType = "chat",
+            baseUrl = "https://provider.example.test",
+            model = "glm",
+            timeoutSeconds = 30,
+            maxRetries = 0,
+            webSearchMode = "invented"
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidMode.StatusCode);
+
+        var embeddingSearch = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"embedding-search-{Guid.NewGuid():N}",
+            provider = "OpenAI compatible",
+            configurationType = "embedding",
+            baseUrl = "https://provider.example.test",
+            model = "embedding",
+            embeddingDimension = 2,
+            timeoutSeconds = 30,
+            maxRetries = 0,
+            webSearchMode = "ZaiChatCompletions"
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, embeddingSearch.StatusCode);
+
+        var created = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"zai-search-{Guid.NewGuid():N}",
+            provider = "Z.AI",
+            configurationType = "chat",
+            baseUrl = "https://api.z.ai/api/paas/v4",
+            model = "glm",
+            timeoutSeconds = 30,
+            maxRetries = 0,
+            webSearchMode = "ZaiChatCompletions"
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var body = await created.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("ZaiChatCompletions", body.GetProperty("webSearchMode").GetString());
+
+        var tested = await client.PostAsync(
+            $"/api/admin/model-configurations/{body.GetProperty("id").GetGuid():D}/test-web-search",
+            null,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, tested.StatusCode);
+        var testBody = await tested.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.True(testBody.GetProperty("succeeded").GetBoolean());
+        Assert.Equal(1, testBody.GetProperty("sourceCount").GetInt32());
+        Assert.NotNull(_factory.ChatClient.LastRequest?.WebSearch);
+    }
+
+    [Fact]
+    public async Task Embedding_configuration_requires_and_round_trips_its_vector_dimension()
+    {
+        using var client = _factory.CreateClient();
+        var missing = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"embedding-missing-{Guid.NewGuid():N}",
+            provider = "OpenAI compatible",
+            configurationType = "embedding",
+            baseUrl = "https://provider.example.test/v1",
+            model = "embedding-model",
+            timeoutSeconds = 30,
+            maxRetries = 0
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        var created = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"embedding-1024-{Guid.NewGuid():N}",
+            provider = "OpenAI compatible",
+            configurationType = "embedding",
+            baseUrl = "https://provider.example.test/v1",
+            model = "embedding-model",
+            embeddingDimension = 1024,
+            timeoutSeconds = 30,
+            maxRetries = 0
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        using var json = JsonDocument.Parse(await created.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1024, json.RootElement.GetProperty("embeddingDimension").GetInt32());
+    }
+
+    [Fact]
+    public async Task Chat_configuration_rejects_an_embedding_dimension()
+    {
+        using var client = _factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/admin/model-configurations", new
+        {
+            name = $"chat-with-dimension-{Guid.NewGuid():N}",
+            provider = "OpenAI compatible",
+            configurationType = "chat",
+            baseUrl = "https://provider.example.test/v1",
+            model = "chat-model",
+            embeddingDimension = 1024,
+            timeoutSeconds = 30,
+            maxRetries = 0
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Update_by_id_can_rename_without_changing_identity()
     {
         var suffix = Guid.NewGuid().ToString("N");
@@ -355,6 +466,65 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
         Assert.Equal("http_error", stored.LastTestFailureSummary);
         Assert.DoesNotContain("secret", stored.LastTestFailureSummary, StringComparison.OrdinalIgnoreCase);
         Assert.Null(stored.TestedConfigurationFingerprint);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, "http_401")]
+    [InlineData(HttpStatusCode.Forbidden, "http_403")]
+    [InlineData(HttpStatusCode.NotFound, "http_404")]
+    public async Task Failed_connection_test_persists_http_status_without_provider_details(
+        HttpStatusCode statusCode,
+        string expectedSummary)
+    {
+        var entity = await SeedConfigurationAsync($"failed-{(int)statusCode}");
+        _factory.ChatClient.NextException = new ModelUnavailableException(
+            "provider failed",
+            new HttpRequestException("secret provider body", null, statusCode));
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsync(
+            $"/api/admin/model-configurations/{entity.Id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var stored = await database.ModelConfigs.SingleAsync(
+            item => item.Id == entity.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(expectedSummary, stored.LastTestFailureSummary);
+        Assert.DoesNotContain("secret", stored.LastTestFailureSummary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Embedding_connection_test_rejects_a_vector_with_the_wrong_dimension()
+    {
+        var entity = await SeedConfigurationAsync("embedding-dimension-mismatch", "embedding");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var stored = await database.ModelConfigs.SingleAsync(
+                item => item.Id == entity.Id,
+                TestContext.Current.CancellationToken);
+            stored.EmbeddingDimension = 3;
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+        using var client = _factory.CreateClient();
+
+        var response = await client.PostAsync(
+            $"/api/admin/model-configurations/{entity.Id}/test-connection",
+            null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDatabase = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var failed = await verifyDatabase.ModelConfigs.SingleAsync(
+            item => item.Id == entity.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("dimension_mismatch_expected_3_actual_2", failed.LastTestFailureSummary);
+        Assert.Equal(ModelConnectionStatus.Failed, failed.ConnectionStatus);
     }
 
     [Fact]
@@ -665,7 +835,8 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
             Provider = "OpenAI compatible",
             ConfigurationType = type,
             BaseUrl = "https://provider.example.test",
-            Model = "model"
+            Model = "model",
+            EmbeddingDimension = type == "embedding" ? 2 : null
         };
         using var scope = _factory.Services.CreateScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
@@ -783,14 +954,22 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
 public sealed class RecordingChatCompletionClient : IChatCompletionClient
 {
     public Exception? NextException { get; set; }
+    public ChatCompletionRequest? LastRequest { get; private set; }
 
     public Task<ChatCompletionResponse> CompleteAsync(
         ModelProviderConfiguration configuration,
         ChatCompletionRequest request,
-        CancellationToken cancellationToken = default) =>
-        NextException is null
-            ? Task.FromResult(new ChatCompletionResponse("ok"))
-            : Task.FromException<ChatCompletionResponse>(NextException);
+        CancellationToken cancellationToken = default)
+    {
+        LastRequest = request;
+        return NextException is not null
+            ? Task.FromException<ChatCompletionResponse>(NextException)
+            : Task.FromResult(request.WebSearch is null
+                ? new ChatCompletionResponse("ok")
+                : new ChatCompletionResponse(
+                    "search ok",
+                    [new ChatSource("Official", new Uri("https://example.test/source"))]));
+    }
 }
 
 public sealed class RecordingEmbeddingClient : IEmbeddingClient

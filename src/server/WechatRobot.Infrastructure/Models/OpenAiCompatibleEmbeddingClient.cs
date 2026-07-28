@@ -46,7 +46,9 @@ public sealed class OpenAiCompatibleEmbeddingClient(HttpClient httpClient, ISecr
     {
         for (var attempt = 0; ; attempt++)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(EnsureTrailingSlash(configuration.BaseUrl)), "v1/embeddings"))
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                OpenAiCompatibleEndpointResolver.Resolve(configuration.BaseUrl, "embeddings"))
             {
                 Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
             };
@@ -68,5 +70,4 @@ public sealed class OpenAiCompatibleEmbeddingClient(HttpClient httpClient, ISecr
         }
     }
 
-    private static string EnsureTrailingSlash(string baseUrl) => baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/";
 }

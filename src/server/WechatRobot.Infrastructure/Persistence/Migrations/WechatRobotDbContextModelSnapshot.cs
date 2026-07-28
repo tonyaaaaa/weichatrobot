@@ -489,6 +489,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<Guid?>("GroupProfileId")
+                        .HasColumnType("char(36)");
+
                     b.Property<string>("JobType")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -524,6 +527,8 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasColumnType("int");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("GroupProfileId");
 
                     b.HasIndex("RelatedConversationMessageId")
                         .IsUnique();
@@ -593,6 +598,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<DateTime?>("ArchivedAtUtc")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<int>("ConfigurationVersion")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAdd()
@@ -624,6 +632,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
+                    b.Property<string>("FinalNoEvidencePolicy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("InsufficientEvidence");
+
                     b.Property<string>("HandoffPausePolicy")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -632,6 +647,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasDefaultValue("Group");
 
                     b.Property<bool>("IsEnabled")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("ModelKnowledgeFallbackEnabled")
                         .HasColumnType("tinyint(1)");
 
                     b.Property<string>("Name")
@@ -649,8 +667,43 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("RobotConfigId")
                         .HasColumnType("char(36)");
 
+                    b.Property<int>("StateVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("datetime(6)");
+
+                    b.Property<string>("WebSearchContentSize")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("Medium");
+
+                    b.Property<string>("WebSearchDomainFilter")
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)");
+
+                    b.Property<bool>("WebSearchEnabled")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("WebSearchRecency")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("NoLimit");
+
+                    b.Property<int>("WebSearchResultCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(5);
+
+                    b.Property<bool>("WebSearchShowSources")
+                        .HasColumnType("tinyint(1)");
 
                     b.Property<string>("WorkToolGroupRemark")
                         .HasMaxLength(256)
@@ -933,7 +986,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("json");
 
-                    b.Property<Guid>("HandoffCaseId")
+                    b.Property<Guid?>("HandoffCaseId")
                         .HasColumnType("char(36)");
 
                     b.Property<Guid?>("KnowledgeDocumentVersionId")
@@ -949,6 +1002,19 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid>("QuestionMessageId")
                         .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("SourceConversationMessageId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("SourceMemoryCandidateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("HistoricalHandoff");
 
                     b.Property<string>("Status")
                         .IsConcurrencyToken()
@@ -972,6 +1038,11 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.HasIndex("QuestionMessageId");
+
+                    b.HasIndex("SourceConversationMessageId");
+
+                    b.HasIndex("SourceMemoryCandidateId")
+                        .IsUnique();
 
                     b.ToTable("knowledge_candidate", (string)null);
                 });
@@ -1323,6 +1394,12 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
+                    b.Property<Guid?>("ModelConfigurationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int?>("ModelConfigurationVersion")
+                        .HasColumnType("int");
+
                     b.Property<DateTime>("NextAttemptAtUtc")
                         .HasColumnType("datetime(6)");
 
@@ -1513,6 +1590,321 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.ToTable("knowledge_tag", (string)null);
                 });
 
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryAuditEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("ActorType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("NewStatus")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("OldStatus")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<Guid>("TargetId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("TargetType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("TargetType", "TargetId", "CreatedAtUtc");
+
+                    b.ToTable("memory_audit", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryCandidateEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<double>("Confidence")
+                        .HasColumnType("double");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("DistinctDayCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("DistinctSessionCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<Guid?>("GroupProfileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<bool>("HasUnresolvedConflict")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsExplicit")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<Guid?>("KnowledgeCandidateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("MemoryType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("NormalizedKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)");
+
+                    b.Property<int>("ObservationCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("PromotedMemoryEntryId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("RobotConfigId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("ScopeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("ScopeType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("SubjectDisplayName")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
+
+                    b.Property<string>("SubjectKey")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GroupProfileId");
+
+                    b.HasIndex("KnowledgeCandidateId")
+                        .IsUnique();
+
+                    b.HasIndex("PromotedMemoryEntryId")
+                        .IsUnique();
+
+                    b.HasIndex("RobotConfigId");
+
+                    b.HasIndex("Status", "UpdatedAtUtc");
+
+                    b.HasIndex("ScopeHash", "MemoryType", "Fingerprint")
+                        .IsUnique()
+                        .HasDatabaseName("UX_memory_candidate_scope_fingerprint");
+
+                    b.ToTable("memory_candidate", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryEntryEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<double>("Confidence")
+                        .HasColumnType("double");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("GroupProfileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("IndexGeneration")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("LastRecalledAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("MemoryType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("NormalizedKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)");
+
+                    b.Property<int>("RecallCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("RobotConfigId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("ScopeType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.Property<Guid?>("SourceCandidateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<int>("StatusVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SubjectDisplayName")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
+
+                    b.Property<string>("SubjectKey")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)");
+
+                    b.Property<Guid?>("SupersedesMemoryEntryId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("ValidFromUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GroupProfileId");
+
+                    b.HasIndex("RobotConfigId");
+
+                    b.HasIndex("SourceCandidateId")
+                        .IsUnique();
+
+                    b.HasIndex("SupersedesMemoryEntryId");
+
+                    b.HasIndex("Status", "ExpiresAtUtc");
+
+                    b.HasIndex("ScopeType", "RobotConfigId", "GroupProfileId", "SubjectKey", "MemoryType");
+
+                    b.ToTable("memory_entry", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryObservationEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("ConversationMessageId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("ConversationSessionId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("EvidenceSummary")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("varchar(1024)");
+
+                    b.Property<Guid>("MemoryCandidateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("ModelConfigurationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("ObservedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("SourceContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationMessageId");
+
+                    b.HasIndex("ConversationSessionId");
+
+                    b.HasIndex("ModelConfigurationId");
+
+                    b.HasIndex("MemoryCandidateId", "ConversationMessageId")
+                        .IsUnique();
+
+                    b.HasIndex("MemoryCandidateId", "ConversationSessionId", "ObservedAtUtc");
+
+                    b.ToTable("memory_observation", (string)null);
+                });
+
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.ModelConfigEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1545,6 +1937,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)")
                         .HasComputedColumnSql("CASE WHEN `IsDefault` = 1 THEN `ConfigurationType` ELSE NULL END", true);
+
+                    b.Property<int?>("EmbeddingDimension")
+                        .HasColumnType("int");
 
                     b.Property<string>("EncryptedApiKey")
                         .HasColumnType("longtext");
@@ -1599,6 +1994,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsConcurrencyToken()
                         .HasColumnType("int");
 
+                    b.Property<string>("WebSearchMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("None");
+
                     b.HasKey("Id");
 
                     b.HasIndex("DefaultConfigurationType")
@@ -1615,6 +2017,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
+
+                    b.Property<string>("AnswerSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("none");
 
                     b.Property<double>("ConfidenceThreshold")
                         .HasColumnType("double");
@@ -1653,8 +2062,20 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("json");
 
+                    b.Property<string>("MemoryRecallJson")
+                        .IsRequired()
+                        .HasColumnType("json");
+
                     b.Property<Guid?>("ModelConfigurationId")
                         .HasColumnType("char(36)");
+
+                    b.Property<string>("WebSearchFailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("WebSearchSourcesJson")
+                        .IsRequired()
+                        .HasColumnType("json");
 
                     b.HasKey("Id");
 
@@ -2267,8 +2688,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.HandoffCaseEntity", null)
                         .WithMany()
                         .HasForeignKey("HandoffCaseId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.KnowledgeDocumentVersionEntity", null)
                         .WithMany()
@@ -2280,6 +2700,16 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasForeignKey("QuestionMessageId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ConversationMessageEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceConversationMessageId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.MemoryCandidateEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceMemoryCandidateId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.KnowledgeChunkEntity", b =>
@@ -2360,6 +2790,77 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ReviewerUserId")
                         .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryAuditEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryCandidateEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.RobotConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("RobotConfigId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryEntryEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.RobotConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("RobotConfigId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.MemoryCandidateEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceCandidateId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.MemoryEntryEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SupersedesMemoryEntryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MemoryObservationEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ConversationMessageEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ConversationMessageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ConversationSessionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ConversationSessionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.MemoryCandidateEntity", null)
+                        .WithMany()
+                        .HasForeignKey("MemoryCandidateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ModelConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ModelConfigurationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.RetrievalAuditEntity", b =>

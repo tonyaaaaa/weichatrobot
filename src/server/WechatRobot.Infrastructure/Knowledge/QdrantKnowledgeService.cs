@@ -44,13 +44,21 @@ public sealed class QdrantKnowledgeService(
             throw new ArgumentException("Only enabled knowledge tags may be indexed.", nameof(tagIds));
         var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(item => item.Id == documentId, token) ?? throw new KeyNotFoundException();
         var version = await database.KnowledgeDocumentVersions.SingleOrDefaultAsync(item => item.Id == versionId && item.KnowledgeDocumentId == documentId, token) ?? throw new KeyNotFoundException();
+        var embeddingConfiguration = await database.ModelConfigs.AsNoTracking()
+            .Where(item => item.ConfigurationType == "embedding" && item.IsEnabled)
+            .OrderByDescending(item => item.IsDefault)
+            .ThenBy(item => item.CreatedAtUtc)
+            .FirstOrDefaultAsync(token)
+            ?? throw new InvalidOperationException("No enabled embedding model configuration exists.");
+        var embeddingDimension = embeddingConfiguration.EmbeddingDimension
+            ?? throw new InvalidOperationException("The enabled embedding model does not define its vector dimension.");
         if (document.IsDeleteRequested) throw new InvalidOperationException("The document is pending physical deletion.");
         var reenable = document.Status == "disabled";
         if (reenable && !explicitReindex) throw new InvalidOperationException("A disabled document requires explicit reindex to re-enable it.");
         if (version.Status is not ("approved" or "indexing" or "active" or "indexed") && !(reenable && version.Status == "disabled"))
             throw new InvalidOperationException("Only approved versions can be indexed.");
         var incompatible = document.ActiveVersionId is not null &&
-            (document.ActiveEmbeddingDimension != options.Dimension || !string.Equals(document.ActiveDistance, DistanceValue(options.Distance), StringComparison.OrdinalIgnoreCase));
+            (document.ActiveEmbeddingDimension != embeddingDimension || !string.Equals(document.ActiveDistance, DistanceValue(options.Distance), StringComparison.OrdinalIgnoreCase));
         if (incompatible && !explicitReindex)
             throw new InvalidOperationException("The active embedding dimension or distance differs; use explicit reindex to migrate the active contract.");
 
@@ -60,7 +68,8 @@ public sealed class QdrantKnowledgeService(
         if (reuseExisting && candidateId is null) return existing!.Id;
         if (existing?.Status is "leased" or "activating") throw new InvalidOperationException("An index worker is already processing this version.");
         var generation = (existing?.Generation ?? 0) + 1;
-        var stagingCollection = StagingCollection(options.CollectionName, id, generation);
+        var collectionName = $"kb_{DistanceValue(options.Distance)}_{embeddingDimension}";
+        var stagingCollection = StagingCollection(collectionName, id, generation);
         await using var transaction = await BeginTransactionAsync(token);
         KnowledgeCandidateEntity? candidate = null;
         if (candidateId is { } ownedCandidateId)
@@ -109,7 +118,9 @@ public sealed class QdrantKnowledgeService(
         existing.Operation = explicitReindex ? "reindex" : "index";
         existing.CollectionName = stagingCollection;
         existing.IsCollectionExclusive = true;
-        existing.Dimension = options.Dimension;
+        existing.ModelConfigurationId = embeddingConfiguration.Id;
+        existing.ModelConfigurationVersion = embeddingConfiguration.Version;
+        existing.Dimension = embeddingDimension;
         existing.Distance = DistanceValue(options.Distance);
         existing.PendingTagIdsJson = SerializeTagIds(distinctTags);
         existing.Status = "pending";
@@ -181,16 +192,26 @@ public sealed class QdrantKnowledgeService(
                 job.KnowledgeDocumentVersionId, chunk.Text, tags)).ToArray(), job.LeaseOwner, job.Generation,
             job.PreviousActiveCollectionName, job.PreviousActiveEmbeddingDimension,
             job.PreviousActiveDistance is null ? null : ParseDistance(job.PreviousActiveDistance), job.IsCollectionExclusive,
-            job.PreviousActiveCollectionExclusive);
+            job.PreviousActiveCollectionExclusive, job.ModelConfigurationId, job.ModelConfigurationVersion);
     }
 
-    public async Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(CancellationToken token)
+    public async Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(
+        Guid? modelConfigurationId,
+        int? modelConfigurationVersion,
+        CancellationToken token)
     {
-        var config = await database.ModelConfigs.AsNoTracking().Where(item => item.ConfigurationType == "embedding" && item.IsEnabled)
-            .OrderByDescending(item => item.IsDefault).ThenBy(item => item.CreatedAtUtc).FirstOrDefaultAsync(token)
-            ?? throw new InvalidOperationException("No enabled embedding model configuration exists.");
+        var configurations = database.ModelConfigs.AsNoTracking()
+            .Where(item => item.ConfigurationType == "embedding" && item.IsEnabled);
+        var config = modelConfigurationId is { } id
+            ? await configurations.SingleOrDefaultAsync(item => item.Id == id, token)
+            : await configurations.OrderByDescending(item => item.IsDefault).ThenBy(item => item.CreatedAtUtc).FirstOrDefaultAsync(token);
+        if (config is null)
+            throw new InvalidOperationException("The queued embedding model configuration is unavailable.");
+        if (modelConfigurationVersion is { } expectedVersion && config.Version != expectedVersion)
+            throw new InvalidOperationException("The queued embedding model configuration changed; submit a new index job.");
         return modelConfigurations.ToProviderConfiguration(new ModelConfigurationRecord(config.Id, config.Name, config.Provider, config.BaseUrl,
-            config.Model, config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault));
+            config.Model, config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault,
+            config.EmbeddingDimension, config.WebSearchMode));
     }
 
     public async Task<bool> ActivateVersionAsync(KnowledgeIndexWork work, CancellationToken token)
@@ -228,14 +249,13 @@ public sealed class QdrantKnowledgeService(
         foreach (var batch in GuidBatchQuery.CreateBatches(chunkIds))
         {
             var predicate = GuidBatchQuery.BuildPredicate<KnowledgeChunkTagEntity>(batch, binding => binding.KnowledgeChunkId);
-            if (database.Database.IsRelational())
-                await database.KnowledgeChunkTags.Where(predicate).ExecuteDeleteAsync(token);
-            else
-                database.KnowledgeChunkTags.RemoveRange(await database.KnowledgeChunkTags.Where(predicate).ToArrayAsync(token));
+            var existingBindings = await database.KnowledgeChunkTags.Where(predicate).ToArrayAsync(token);
+            database.KnowledgeChunkTags.RemoveRange(existingBindings);
+            await database.SaveChangesAsync(token);
             var batchIds = batch.ToHashSet();
             database.KnowledgeChunkTags.AddRange(work.Chunks.Where(chunk => batchIds.Contains(chunk.Id)).SelectMany(chunk => chunk.TagIds.Select(tagId =>
                 new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagId })));
-            if (database.Database.IsRelational()) await database.SaveChangesAsync(token);
+            await database.SaveChangesAsync(token);
         }
         if (work.PreviousActiveVersionId is { } oldVersion && work.PreviousActiveCollectionName is { } oldCollection && oldCollection != work.CollectionName)
         {

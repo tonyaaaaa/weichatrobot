@@ -38,13 +38,15 @@ const emptyDraft = (): ModelConfigurationDraft => ({
   configurationType: 'chat',
   baseUrl: '',
   model: '',
+  embeddingDimension: null,
   apiKey: '',
   timeoutSeconds: 30,
-  maxRetries: 0
+  maxRetries: 0,
+  webSearchMode: 'None'
 });
 
 const draft = reactive<ModelConfigurationDraft>(emptyDraft());
-const errors = reactive({ name: '', baseUrl: '', model: '' });
+const errors = reactive({ name: '', baseUrl: '', model: '', embeddingDimension: '' });
 
 function resetDraft(): void {
   const source = props.configuration
@@ -54,6 +56,8 @@ function resetDraft(): void {
         configurationType: props.configuration.configurationType,
         baseUrl: props.configuration.baseUrl,
         model: props.configuration.model,
+        embeddingDimension: props.configuration.embeddingDimension ?? null,
+        webSearchMode: props.configuration.webSearchMode ?? 'None',
         apiKey: '',
         timeoutSeconds: props.configuration.timeoutSeconds,
         maxRetries: props.configuration.maxRetries,
@@ -64,6 +68,7 @@ function resetDraft(): void {
   errors.name = '';
   errors.baseUrl = '';
   errors.model = '';
+  errors.embeddingDimension = '';
 }
 
 watch(
@@ -74,10 +79,22 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => draft.configurationType,
+  type => {
+    if (type === 'embedding') draft.webSearchMode = 'None';
+  }
+);
+
 function validate(): boolean {
   errors.name = draft.name.trim() ? '' : '请输入配置名称';
   errors.model = draft.model.trim() ? '' : '请输入模型名称';
   errors.baseUrl = '';
+  errors.embeddingDimension =
+    draft.configurationType === 'embedding' &&
+    (!Number.isInteger(draft.embeddingDimension) || (draft.embeddingDimension ?? 0) <= 0)
+      ? '请输入向量维度'
+      : '';
   try {
     const url = new URL(draft.baseUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
@@ -86,7 +103,7 @@ function validate(): boolean {
   } catch {
     errors.baseUrl = '请输入有效的 HTTP 或 HTTPS 地址';
   }
-  return !errors.name && !errors.baseUrl && !errors.model;
+  return !errors.name && !errors.baseUrl && !errors.model && !errors.embeddingDimension;
 }
 
 function submit(): void {
@@ -96,7 +113,8 @@ function submit(): void {
     name: draft.name.trim(),
     provider: draft.provider.trim(),
     baseUrl: draft.baseUrl.trim().replace(/\/+$/, ''),
-    model: draft.model.trim()
+    model: draft.model.trim(),
+    embeddingDimension: draft.configurationType === 'embedding' ? draft.embeddingDimension : null
   });
 }
 
@@ -164,6 +182,29 @@ function close(): void {
           @blur="validate"
         />
         <p v-if="errors.model" class="field-error" role="alert">{{ errors.model }}</p>
+      </ElFormItem>
+      <ElFormItem
+        v-if="draft.configurationType === 'embedding'"
+        label="向量维度"
+        :error="errors.embeddingDimension"
+      >
+        <ElInputNumber
+          v-model="draft.embeddingDimension"
+          data-testid="embedding-dimension"
+          :min="1"
+          :max="65536"
+          controls-position="right"
+          @blur="validate"
+        />
+        <p class="field-help">必须与模型实际返回的向量长度一致，例如 1024。</p>
+        <p v-if="errors.embeddingDimension" class="field-error" role="alert">{{ errors.embeddingDimension }}</p>
+      </ElFormItem>
+      <ElFormItem v-if="draft.configurationType === 'chat'" label="Web Search 模式">
+        <ElSelect v-model="draft.webSearchMode" data-testid="web-search-mode" aria-label="Web Search 模式">
+          <ElOption label="不支持 / 不启用" value="None" />
+          <ElOption label="Z.AI Chat Completions" value="ZaiChatCompletions" />
+        </ElSelect>
+        <p class="field-help">仅选择已由 Z.AI 官方合同验证的模式；普通 OpenAI 兼容接口请选择“不支持”。</p>
       </ElFormItem>
       <ElFormItem label="API Key">
         <ElInput

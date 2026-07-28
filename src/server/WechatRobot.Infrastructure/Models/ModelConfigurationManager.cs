@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
@@ -22,7 +23,7 @@ public sealed class ModelConfigurationManager(
         CancellationToken cancellationToken)
     {
         var errors = Validate(command.Name, command.ConfigurationType, command.BaseUrl, command.Model,
-            command.TimeoutSeconds, command.MaxRetries);
+            command.TimeoutSeconds, command.MaxRetries, command.EmbeddingDimension, command.WebSearchMode);
         if (errors is not null)
         {
             return ModelConfigurationMutationResult.Invalid(errors);
@@ -45,6 +46,8 @@ public sealed class ModelConfigurationManager(
             ConfigurationType = command.ConfigurationType.Trim().ToLowerInvariant(),
             BaseUrl = command.BaseUrl.Trim().TrimEnd('/'),
             Model = command.Model.Trim(),
+            EmbeddingDimension = command.EmbeddingDimension,
+            WebSearchMode = NormalizeWebSearchMode(command.WebSearchMode),
             EncryptedApiKey = service.ProtectSubmittedApiKey(command.ApiKey, null),
             TimeoutSeconds = command.TimeoutSeconds,
             MaxRetries = command.MaxRetries,
@@ -91,14 +94,14 @@ public sealed class ModelConfigurationManager(
             ? await CreateAsync(
                 new CreateModelConfigurationCommand(
                     routeName, command.Provider, command.ConfigurationType, command.BaseUrl, command.Model,
-                    command.ApiKey, command.TimeoutSeconds, command.MaxRetries),
+                    command.ApiKey, command.TimeoutSeconds, command.MaxRetries, command.EmbeddingDimension, command.WebSearchMode),
                 actor,
                 cancellationToken)
             : await UpdateAsync(
                 entity.Id,
                 new UpdateModelConfigurationCommand(
                     entity.Name, command.Provider, command.ConfigurationType, command.BaseUrl, command.Model,
-                    command.ApiKey, command.TimeoutSeconds, command.MaxRetries, entity.Version),
+                    command.ApiKey, command.TimeoutSeconds, command.MaxRetries, entity.Version, command.EmbeddingDimension, command.WebSearchMode),
                 actor,
                 cancellationToken);
 
@@ -133,10 +136,19 @@ public sealed class ModelConfigurationManager(
             }
             else if (entity.ConfigurationType.Equals("embedding", StringComparison.OrdinalIgnoreCase))
             {
-                await embeddingClient.CreateEmbeddingsAsync(
+                var response = await embeddingClient.CreateEmbeddingsAsync(
                     configuration,
                     new EmbeddingBatchRequest(["connection test"]),
                     cancellationToken);
+                var actualDimension = response.Vectors.Single().Count;
+                if (entity.EmbeddingDimension is not { } expectedDimension)
+                {
+                    throw new InvalidOperationException("Embedding dimension is not configured.");
+                }
+                if (actualDimension != expectedDimension)
+                {
+                    throw new EmbeddingDimensionMismatchException(expectedDimension, actualDimension);
+                }
             }
             else
             {
@@ -307,7 +319,7 @@ public sealed class ModelConfigurationManager(
         CancellationToken cancellationToken)
     {
         var errors = Validate(command.Name, command.ConfigurationType, command.BaseUrl, command.Model,
-            command.TimeoutSeconds, command.MaxRetries);
+            command.TimeoutSeconds, command.MaxRetries, command.EmbeddingDimension, command.WebSearchMode);
         if (errors is not null)
         {
             return ModelConfigurationMutationResult.Invalid(errors);
@@ -337,12 +349,16 @@ public sealed class ModelConfigurationManager(
         var configurationType = command.ConfigurationType.Trim().ToLowerInvariant();
         var baseUrl = command.BaseUrl.Trim().TrimEnd('/');
         var model = command.Model.Trim();
+        var embeddingDimension = command.EmbeddingDimension;
+        var webSearchMode = NormalizeWebSearchMode(command.WebSearchMode);
         var replacesApiKey = !string.IsNullOrWhiteSpace(command.ApiKey);
         var invalidatesConnection =
             !string.Equals(entity.Provider, provider, StringComparison.Ordinal) ||
             !string.Equals(entity.ConfigurationType, configurationType, StringComparison.Ordinal) ||
             !string.Equals(entity.BaseUrl, baseUrl, StringComparison.Ordinal) ||
             !string.Equals(entity.Model, model, StringComparison.Ordinal) ||
+            entity.EmbeddingDimension != embeddingDimension ||
+            !string.Equals(entity.WebSearchMode, webSearchMode, StringComparison.Ordinal) ||
             replacesApiKey;
 
         entity.Name = name;
@@ -351,6 +367,8 @@ public sealed class ModelConfigurationManager(
         entity.ConfigurationType = configurationType;
         entity.BaseUrl = baseUrl;
         entity.Model = model;
+        entity.EmbeddingDimension = embeddingDimension;
+        entity.WebSearchMode = webSearchMode;
         entity.EncryptedApiKey = service.ProtectSubmittedApiKey(command.ApiKey, entity.EncryptedApiKey);
         entity.TimeoutSeconds = command.TimeoutSeconds;
         entity.MaxRetries = command.MaxRetries;
@@ -372,7 +390,7 @@ public sealed class ModelConfigurationManager(
         {
             entity.Name,
             entity.ConfigurationType,
-            changedFields = new[] { "name", "provider", "configurationType", "baseUrl", "model", "timeoutSeconds", "maxRetries" }
+            changedFields = new[] { "name", "provider", "configurationType", "baseUrl", "model", "embeddingDimension", "webSearchMode", "timeoutSeconds", "maxRetries" }
         });
         try
         {
@@ -490,23 +508,44 @@ public sealed class ModelConfigurationManager(
 
     private static ModelConfigurationRecord ToRecord(ModelConfigEntity entity) =>
         new(entity.Id, entity.Name, entity.Provider, entity.BaseUrl, entity.Model, entity.EncryptedApiKey,
-            entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault);
+            entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault, entity.EmbeddingDimension, entity.WebSearchMode);
 
     private static string ClassifyFailure(Exception exception)
     {
+        if (exception is EmbeddingDimensionMismatchException mismatch)
+        {
+            return $"dimension_mismatch_expected_{mismatch.Expected}_actual_{mismatch.Actual}";
+        }
+
         if (exception is OperationCanceledException ||
             exception is ModelUnavailableException { InnerException: OperationCanceledException })
         {
             return "timeout";
         }
 
-        if (exception is HttpRequestException ||
-            exception is ModelUnavailableException { InnerException: HttpRequestException })
+        var httpException = FindInnerException<HttpRequestException>(exception);
+        if (httpException is not null)
         {
-            return "http_error";
+            return httpException.StatusCode is { } statusCode
+                ? $"http_{(int)statusCode}"
+                : "http_error";
         }
 
         return "invalid_response";
+    }
+
+    private static TException? FindInnerException<TException>(Exception exception)
+        where TException : Exception
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is TException match)
+            {
+                return match;
+            }
+        }
+
+        return null;
     }
 
     private void Audit(string actor, string action, ModelConfigEntity entity, object detail)
@@ -528,7 +567,9 @@ public sealed class ModelConfigurationManager(
         string? baseUrl,
         string? model,
         int timeoutSeconds,
-        int maxRetries)
+        int maxRetries,
+        int? embeddingDimension,
+        string? webSearchMode)
     {
         var errors = new Dictionary<string, string[]>();
         if (string.IsNullOrWhiteSpace(name))
@@ -567,8 +608,32 @@ public sealed class ModelConfigurationManager(
             errors["maxRetries"] = ["Max retries must be between 0 and 5."];
         }
 
+        if (configurationType?.Equals("embedding", StringComparison.OrdinalIgnoreCase) == true &&
+            embeddingDimension is null or <= 0)
+        {
+            errors["embeddingDimension"] = ["Embedding dimension must be a positive integer."];
+        }
+        else if (configurationType?.Equals("chat", StringComparison.OrdinalIgnoreCase) == true &&
+                 embeddingDimension is not null)
+        {
+            errors["embeddingDimension"] = ["Chat configurations cannot define an embedding dimension."];
+        }
+        var normalizedWebSearchMode = NormalizeWebSearchMode(webSearchMode);
+        if (normalizedWebSearchMode is not ("None" or "ZaiChatCompletions"))
+            errors["webSearchMode"] = ["Web Search mode must be None or ZaiChatCompletions."];
+        else if (configurationType?.Equals("embedding", StringComparison.OrdinalIgnoreCase) == true
+                 && normalizedWebSearchMode != "None")
+            errors["webSearchMode"] = ["Embedding configurations cannot enable Web Search."];
+
         return errors.Count == 0 ? null : errors;
     }
+
+    private static string NormalizeWebSearchMode(string? value) =>
+        value?.Trim().Equals("ZaiChatCompletions", StringComparison.OrdinalIgnoreCase) == true
+            ? "ZaiChatCompletions"
+            : value?.Trim().Equals("None", StringComparison.OrdinalIgnoreCase) != false
+                ? "None"
+                : value!.Trim();
 }
 
 public sealed record CreateModelConfigurationCommand(
@@ -579,7 +644,9 @@ public sealed record CreateModelConfigurationCommand(
     string Model,
     string? ApiKey,
     int TimeoutSeconds,
-    int MaxRetries);
+    int MaxRetries,
+    int? EmbeddingDimension = null,
+    string WebSearchMode = "None");
 
 public sealed record UpdateModelConfigurationCommand(
     string Name,
@@ -590,7 +657,9 @@ public sealed record UpdateModelConfigurationCommand(
     string? ApiKey,
     int TimeoutSeconds,
     int MaxRetries,
-    int Version);
+    int Version,
+    int? EmbeddingDimension = null,
+    string WebSearchMode = "None");
 
 public sealed record CompatibilityModelConfigurationCommand(
     string Provider,
@@ -601,7 +670,9 @@ public sealed record CompatibilityModelConfigurationCommand(
     int TimeoutSeconds,
     int MaxRetries,
     bool IsEnabled,
-    bool IsDefault);
+    bool IsDefault,
+    int? EmbeddingDimension = null,
+    string WebSearchMode = "None");
 
 public enum ModelConfigurationMutationStatus
 {

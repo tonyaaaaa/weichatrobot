@@ -28,6 +28,20 @@ public sealed class AnswerOutputFirewall
         return new(true);
     }
 
+    public OutputValidationResult ValidateUngrounded(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return new(false, "empty_output");
+        if (output.Length > 8000) return new(false, "output_too_long");
+        if (output.Any(character => char.IsControl(character)
+            && character is not ('\r' or '\n' or '\t')))
+            return new(false, "control_character");
+        if (output.Contains("<<<UNTRUSTED_", StringComparison.Ordinal)
+            || output.Contains("\"tool_calls\"", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("system prompt", StringComparison.OrdinalIgnoreCase))
+            return new(false, "internal_instruction_marker");
+        return new(true);
+    }
+
     private static bool ContainsId(string output, Guid id) => output.Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
         output.Contains(id.ToString("N"), StringComparison.OrdinalIgnoreCase);
 }

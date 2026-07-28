@@ -20,7 +20,11 @@ public sealed record KnowledgeIndexOptions(
 }
 
 public sealed class EmbeddingDimensionMismatchException(int expected, int actual)
-    : Exception($"Embedding dimension mismatch. Expected {expected}, received {actual}.");
+    : Exception($"Embedding dimension mismatch. Expected {expected}, received {actual}.")
+{
+    public int Expected { get; } = expected;
+    public int Actual { get; } = actual;
+}
 public sealed class KnowledgeActivationConflictException : Exception;
 public sealed class KnowledgeSearchCapacityException(int eligibleCollectionCount, int maximumCollections)
     : Exception($"Knowledge search requires {eligibleCollectionCount} eligible collections, exceeding the configured limit of {maximumCollections}.")
@@ -44,7 +48,10 @@ public sealed class KnowledgeIndexService(
             Validate(work);
             var collection = new VectorCollection(work.CollectionName, work.Dimension, work.Distance);
             await vectorStore.EnsureCollectionAsync(collection, cancellationToken);
-            var provider = await knowledge.LoadEmbeddingConfigurationAsync(cancellationToken);
+            var provider = await knowledge.LoadEmbeddingConfigurationAsync(
+                work.ModelConfigurationId,
+                work.ModelConfigurationVersion,
+                cancellationToken);
             await EnsureLeaseOwnedAsync(work, collection);
 
             foreach (var batch in work.Chunks.Chunk(options.BatchSize))
@@ -113,10 +120,11 @@ public sealed class KnowledgeIndexService(
 
     private void Validate(KnowledgeIndexWork work)
     {
-        if (options.Dimension <= 0 || options.BatchSize <= 0 || options.MaximumAttempts <= 0)
+        if (work.Dimension <= 0 || options.BatchSize <= 0 || options.MaximumAttempts <= 0)
             throw new InvalidOperationException("Knowledge index options are invalid.");
-        if (work.Dimension != options.Dimension || work.Distance != options.Distance ||
-            !(work.CollectionName == options.CollectionName || work.CollectionName.StartsWith(options.CollectionName + "_g", StringComparison.Ordinal)))
+        var expectedCollection = $"kb_{options.Distance.ToString().ToLowerInvariant()}_{work.Dimension}";
+        if (work.Distance != options.Distance ||
+            !(work.CollectionName == expectedCollection || work.CollectionName.StartsWith(expectedCollection + "_g", StringComparison.Ordinal)))
             throw new VectorCollectionConfigurationException("The queued index job does not match the configured collection. Explicit reindex is required.");
     }
 

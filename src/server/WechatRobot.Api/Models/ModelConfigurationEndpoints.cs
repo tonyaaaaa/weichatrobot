@@ -16,6 +16,7 @@ public static class ModelConfigurationEndpoints
         group.MapPost("", CreateAsync);
         group.MapPut("{id:guid}", UpdateByIdAsync);
         group.MapPost("{id:guid}/test-connection", TestConnectionByIdAsync);
+        group.MapPost("{id:guid}/test-web-search", TestWebSearchAsync);
         group.MapPost("{id:guid}/enabled", SetEnabledAsync);
         group.MapPost("{id:guid}/default", SetDefaultAsync);
         group.MapDelete("{id:guid}/api-key", ClearApiKeyAsync);
@@ -41,7 +42,9 @@ public static class ModelConfigurationEndpoints
                 request.Model,
                 request.ApiKey,
                 request.TimeoutSeconds,
-                request.MaxRetries),
+                request.MaxRetries,
+                request.EmbeddingDimension,
+                request.WebSearchMode),
             httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
 
@@ -69,7 +72,9 @@ public static class ModelConfigurationEndpoints
                 request.ApiKey,
                 request.TimeoutSeconds,
                 request.MaxRetries,
-                request.Version),
+                request.Version,
+                request.EmbeddingDimension,
+                request.WebSearchMode),
             httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
 
@@ -88,6 +93,45 @@ public static class ModelConfigurationEndpoints
             httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
         return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)), service);
+    }
+
+    private static async Task<IResult> TestWebSearchAsync(
+        Guid id,
+        WechatRobotDbContext database,
+        ModelConfigurationService service,
+        IChatCompletionClient chatClient,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.ModelConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (entity is null) return Results.NotFound();
+        if (!entity.ConfigurationType.Equals("chat", StringComparison.OrdinalIgnoreCase)
+            || !entity.WebSearchMode.Equals("ZaiChatCompletions", StringComparison.Ordinal))
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["webSearchMode"] = ["This chat model is not configured for Z.AI Chat Completions Web Search."]
+            });
+
+        try
+        {
+            var response = await chatClient.CompleteAsync(
+                service.ToProviderConfiguration(ToRecord(entity)),
+                new ChatCompletionRequest(
+                    [new ChatMessage("user", "请搜索今天的公开信息，并返回来源。")],
+                    new WebSearchOptions(3, "noLimit", null, "medium", true)),
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(response.Content) || response.Sources is not { Count: > 0 })
+                return Results.Problem(
+                    "Web Search did not return an answer with valid sources.",
+                    statusCode: StatusCodes.Status502BadGateway);
+            return Results.Ok(new WebSearchTestResponse(true, response.Sources.Count));
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Results.Problem(
+                "Web Search provider test failed.",
+                statusCode: StatusCodes.Status502BadGateway);
+        }
     }
 
     private static async Task<IResult> SetEnabledAsync(
@@ -173,7 +217,7 @@ public static class ModelConfigurationEndpoints
             name,
             new CompatibilityModelConfigurationCommand(
                 request.Provider, request.ConfigurationType, request.BaseUrl, request.Model, request.ApiKey,
-                request.TimeoutSeconds, request.MaxRetries, request.IsEnabled, request.IsDefault),
+                request.TimeoutSeconds, request.MaxRetries, request.IsEnabled, request.IsDefault, request.EmbeddingDimension, request.WebSearchMode),
             httpContext.User.Identity?.Name ?? "unknown",
             cancellationToken);
         return MapMutationResult(result, entity => Results.Ok(ToResponse(entity, service)));
@@ -202,7 +246,11 @@ public static class ModelConfigurationEndpoints
             }
             else if (entity.ConfigurationType.Equals("embedding", StringComparison.OrdinalIgnoreCase))
             {
-                await embeddingClient.CreateEmbeddingsAsync(configuration, new EmbeddingBatchRequest(["connection test"]), cancellationToken);
+                var response = await embeddingClient.CreateEmbeddingsAsync(configuration, new EmbeddingBatchRequest(["connection test"]), cancellationToken);
+                if (entity.EmbeddingDimension is not { } expected || response.Vectors.Single().Count != expected)
+                {
+                    return Results.Problem("Embedding dimension mismatch.", statusCode: StatusCodes.Status502BadGateway);
+                }
             }
             else
             {
@@ -271,23 +319,24 @@ public static class ModelConfigurationEndpoints
     {
         var apiKey = service.GetApiKeyMetadata(entity.EncryptedApiKey);
         return new ModelConfigurationResponse(entity.Id, entity.Name, entity.Provider, entity.ConfigurationType, entity.BaseUrl, entity.Model,
-            entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault, apiKey.HasApiKey, apiKey.LastFour,
+            entity.EmbeddingDimension, entity.WebSearchMode, entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault, apiKey.HasApiKey, apiKey.LastFour,
             entity.ConnectionStatus, entity.LastTestedAtUtc, entity.LastTestFailureSummary, entity.Version);
     }
 
     private static ModelConfigurationRecord ToRecord(ModelConfigEntity entity) => new(entity.Id, entity.Name, entity.Provider, entity.BaseUrl,
-        entity.Model, entity.EncryptedApiKey, entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault);
+        entity.Model, entity.EncryptedApiKey, entity.TimeoutSeconds, entity.MaxRetries, entity.IsEnabled, entity.IsDefault, entity.EmbeddingDimension, entity.WebSearchMode);
 
     public sealed record UpdateModelConfigurationRequest(string Provider, string ConfigurationType, string BaseUrl, string Model, string? ApiKey,
-        int TimeoutSeconds, int MaxRetries, bool IsEnabled, bool IsDefault);
+        int TimeoutSeconds, int MaxRetries, bool IsEnabled, bool IsDefault, int? EmbeddingDimension = null, string WebSearchMode = "None");
     public sealed record CreateModelConfigurationRequest(string Name, string Provider, string ConfigurationType, string BaseUrl, string Model,
-        string? ApiKey, int TimeoutSeconds, int MaxRetries);
+        string? ApiKey, int TimeoutSeconds, int MaxRetries, int? EmbeddingDimension = null, string WebSearchMode = "None");
     public sealed record UpdateModelConfigurationByIdRequest(string Name, string Provider, string ConfigurationType, string BaseUrl, string Model,
-        string? ApiKey, int TimeoutSeconds, int MaxRetries, int Version);
+        string? ApiKey, int TimeoutSeconds, int MaxRetries, int Version, int? EmbeddingDimension = null, string WebSearchMode = "None");
     public sealed record SetEnabledRequest(bool Enabled, int Version);
     public sealed record SetDefaultRequest(bool IsDefault, int Version);
     public sealed record ModelConfigurationResponse(Guid Id, string Name, string Provider, string ConfigurationType, string BaseUrl, string Model,
-        int TimeoutSeconds, int MaxRetries, bool IsEnabled, bool IsDefault, bool HasApiKey, string? LastFour,
+        int? EmbeddingDimension, string WebSearchMode, int TimeoutSeconds, int MaxRetries, bool IsEnabled, bool IsDefault, bool HasApiKey, string? LastFour,
         string ConnectionStatus, DateTime? LastTestedAtUtc, string? LastTestFailureSummary, int Version);
     public sealed record ConnectionTestResponse(bool Succeeded);
+    public sealed record WebSearchTestResponse(bool Succeeded, int SourceCount);
 }

@@ -12,12 +12,22 @@ public sealed class GroupProfileEntity
     public string Name { get; set; } = string.Empty;
     public string? WorkToolGroupRemark { get; set; }
     public bool IsEnabled { get; set; } = true;
+    public DateTime? ArchivedAtUtc { get; set; }
+    public int StateVersion { get; set; }
     public bool? ContextSenderIsolated { get; set; }
     public int? ContextHistoryTurns { get; set; }
     public int? ContextIdleTimeoutMinutes { get; set; }
     public int? ContextTokenCap { get; set; }
     public bool? ContextSummaryEnabled { get; set; }
     public bool? ContextIncludeBotHistory { get; set; }
+    public bool WebSearchEnabled { get; set; }
+    public bool ModelKnowledgeFallbackEnabled { get; set; }
+    public bool WebSearchShowSources { get; set; }
+    public int WebSearchResultCount { get; set; } = 5;
+    public string WebSearchRecency { get; set; } = "NoLimit";
+    public string? WebSearchDomainFilter { get; set; }
+    public string WebSearchContentSize { get; set; } = "Medium";
+    public string FinalNoEvidencePolicy { get; set; } = "InsufficientEvidence";
     public string HandoffPausePolicy { get; set; } = "Group";
     public int ConfigurationVersion { get; set; }
     public string RegistrationSource { get; set; } = "Manual";

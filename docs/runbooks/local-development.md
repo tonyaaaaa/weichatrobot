@@ -1,5 +1,8 @@
 # Windows local development
 
+Automatic long-term-memory operations, promotion rules, and recovery are
+documented in [自动长期记忆运营手册](long-term-memory-operations.md).
+
 ## Prerequisites
 
 Install Docker Desktop, .NET 10 SDK plus `dotnet-ef`, and Node.js/npm. Copy `.env.example` to the ignored `.env` file and replace every `replace-with-...` value. Use local-only credentials. The master key must be a Base64-encoded 32-byte value and the JWT signing key must contain at least 32 characters.
@@ -50,3 +53,25 @@ command-result callback after the operator types `UPDATE`. The script talks only
 to authenticated WechatRobot admin endpoints; it never receives or prints the
 WorkTool robot ID, callback route code, callback query secret, administrator
 password, or bearer token.
+
+# MySQL integration-test matrix
+
+The shared integration fixture uses MySQL 8.4.10 by default. Run the affected
+suite in a separate process for each supported server image:
+
+```powershell
+$env:WECHATROBOT_TEST_MYSQL_IMAGE = 'mysql:5.7.44'
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj
+
+$env:WECHATROBOT_TEST_MYSQL_IMAGE = 'mysql:8.4.10'
+dotnet test --project tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj
+
+Remove-Item Env:WECHATROBOT_TEST_MYSQL_IMAGE
+```
+
+The fixture explicitly starts both images with `utf8mb4` and
+`utf8mb4_bin`. It also enables `log_bin_trust_function_creators` inside the
+disposable container so the callback rollback test can create its temporary
+failure-injection trigger without a root connection. Changing the environment
+variable after a test process starts does not replace that process's shared
+container.

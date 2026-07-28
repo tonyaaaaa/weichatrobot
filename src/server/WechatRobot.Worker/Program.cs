@@ -20,10 +20,11 @@ using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Infrastructure.Conversations;
 using WechatRobot.Infrastructure.Health;
-using WechatRobot.Application.Handoffs;
 using WechatRobot.Worker.Jobs;
 using WechatRobot.Infrastructure.Logging;
 using WechatRobot.Infrastructure.Configuration;
+using WechatRobot.Application.Memory;
+using WechatRobot.Infrastructure.Memory;
 
 DotEnvFileLoader.Load();
 var builder = Host.CreateApplicationBuilder(args);
@@ -77,12 +78,25 @@ builder.Services.AddSingleton(knowledgeIndexOptions);
 builder.Services.AddSingleton(KnowledgeIndexWorkerOptions.Default);
 builder.Services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
 builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddSingleton<MemoryExtractionValidator>();
+builder.Services.AddScoped<IMemoryExtractor, ChatMemoryExtractor>();
+builder.Services.AddScoped<IMemoryRelationshipClassifier, ChatMemoryRelationshipClassifier>();
+builder.Services.AddScoped<MemoryExtractionService>();
+builder.Services.AddScoped<IMemoryStore, EfMemoryStore>();
+builder.Services.AddScoped<MemoryOrganizationService>();
+builder.Services.AddScoped<IMemoryRecallService, MemoryRecallService>();
 builder.Services.AddScoped<QdrantKnowledgeService>();
 builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());
 builder.Services.AddScoped<KnowledgeIndexService>();
 builder.Services.AddScoped<KnowledgeCandidatePublishProcessor>();
 builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
+builder.Services.AddHttpClient<IMemoryVectorIndex, QdrantMemoryVectorIndex>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");
+    var apiKey = builder.Configuration["Qdrant:ApiKey"];
+    if (!string.IsNullOrWhiteSpace(apiKey)) client.DefaultRequestHeaders.Add("api-key", apiKey);
+});
 builder.Services.AddHttpClient<IVectorStore, QdrantVectorStore>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");
@@ -134,14 +148,6 @@ builder.Services.AddSingleton<AnswerOutputFirewall>();
 builder.Services.AddSingleton<RetrievalQueryBuilder>();
 builder.Services.AddScoped<IConversationSummarizer, ChatConversationSummarizer>();
 builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
-builder.Services.AddScoped<IHandoffStore, EfHandoffStore>();
-builder.Services.AddScoped<HandoffService>();
-var handoffOptions = builder.Configuration.GetSection(HandoffTriggerOptions.SectionName).Get<HandoffTriggerOptions>()
-    ?? new HandoffTriggerOptions(["转人工", "人工客服"]);
-if (handoffOptions.RepeatedSystemFailureThreshold < 1) throw new InvalidOperationException("Handoff failure threshold must be positive.");
-builder.Services.AddSingleton(handoffOptions);
-builder.Services.AddSingleton<HandoffTriggerEvaluator>();
-builder.Services.AddScoped<IHandoffOrchestrator, HandoffOrchestrator>();
 builder.Services.AddScoped<IRetrievalEvidenceProvider, KnowledgeRetrievalEvidenceProvider>();
 builder.Services.AddScoped<IKnowledgeTagScopeResolver, KnowledgeTagScopeResolver>();
 builder.Services.AddScoped<GroundedAnswerService>();
@@ -160,6 +166,9 @@ builder.Services.AddHttpClient<IWorkToolClient, WorkToolClient>(client =>
 builder.Services.AddScoped<IWorkToolCredentialResolver, WorkToolCredentialResolver>();
 builder.Services.AddScoped<WorkToolGroupImportService>();
 builder.Services.AddHostedService<DurableJobWorker>();
+builder.Services.AddHostedService<MemoryExtractionWorker>();
+builder.Services.AddHostedService<MemoryMaintenanceWorker>();
+builder.Services.AddHostedService<MemoryIndexWorker>();
 builder.Services.AddHostedService<RobotSendWorker>();
 builder.Services.AddHostedService<WorkToolGroupOperationWorker>();
 builder.Services.AddHostedService<WorkToolGroupReconciliationWorker>();

@@ -4,6 +4,8 @@ using WechatRobot.Application.Audit;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Logging;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
+using System.Security.Claims;
 
 namespace WechatRobot.Api.Audit;
 
@@ -15,7 +17,61 @@ public static class ConversationAuditEndpoints
             .RequireAuthorization(SystemRoles.KnowledgeOperator);
         endpoints.MapGet("/api/audit/group-options", GroupOptionsAsync)
             .RequireAuthorization(SystemRoles.KnowledgeOperator);
+        endpoints.MapPost("/api/audit/conversations/{id:guid}/knowledge-candidate", CreateKnowledgeCandidateAsync)
+            .RequireAuthorization(SystemRoles.KnowledgeOperator);
         return endpoints;
+    }
+
+    private static async Task<IResult> CreateKnowledgeCandidateAsync(
+        Guid id,
+        ManualKnowledgeCandidateRequest request,
+        ClaimsPrincipal principal,
+        WechatRobotDbContext database,
+        TimeProvider timeProvider,
+        CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(request.Answer) || request.Answer.Trim().Length > 10000)
+            return TypedResults.BadRequest(new { error = "The corrected answer is invalid." });
+        var source = await (
+            from audit in database.RetrievalAudits
+            join message in database.ConversationMessages on audit.ConversationMessageId equals message.Id
+            where audit.Id == id
+            select new { Audit = audit, Message = message })
+            .SingleOrDefaultAsync(token);
+        if (source is null) return TypedResults.NotFound();
+        var existing = await database.KnowledgeCandidates.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.SourceType == "ManualCorrection" &&
+                                       x.SourceConversationMessageId == source.Message.Id, token);
+        if (existing is not null)
+            return TypedResults.Conflict(new { error = "A manual correction candidate already exists for this conversation." });
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var candidate = new KnowledgeCandidateEntity
+        {
+            HandoffCaseId = null,
+            QuestionMessageId = source.Message.Id,
+            SourceConversationMessageId = source.Message.Id,
+            SourceType = "ManualCorrection",
+            Question = source.Message.Text,
+            Answer = request.Answer.Trim(),
+            EvidenceJson = source.Audit.EvidenceJson,
+            Status = "pending",
+            Version = 1,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        database.KnowledgeCandidates.Add(candidate);
+        database.AdministrationAudits.Add(new AdministrationAuditEntity
+        {
+            Actor = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? "unknown",
+            Action = "knowledge.candidate.manual-correction",
+            TargetType = "KnowledgeCandidate",
+            TargetId = candidate.Id.ToString("D"),
+            SanitizedDetailJson = System.Text.Json.JsonSerializer.Serialize(new { auditId = id }),
+            CreatedAtUtc = now
+        });
+        await database.SaveChangesAsync(token);
+        return TypedResults.Ok(new { candidate.Id, candidate.Status, candidate.Version });
     }
 
     private static async Task<IResult> GroupOptionsAsync(
@@ -61,6 +117,7 @@ public static class ConversationAuditEndpoints
             {
                 item.Id,
                 item.GroupProfileId,
+                item.ModelConfigurationId,
                 item.WorkToolMessageId,
                 item.Question,
                 item.Answer,
@@ -69,16 +126,14 @@ public static class ConversationAuditEndpoints
                 item.ConfidenceValue,
                 item.ContextPolicy,
                 item.FailureCode,
+                item.AnswerSource,
+                item.WebSearchFailureCode,
+                webSearchSources = SafeWebSources(item.WebSearchSourcesJson),
+                memoryRecall = SafeJson(item.MemoryRecallJson),
                 sources = Sources(evidence),
                 evidence,
                 inputSummary = SafeJson(item.InputSummaryJson),
                 send = item.Send,
-                handoff = item.Handoff is null ? null : new
-                {
-                    item.Handoff.State, item.Handoff.ReasonCode, item.Handoff.PauseScope,
-                    evidence = SafeJson(item.Handoff.EvidenceJson), item.Handoff.CreatedAtUtc, item.Handoff.UpdatedAtUtc,
-                    item.Handoff.Transitions
-                },
                 item.KnowledgeCandidate,
                 item.CreatedAtUtc
             };
@@ -134,4 +189,66 @@ public static class ConversationAuditEndpoints
         if (value.TryGetValue<Guid>(out var id)) return id.ToString("D");
         return value.ToString();
     }
+
+    private static WebSourceResponse[] SafeWebSources(string json)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return [];
+            var results = new List<WebSourceResponse>();
+            foreach (var source in document.RootElement.EnumerateArray().Take(20))
+            {
+                var rawUrl = JsonString(source, "url");
+                if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var url)
+                    || (url.Scheme != Uri.UriSchemeHttp && url.Scheme != Uri.UriSchemeHttps)
+                    || !string.IsNullOrEmpty(url.UserInfo)
+                    || url.AbsoluteUri.Length > 2048)
+                    continue;
+                var safeUrl = RedactionEnricher.RedactMessage(url.AbsoluteUri);
+                if (safeUrl.Contains("[REDACTED]", StringComparison.Ordinal))
+                    continue;
+                var title = RedactionEnricher.RedactMessage(
+                    JsonString(source, "title") ?? url.Host);
+                if (title.Length > 256) title = title[..256];
+                results.Add(new(
+                    title,
+                    safeUrl,
+                    Bound(JsonString(source, "site"), 128),
+                    Bound(JsonString(source, "publishedAt"), 64),
+                    source.TryGetProperty("index", out var index)
+                        && index.TryGetInt32(out var parsedIndex)
+                            ? parsedIndex
+                            : results.Count + 1));
+            }
+            return results.ToArray();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string? JsonString(System.Text.Json.JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value)
+        && value.ValueKind == System.Text.Json.JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static string? Bound(string? value, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var redacted = RedactionEnricher.RedactMessage(value.Trim());
+        return redacted.Length <= maximumLength ? redacted : redacted[..maximumLength];
+    }
+
+    private sealed record WebSourceResponse(
+        string Title,
+        string Url,
+        string? Site,
+        string? PublishedAt,
+        int Index);
 }
+
+public sealed record ManualKnowledgeCandidateRequest(string Answer);

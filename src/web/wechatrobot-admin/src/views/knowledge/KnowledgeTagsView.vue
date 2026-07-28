@@ -8,6 +8,7 @@ import {
   type KnowledgeTagPage
 } from '../../api/knowledgeTags';
 import { useAuthStore } from '../../stores/auth';
+import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
 type StateFilter = 'all' | 'enabled' | 'disabled';
 type ScopeFilter = 'all' | 'global' | 'scoped';
@@ -28,7 +29,7 @@ const props = withDefaults(defineProps<{
   confirmAction?: (message: string) => boolean | Promise<boolean>;
 }>(), {
   api: () => knowledgeTagApi,
-  confirmAction: (message: string) => window.confirm(message)
+  confirmAction: defaultConfirmAction
 });
 
 const auth = useAuthStore();

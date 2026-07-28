@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { ElButton, ElEmpty, ElSkeleton, ElTable, ElTableColumn, ElTag } from 'element-plus';
+import { ElButton, ElEmpty, ElMessage, ElSkeleton, ElTable, ElTableColumn, ElTag } from 'element-plus';
+import { groupApi, type GroupApi } from '../../api/groups';
 import {
   workToolOperationsApi,
   type KnownGroup,
@@ -8,16 +9,20 @@ import {
   type WorkToolRobotOption,
   type WorkToolOperationsApi
 } from '../../api/worktool';
+import { confirmAction } from '../../utils/dialogs';
 
 const props = withDefaults(
   defineProps<{ api?: Pick<WorkToolOperationsApi, 'listGroups'> &
     Partial<Pick<WorkToolOperationsApi,
-      'listRobots' | 'listRemoteGroups' | 'importRemoteGroups'>> }>(),
-  { api: () => workToolOperationsApi }
+      'listRobots' | 'listRemoteGroups' | 'importRemoteGroups'>>;
+    lifecycleApi?: Pick<GroupApi, 'changeState'> }>(),
+  { api: () => workToolOperationsApi, lifecycleApi: () => groupApi }
 );
 const groups = ref<KnownGroup[]>([]);
+const statusFilter = ref<'current' | 'enabled' | 'disabled' | 'archived' | 'all'>('current');
 const loading = ref(true);
 const loadError = ref('');
+const lifecycleBusyId = ref('');
 const robots = ref<WorkToolRobotOption[]>([]);
 const selectedRobotId = ref('');
 const remoteQuery = ref('');
@@ -35,11 +40,41 @@ async function load() {
   loadError.value = '';
   groups.value = [];
   try {
-    groups.value = await props.api.listGroups();
+    groups.value = await props.api.listGroups(statusFilter.value);
   } catch {
     loadError.value = '群列表加载失败，请稍后重试。';
   } finally {
     loading.value = false;
+  }
+}
+
+async function changeState(
+  row: unknown,
+  action: 'disable' | 'enable' | 'archive' | 'restore'
+) {
+  const group = row as KnownGroup;
+  const prompt = action === 'disable'
+    ? '确认停用这个群？新的消息不会再进入回答流程；已经发往 WorkTool 的外部请求无法撤回。'
+    : action === 'archive'
+      ? '确认归档这个群？归档后默认隐藏；存在待处理消息、发送命令或记忆任务时系统会拒绝归档。'
+      : null;
+  if (prompt && !await confirmAction(prompt, {
+    title: action === 'disable' ? '停用群' : '归档群',
+    confirmButtonText: action === 'disable' ? '确认停用' : '确认归档',
+    danger: true
+  })) return;
+
+  lifecycleBusyId.value = group.id;
+  try {
+    await props.lifecycleApi.changeState(group.id, action, group.stateVersion);
+    ElMessage.success(action === 'restore' ? '群已恢复为停用状态。' : `群已${action === 'enable' ? '启用' : action === 'disable' ? '停用' : '归档'}。`);
+    await load();
+  } catch (error) {
+    const status = (error as { response?: { status?: number } }).response?.status;
+    ElMessage.error(status === 409 ? '群状态已经变化或仍有任务处理中，已重新加载。' : '群状态修改失败，请稍后重试。');
+    await load();
+  } finally {
+    lifecycleBusyId.value = '';
   }
 }
 
@@ -167,6 +202,19 @@ onMounted(async () => {
     </section>
 
     <section class="group-list-panel" aria-live="polite">
+      <div class="registered-toolbar">
+        <label>
+          <span>显示状态</span>
+          <select v-model="statusFilter" data-testid="group-status-filter" @change="load">
+            <option value="current">当前群（不含归档）</option>
+            <option value="enabled">仅启用</option>
+            <option value="disabled">仅停用</option>
+            <option value="archived">仅归档</option>
+            <option value="all">全部群</option>
+          </select>
+        </label>
+        <ElButton :loading="loading" @click="load">刷新</ElButton>
+      </div>
       <ElSkeleton v-if="loading" :rows="5" animated />
 
       <ElEmpty v-else-if="loadError" :description="loadError">
@@ -194,8 +242,8 @@ onMounted(async () => {
 
           <ElTableColumn label="状态">
             <template #default="{ row }">
-              <ElTag :type="row.isEnabled ? 'success' : 'info'" size="small">
-                {{ row.isEnabled ? '启用' : '停用' }}
+              <ElTag :type="row.state === 'enabled' ? 'success' : row.state === 'archived' ? 'warning' : 'info'" size="small">
+                {{ row.state === 'enabled' ? '启用' : row.state === 'archived' ? '归档' : '停用' }}
               </ElTag>
             </template>
           </ElTableColumn>
@@ -206,15 +254,55 @@ onMounted(async () => {
             </template>
           </ElTableColumn>
 
-          <ElTableColumn align="right" width="100">
+          <ElTableColumn label="操作" align="right" min-width="390">
             <template #default="{ row }">
-              <RouterLink
-                class="configure-link"
-                data-testid="configure-group"
-                :to="{ name: 'group-configuration', params: { id: row.id } }"
-              >
-                配置
-              </RouterLink>
+              <div class="group-actions">
+                <ElButton
+                  v-if="row.state === 'enabled'"
+                  data-testid="disable-group"
+                  size="small"
+                  :loading="lifecycleBusyId === row.id"
+                  @click="changeState(row, 'disable')"
+                >停用</ElButton>
+                <ElButton
+                  v-if="row.state === 'disabled'"
+                  data-testid="enable-group"
+                  size="small"
+                  type="primary"
+                  :loading="lifecycleBusyId === row.id"
+                  @click="changeState(row, 'enable')"
+                >启用</ElButton>
+                <ElButton
+                  v-if="row.state === 'disabled'"
+                  data-testid="archive-group"
+                  size="small"
+                  :loading="lifecycleBusyId === row.id"
+                  @click="changeState(row, 'archive')"
+                >归档</ElButton>
+                <ElButton
+                  v-if="row.state === 'archived'"
+                  data-testid="restore-group"
+                  size="small"
+                  type="primary"
+                  :loading="lifecycleBusyId === row.id"
+                  @click="changeState(row, 'restore')"
+                >恢复</ElButton>
+                <RouterLink
+                  v-if="row.state !== 'archived'"
+                  class="configure-link"
+                  data-testid="configure-group"
+                  :to="{ name: 'group-configuration', params: { id: row.id } }"
+                >配置</RouterLink>
+                <RouterLink
+                  class="configure-link"
+                  :to="{ name: 'audit', query: { groupId: row.id } }"
+                >会话</RouterLink>
+                <RouterLink
+                  class="configure-link"
+                  :to="{ name: 'group-context', params: { id: row.id } }"
+                >上下文</RouterLink>
+                <RouterLink class="configure-link" :to="{ name: 'memory-center', query: { groupId: row.id } }">记忆</RouterLink>
+              </div>
             </template>
           </ElTableColumn>
         </ElTable>
@@ -285,6 +373,15 @@ onMounted(async () => {
 .group-table-wrap {
   overflow-x: auto;
 }
+.registered-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+.registered-toolbar label { display: grid; gap: var(--space-xs); }
+.registered-toolbar select { min-width: 14rem; min-height: 40px; }
 
 .group-info {
   display: flex;
@@ -328,5 +425,12 @@ onMounted(async () => {
     padding: var(--space-lg);
   }
   .import-toolbar { grid-template-columns: 1fr; }
+}
+.group-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  white-space: nowrap;
 }
 </style>

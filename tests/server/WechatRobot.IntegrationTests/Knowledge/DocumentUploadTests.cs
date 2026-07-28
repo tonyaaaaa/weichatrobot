@@ -106,6 +106,36 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
     }
 
     [Fact]
+    public async Task Completed_physical_delete_allows_identical_content_to_be_uploaded_again()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.FailPut = false;
+        using var uploader = CreateClient(SystemRoles.KnowledgeOperator);
+        using var admin = CreateClient(SystemRoles.Admin);
+        using var first = await UploadTextAsync(uploader, "replaceable.txt", "same-content-after-delete");
+        first.EnsureSuccessStatusCode();
+        var firstBody = await first.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        var documentId = firstBody.GetProperty("documentId").GetGuid();
+
+        using var duplicateBeforeDelete = await UploadTextAsync(uploader, "duplicate-before-delete.txt", "same-content-after-delete");
+        Assert.Equal(HttpStatusCode.Conflict, duplicateBeforeDelete.StatusCode);
+
+        using var delete = await RequestPhysicalDeleteAsync(admin, documentId);
+        Assert.Equal(HttpStatusCode.Accepted, delete.StatusCode);
+        var worker = new KnowledgeDocumentCleanupWorker(
+            _factory.Services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System);
+        for (var attempt = 0; attempt < 20 && await DocumentExistsAsync(documentId); attempt++)
+            Assert.True(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+        Assert.False(await DocumentExistsAsync(documentId));
+
+        using var replacement = await UploadTextAsync(uploader, "replacement.txt", "same-content-after-delete");
+        replacement.EnsureSuccessStatusCode();
+        var replacementBody = await replacement.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.NotEqual(documentId, replacementBody.GetProperty("documentId").GetGuid());
+    }
+
+    [Fact]
     public async Task Worker_recovers_stage_before_oss_cancellation_and_activates_one_parse_job()
     {
         _factory.Storage.Reset();
@@ -333,6 +363,14 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
             .Where(document => document.Id == documentId)
             .Select(document => document.StateVersion)
             .SingleAsync(TestContext.Current.CancellationToken);
+    }
+
+    private async Task<bool> DocumentExistsAsync(Guid documentId)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>()
+            .KnowledgeDocuments.AsNoTracking()
+            .AnyAsync(document => document.Id == documentId, TestContext.Current.CancellationToken);
     }
 }
 

@@ -38,6 +38,8 @@ public sealed class ChunkPreviewRepository(WechatRobotDbContext database)
     public Task<ChunkPreviewSet> DeleteAsync(Guid versionId, Guid id, int expectedRevision, CancellationToken token) => MutateAsync(versionId, expectedRevision, items => _editor.Delete(items, id), token);
     public Task<ChunkPreviewSet> SplitAsync(Guid versionId, Guid id, int offset, int expectedRevision, CancellationToken token) => MutateAsync(versionId, expectedRevision, items => _editor.Split(items, id, offset), token);
     public Task<ChunkPreviewSet> MergeAsync(Guid versionId, Guid firstId, Guid secondId, int expectedRevision, CancellationToken token) => MutateAsync(versionId, expectedRevision, items => _editor.Merge(items, firstId, secondId), token);
+    public Task<ChunkPreviewSet> MergeAsync(Guid versionId, IReadOnlyList<Guid> previewIds, int expectedRevision, CancellationToken token) =>
+        MutateAsync(versionId, expectedRevision, items => _editor.Merge(items, previewIds), token);
 
     public async Task<IReadOnlyList<KnowledgeChunkEntity>> ApproveAsync(Guid versionId, int expectedRevision, CancellationToken cancellationToken)
     {

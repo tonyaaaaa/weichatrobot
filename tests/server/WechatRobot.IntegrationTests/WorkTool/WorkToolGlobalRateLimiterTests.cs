@@ -24,7 +24,8 @@ public sealed class WorkToolGlobalRateLimiterTests(MySqlFixture fixture)
                          TestContext.Current.CancellationToken))
         {
             await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
-            await database.WorkToolRateLimitBuckets.ExecuteDeleteAsync(
+            await database.Database.ExecuteSqlRawAsync(
+                "DELETE FROM `worktool_rate_limit_bucket`;",
                 TestContext.Current.CancellationToken);
         }
 

@@ -26,6 +26,17 @@ const existing: ModelConfiguration = {
 };
 
 describe('ModelConfigurationDialog', () => {
+  it('renders the form inside an Element Plus dialog with number controls', async () => {
+    const wrapper = mount(ModelConfigurationDialog, {
+      props: { modelValue: true }
+    });
+    await flushPromises();
+
+    expect(wrapper.find('.el-dialog').exists()).toBe(true);
+    expect(wrapper.find('.el-dialog__body').exists()).toBe(true);
+    expect(wrapper.findAll('.el-input-number')).toHaveLength(2);
+  });
+
   it('blocks blank names and invalid URLs with inline messages', async () => {
     const wrapper = mount(ModelConfigurationDialog, {
       props: { modelValue: true },
@@ -52,7 +63,7 @@ describe('ModelConfigurationDialog', () => {
     });
 
     const optionValues = wrapper.findAllComponents({ name: 'ElOption' }).map(option => option.props('value'));
-    expect(optionValues).toEqual(['chat', 'embedding']);
+    expect(optionValues).toEqual(['chat', 'embedding', 'None', 'ZaiChatCompletions']);
     await wrapper.get('[data-testid="model-name"]').setValue('本地模型');
     await wrapper.get('[data-testid="model-base-url"]').setValue('http://127.0.0.1:11434');
     await wrapper.get('[data-testid="model-model"]').setValue('qwen');
@@ -68,7 +79,31 @@ describe('ModelConfigurationDialog', () => {
       model: 'qwen',
       apiKey: '',
       timeoutSeconds: 30,
-      maxRetries: 0
+      maxRetries: 0,
+      webSearchMode: 'None'
+    }));
+  });
+
+  it('requires and emits a vector dimension only for embedding configurations', async () => {
+    const wrapper = mount(ModelConfigurationDialog, {
+      props: { modelValue: true },
+      global: { stubs: { ElDialog: dialogStub } }
+    });
+
+    const type = wrapper.getComponent({ name: 'ElSelect' });
+    await type.setValue('embedding');
+    expect(wrapper.find('[data-testid="embedding-dimension"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="model-name"]').setValue('向量模型');
+    await wrapper.get('[data-testid="model-base-url"]').setValue('https://provider.example.test/v1');
+    await wrapper.get('[data-testid="model-model"]').setValue('embedding-model');
+    await wrapper.get('[data-testid="model-save"]').trigger('click');
+    expect(wrapper.text()).toContain('请输入向量维度');
+
+    await wrapper.get('[data-testid="embedding-dimension"] input').setValue('1024');
+    await wrapper.get('[data-testid="model-save"]').trigger('click');
+    expect(wrapper.emitted('save')?.at(-1)?.[0]).toEqual(expect.objectContaining({
+      configurationType: 'embedding',
+      embeddingDimension: 1024
     }));
   });
 

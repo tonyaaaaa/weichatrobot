@@ -1,6 +1,6 @@
 import { apiClient } from './http';
 
-export type SystemRole = 'Admin' | 'KnowledgeOperator' | 'HumanAgent';
+export type SystemRole = 'Admin' | 'KnowledgeOperator';
 export type UserStateFilter = 'all' | 'enabled' | 'disabled';
 
 export interface ManagedUser {
@@ -8,7 +8,6 @@ export interface ManagedUser {
   email: string;
   displayName: string;
   isEnabled: boolean;
-  workToolDisplayName?: string | null;
   roles: SystemRole[];
 }
 
@@ -37,8 +36,6 @@ export interface UserAdministrationApi {
   create(request: CreateManagedUserRequest): Promise<ManagedUser>;
   setEnabled(id: string, isEnabled: boolean): Promise<ManagedUser>;
   setRoles(id: string, roles: SystemRole[]): Promise<ManagedUser>;
-  setWorkToolDisplayName(id: string, displayName: string): Promise<ManagedUser>;
-  clearWorkToolDisplayName(id: string): Promise<ManagedUser>;
 }
 
 export const userAdministrationApi: UserAdministrationApi = {
@@ -68,17 +65,6 @@ export const userAdministrationApi: UserAdministrationApi = {
     return (await apiClient.put<ManagedUser>(
       `/api/admin/users/${encodeURIComponent(id)}/roles`,
       { roles }
-    )).data;
-  },
-  async setWorkToolDisplayName(id, displayName) {
-    return (await apiClient.put<ManagedUser>(
-      `/api/admin/users/${encodeURIComponent(id)}/worktool-display-name`,
-      { displayName }
-    )).data;
-  },
-  async clearWorkToolDisplayName(id) {
-    return (await apiClient.delete<ManagedUser>(
-      `/api/admin/users/${encodeURIComponent(id)}/worktool-display-name`
     )).data;
   }
 };

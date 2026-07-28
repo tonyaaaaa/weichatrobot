@@ -5,6 +5,7 @@ using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Storage;
 using WechatRobot.Infrastructure.Knowledge;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
 
 namespace WechatRobot.Worker.Jobs;
 
@@ -47,6 +48,7 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
                 if (contract.IsCollectionExclusive ? await vectors.InspectCollectionAsync(contract.Collection.Name, token) is not null :
                     (await vectors.InspectVersionAsync(contract.Collection, contract.VersionId, token)).Count != 0)
                     throw new InvalidOperationException($"Vector cleanup verification failed for {contract.Collection.Name}/{contract.VersionId:D}.");
+            await DeleteDatabaseRecordsAsync(database, documentId, token);
             await jobs.CompleteJobAsync(job.Id, job.LeaseOwner, timeProvider.GetUtcNow().UtcDateTime, token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
@@ -55,6 +57,40 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
             await jobs.FailJobAsync(job, $"Knowledge document physical cleanup failed: {exception.Message}", timeProvider.GetUtcNow().UtcDateTime, CancellationToken.None);
         }
         return true;
+    }
+
+    private static async Task DeleteDatabaseRecordsAsync(
+        WechatRobotDbContext database,
+        Guid documentId,
+        CancellationToken token)
+    {
+        var versions = await database.KnowledgeDocumentVersions
+            .Where(version => version.KnowledgeDocumentId == documentId)
+            .ToArrayAsync(token);
+        var versionIds = versions.Select(version => version.Id).ToArray();
+        if (versionIds.Length != 0)
+        {
+            var candidates = new List<KnowledgeCandidateEntity>();
+            foreach (var batch in GuidBatchQuery.CreateBatches(versionIds))
+            {
+                var predicate = GuidBatchQuery.BuildPredicate<KnowledgeCandidateEntity>(
+                    batch,
+                    candidate => candidate.KnowledgeDocumentVersionId!.Value);
+                candidates.AddRange(await database.KnowledgeCandidates
+                    .Where(candidate => candidate.KnowledgeDocumentVersionId.HasValue)
+                    .Where(predicate)
+                    .ToArrayAsync(token));
+            }
+            foreach (var candidate in candidates)
+                candidate.KnowledgeDocumentVersionId = null;
+        }
+
+        database.KnowledgeDocumentVersions.RemoveRange(versions);
+        var document = await database.KnowledgeDocuments
+            .SingleOrDefaultAsync(item => item.Id == documentId, token);
+        if (document is not null)
+            database.KnowledgeDocuments.Remove(document);
+        await database.SaveChangesAsync(token);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

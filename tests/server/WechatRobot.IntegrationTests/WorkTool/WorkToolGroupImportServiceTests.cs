@@ -12,6 +12,61 @@ public sealed class WorkToolGroupImportServiceTests(MySqlFixture fixture)
     : IClassFixture<MySqlFixture>
 {
     [Fact]
+    public async Task Importing_a_unique_archived_match_restores_the_same_disabled_record()
+    {
+        var services = new ServiceCollection();
+        services.AddDbContextFactory<WechatRobotDbContext>(
+            options => options.UseMySQL(fixture.ConnectionString));
+        await using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IDbContextFactory<WechatRobotDbContext>>();
+        var robot = new RobotConfigEntity
+        {
+            Name = $"restore-import-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"restore-import-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test"
+        };
+        var archived = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = "归档测试群",
+            WorkToolGroupRemark = "归档测试群",
+            IsEnabled = false,
+            ArchivedAtUtc = DateTime.UtcNow.AddDays(-1),
+            StateVersion = 4
+        };
+        await using (var database = await factory.CreateDbContextAsync(
+                         TestContext.Current.CancellationToken))
+        {
+            await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            database.AddRange(robot, archived);
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+        var client = new FixedGroupClient(new(
+            1, 100, 1, 1, [new("归档测试群", "群主", 5, null)]));
+        var service = new WorkToolGroupImportService(factory, client, TimeProvider.System);
+
+        var result = await service.ImportAsync(
+            robot.Id,
+            [new("归档测试群", "Available")],
+            "admin@test",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(archived.Id, Assert.Single(result).GroupProfileId);
+        await using var verify = await factory.CreateDbContextAsync(
+            TestContext.Current.CancellationToken);
+        var restored = await verify.GroupProfiles.SingleAsync(
+            group => group.Id == archived.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Null(restored.ArchivedAtUtc);
+        Assert.False(restored.IsEnabled);
+        Assert.Equal(5, restored.StateVersion);
+        Assert.Contains(
+            await verify.AdministrationAudits.Where(audit => audit.TargetId == archived.Id.ToString("D"))
+                .ToArrayAsync(TestContext.Current.CancellationToken),
+            audit => audit.Action == "worktool_group_restored");
+    }
+
+    [Fact]
     public async Task ImportAsync_creates_only_selected_remote_groups_and_is_idempotent()
     {
         var services = new ServiceCollection();

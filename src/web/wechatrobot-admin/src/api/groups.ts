@@ -4,10 +4,21 @@ export type PatternKind = 'exact' | 'contains' | 'regex';
 export interface GroupRule { id?: string; pattern: string; patternKind: PatternKind; ignoreCase: boolean; }
 export interface ContextOverrides { senderIsolated?: boolean | null; historyTurns?: number | null; idleTimeoutMinutes?: number | null; tokenCap?: number | null; summaryEnabled?: boolean | null; includeBotHistory?: boolean | null; }
 export interface EffectiveContext { senderIsolated: boolean; historyTurns: number; idleTimeoutMinutes: number; tokenCap: number; summaryEnabled: boolean; includeBotHistory: boolean; }
+export interface AnswerFallbackSettings {
+  webSearchEnabled: boolean;
+  modelKnowledgeFallbackEnabled: boolean;
+  webSearchShowSources: boolean;
+  webSearchResultCount: number;
+  webSearchRecency: 'NoLimit' | 'OneDay' | 'OneWeek' | 'OneMonth' | 'OneYear';
+  webSearchDomainFilter?: string | null;
+  webSearchContentSize: 'Medium' | 'High';
+  finalNoEvidencePolicy: 'InsufficientEvidence' | 'Clarification';
+}
 export interface GroupConfiguration {
   id: string; name: string; rules: { include: GroupRule[]; exclude: GroupRule[] }; boundTagIds: string[]; allowedTagIds: string[];
   availableTags: { id: string; name: string; isGlobalPublic: boolean; isEnabled: boolean; isBound: boolean }[]; tagVisibility: 'any-bound-tag-or-global-public';
   context: { configured: ContextOverrides; effective: EffectiveContext }; clearedContextSessions: number;
+  answerFallback: AnswerFallbackSettings;
   configurationVersion: number;
 }
 export interface UpdateGroupConfiguration {
@@ -17,37 +28,69 @@ export interface UpdateGroupConfiguration {
   context: ContextOverrides;
   clearContext: boolean;
   expectedConfigurationVersion: number;
+  answerFallback?: AnswerFallbackSettings;
 }
 export interface RulePreview { results: { groupName: string; isMatch: boolean; isExcluded: boolean }[]; }
-export interface EligibleHumanAgent {
-  userId: string;
-  displayName: string;
-  workToolDisplayName: string;
-  verificationStatus: string;
+export type GroupLifecycleStatus = 'enabled' | 'disabled' | 'archived';
+export interface GroupLifecycleState {
+  id: string;
+  state: GroupLifecycleStatus;
   isEnabled: boolean;
-  isDefault: boolean;
+  archivedAtUtc?: string | null;
+  stateVersion: number;
 }
-export interface EligibleHumanAgents {
-  candidates: EligibleHumanAgent[];
-  canConfigure: boolean;
-  gateMessage: string;
+export interface ConversationContextMessagePreview { role: string; content: string; createdAtUtc: string; }
+export interface ConversationContextSession {
+  sessionId: string;
+  senderDisplayName: string;
+  scope: string;
+  summary?: string | null;
+  clearedAtUtc?: string | null;
+  clearedThroughSequence: number;
+  lastActivityAtUtc: string;
+  version: number;
+  messages: ConversationContextMessagePreview[];
+  wasIdleReset: boolean;
+  wasTokenLimited: boolean;
+  contextTokenCount: number;
+}
+export interface GroupContextPage {
+  groupId: string;
+  configurationVersion: number;
+  items: ConversationContextSession[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 export interface GroupApi {
   getConfiguration(groupId: string): Promise<GroupConfiguration>;
   updateConfiguration(groupId: string, request: UpdateGroupConfiguration): Promise<GroupConfiguration>;
   previewRules(request: Pick<UpdateGroupConfiguration, 'includeRules' | 'excludeRules'> & { groupNames: string[] }): Promise<RulePreview>;
-  getEligibleHumanAgents?(groupId: string): Promise<EligibleHumanAgents>;
-  updateHumanAgents?(groupId: string, request: { userIds: string[]; defaultUserId?: string | null }): Promise<void>;
+  changeState(groupId: string, action: 'disable' | 'enable' | 'archive' | 'restore', expectedStateVersion: number): Promise<GroupLifecycleState>;
+  getContext(groupId: string, page: number, pageSize: number): Promise<GroupContextPage>;
+  clearContext(groupId: string, expectedConfigurationVersion: number): Promise<{ clearedSessions: number; configurationVersion: number }>;
 }
 
 export const groupApi: GroupApi = {
   async getConfiguration(groupId) { return (await apiClient.get<GroupConfiguration>(`/api/groups/${encodeURIComponent(groupId)}/configuration`)).data; },
   async updateConfiguration(groupId, request) { return (await apiClient.put<GroupConfiguration>(`/api/groups/${encodeURIComponent(groupId)}/configuration`, request)).data; },
   async previewRules(request) { return (await apiClient.post<RulePreview>('/api/group-rules/preview', request)).data; },
-  async getEligibleHumanAgents(groupId) {
-    return (await apiClient.get<EligibleHumanAgents>(`/api/groups/${encodeURIComponent(groupId)}/eligible-human-agents`)).data;
+  async changeState(groupId, action, expectedStateVersion) {
+    return (await apiClient.post<GroupLifecycleState>(
+      `/api/groups/${encodeURIComponent(groupId)}/${action}`,
+      { expectedStateVersion }
+    )).data;
   },
-  async updateHumanAgents(groupId, request) {
-    await apiClient.put(`/api/groups/${encodeURIComponent(groupId)}/human-agents`, request);
+  async getContext(groupId, page, pageSize) {
+    return (await apiClient.get<GroupContextPage>(
+      `/api/groups/${encodeURIComponent(groupId)}/conversation-context`,
+      { params: { page, pageSize } }
+    )).data;
+  },
+  async clearContext(groupId, expectedConfigurationVersion) {
+    return (await apiClient.post<{ clearedSessions: number; configurationVersion: number }>(
+      `/api/groups/${encodeURIComponent(groupId)}/conversation-context/clear`,
+      { expectedConfigurationVersion }
+    )).data;
   }
 };

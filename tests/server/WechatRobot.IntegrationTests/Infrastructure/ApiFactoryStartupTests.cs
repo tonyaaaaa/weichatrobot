@@ -2,7 +2,6 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.IntegrationTests.Auth;
-using WechatRobot.IntegrationTests.Handoffs;
 using WechatRobot.IntegrationTests.Knowledge;
 using WechatRobot.IntegrationTests.Models;
 
@@ -19,12 +18,10 @@ public sealed class ApiFactoryStartupTests
         {
             using var model = new ModelConfigurationApiFactory();
             using var documents = new DocumentUploadApiFactory();
-            using var handoffs = new HandoffReadEndpointTests.ReadApiFactory();
             using var authorization = new RoleAuthorizationApiFactory();
 
             AssertInMemoryFactoryStarts(model);
             AssertInMemoryFactoryStarts(documents);
-            AssertInMemoryFactoryStarts(handoffs);
             Assert.NotNull(authorization.Services);
         }
         finally

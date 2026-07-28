@@ -400,9 +400,31 @@ public static class WorkToolGroupOperationEndpoints
             ["publicBaseUrl"] = ["Public base URL must be an HTTPS origin without credentials, path, query, or fragment."]
         });
 
-    private static async Task<IResult> ListGroupsAsync(WechatRobotDbContext database, CancellationToken cancellationToken) =>
-        Results.Ok(await (
-            from profile in database.GroupProfiles.AsNoTracking()
+    private static async Task<IResult> ListGroupsAsync(
+        string? status,
+        WechatRobotDbContext database,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStatus = string.IsNullOrWhiteSpace(status)
+            ? "current"
+            : status.Trim().ToLowerInvariant();
+        if (normalizedStatus is not ("current" or "enabled" or "disabled" or "archived" or "all"))
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["status"] = ["Status must be current, enabled, disabled, archived, or all."]
+            });
+
+        var profiles = database.GroupProfiles.AsNoTracking();
+        profiles = normalizedStatus switch
+        {
+            "current" => profiles.Where(profile => profile.ArchivedAtUtc == null),
+            "enabled" => profiles.Where(profile => profile.ArchivedAtUtc == null && profile.IsEnabled),
+            "disabled" => profiles.Where(profile => profile.ArchivedAtUtc == null && !profile.IsEnabled),
+            "archived" => profiles.Where(profile => profile.ArchivedAtUtc != null),
+            _ => profiles
+        };
+        return Results.Ok(await (
+            from profile in profiles
             join robot in database.RobotConfigs.AsNoTracking()
                 on profile.RobotConfigId equals robot.Id
             orderby profile.Name, profile.Id
@@ -413,8 +435,13 @@ public static class WorkToolGroupOperationEndpoints
                 profile.Name,
                 profile.WorkToolGroupRemark,
                 profile.IsEnabled,
+                profile.ArchivedAtUtc,
+                profile.ArchivedAtUtc != null ? "archived" : profile.IsEnabled ? "enabled" : "disabled",
+                profile.StateVersion,
+                profile.ConfigurationVersion,
                 profile.UpdatedAtUtc))
             .ToArrayAsync(cancellationToken));
+    }
 
     private static async Task<IResult> RegisterExistingGroupAsync(RegisterExistingGroupRequest request, WechatRobotDbContext database, CancellationToken cancellationToken)
     {
@@ -455,6 +482,10 @@ public static class WorkToolGroupOperationEndpoints
             existing.Name,
             existing.WorkToolGroupRemark,
             existing.IsEnabled,
+            existing.ArchivedAtUtc,
+            existing.ArchivedAtUtc != null ? "archived" : existing.IsEnabled ? "enabled" : "disabled",
+            existing.StateVersion,
+            existing.ConfigurationVersion,
             existing.UpdatedAtUtc));
     }
 
@@ -574,6 +605,10 @@ public static class WorkToolGroupOperationEndpoints
         string Name,
         string? WorkToolGroupRemark,
         bool IsEnabled,
+        DateTime? ArchivedAtUtc,
+        string State,
+        int StateVersion,
+        int ConfigurationVersion,
         DateTime UpdatedAtUtc);
     public sealed record GroupOperationRequest(Guid RobotConfigId, string Kind, string GroupIdentifier, IReadOnlyList<string>? MemberDisplayNames, string? Value)
     {

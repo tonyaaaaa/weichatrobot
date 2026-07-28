@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, expect, it, vi } from 'vitest';
 import AdminLayout from '../layouts/AdminLayout.vue';
-import HandoffQueueView from './handoffs/HandoffQueueView.vue';
 import KnowledgeDocumentsView from './knowledge/KnowledgeDocumentsView.vue';
 import KnowledgeReviewView from './knowledge/KnowledgeReviewView.vue';
 import KnowledgeTagsView from './knowledge/KnowledgeTagsView.vue';
@@ -11,6 +12,17 @@ import SystemSettingsView from './settings/SystemSettingsView.vue';
 import UserRolesView from './users/UserRolesView.vue';
 
 describe('Task 16 Element Plus operational surfaces', () => {
+  it('loads every directly used Element Plus component style and isolates component internals from native CSS', () => {
+    const mainSource = readFileSync(resolve(process.cwd(), 'src/main.ts'), 'utf8');
+    const globalStyles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8');
+
+    expect(mainSource).toContain("import 'element-plus/es/components/dialog/style/css';");
+    expect(mainSource).toContain("import 'element-plus/es/components/input-number/style/css';");
+    expect(globalStyles).not.toContain('button, input, select, textarea {');
+    expect(globalStyles).not.toMatch(/(?:^|\n)input,\s*select,\s*textarea\s*\{/);
+    expect(globalStyles).toContain(':not([class^="el-"]):not([class*=" el-"])');
+  });
+
   it('uses Element Plus for queue tables, filters and pagination', async () => {
     const reviewApi = {
       listCandidates: vi.fn().mockResolvedValue({
@@ -27,27 +39,6 @@ describe('Task 16 Element Plus operational surfaces', () => {
     expect(review.findComponent({ name: 'ElTable' }).exists()).toBe(true);
     expect(review.findComponent({ name: 'ElSelect' }).exists()).toBe(true);
     expect(review.findComponent({ name: 'ElPagination' }).exists()).toBe(true);
-
-    const handoffApi = {
-      assignees: vi.fn().mockResolvedValue([]),
-      list: vi.fn().mockResolvedValue({
-        items: [{ id: 'h1', state: 'WaitingHuman', reasonCode: 'manual', version: 1, updatedAtUtc: '2026-07-22T00:00:00Z' }],
-        total: 1,
-        page: 1,
-        pageSize: 20
-      }),
-      detail: vi.fn(),
-      messages: vi.fn(),
-      transitions: vi.fn(),
-      assign: vi.fn(),
-      resolve: vi.fn(),
-      restore: vi.fn()
-    };
-    const handoffs = mount(HandoffQueueView, { props: { api: handoffApi } });
-    await flushPromises();
-    expect(handoffs.findComponent({ name: 'ElTable' }).exists()).toBe(true);
-    expect(handoffs.findComponent({ name: 'ElSelect' }).exists()).toBe(true);
-    expect(handoffs.findComponent({ name: 'ElPagination' }).exists()).toBe(true);
   });
 
   it('uses Element Plus forms and status components without replacing multipart upload control', async () => {
@@ -95,9 +86,8 @@ describe('Task 16 Element Plus operational surfaces', () => {
         items: [{ id: 'u1', email: 'admin@example.test', displayName: 'Admin', isEnabled: true, roles: ['Admin'] }],
         total: 1, page: 1, pageSize: 20
       }),
-      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
-      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn(),
-      setWorkToolDisplayName: vi.fn(), clearWorkToolDisplayName: vi.fn()
+      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator']),
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
     } } });
     await flushPromises();
     expect(users.findComponent({ name: 'ElButton' }).exists()).toBe(true);

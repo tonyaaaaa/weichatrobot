@@ -24,6 +24,20 @@ public sealed class RobotAndCallbackContractTests
     }
 
     [Fact]
+    public async Task GetRobotAsync_accepts_alternate_success_code_0()
+    {
+        using var handler = new CapturingHandler(
+            """{"code":0,"message":"success","data":{"robotId":"robot-7","openCallback":1,"replyAll":1}}""");
+
+        var result = await Client(handler).GetRobotAsync(
+            Guid.NewGuid(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Reachable);
+        Assert.Null(result.FailureCode);
+    }
+
+    [Fact]
     public async Task GetOnlineAsync_does_not_invent_false_when_official_response_has_no_status()
     {
         using var handler = new CapturingHandler("""{"code":200,"message":"操作成功","data":{}}""");
@@ -79,6 +93,25 @@ public sealed class RobotAndCallbackContractTests
     }
 
     [Fact]
+    public async Task ConfigureMessageCallbackAsync_accepts_observed_success_code_200()
+    {
+        using var handler = new CapturingHandler(
+            """{"code":200,"message":"操作成功","data":null}""");
+        var sut = Client(handler);
+
+        var result = await sut.ConfigureMessageCallbackAsync(
+            Guid.NewGuid(),
+            new WorkToolMessageCallbackRequest(
+                true,
+                true,
+                new Uri("https://robot.example/api/worktool/callback/route")),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Configured);
+        Assert.Null(result.FailureCode);
+    }
+
+    [Fact]
     public async Task ListEventCallbacksAsync_uses_official_query_contract()
     {
         using var handler = new CapturingHandler(
@@ -92,6 +125,21 @@ public sealed class RobotAndCallbackContractTests
         Assert.Equal(1, callback.Type);
         Assert.Equal("https://robot.example/results", callback.CallbackUrl);
         Assert.Equal("/robot/robotInfo/callBack/get?robotId=robot-7&robotKey=", handler.RequestUri!.PathAndQuery);
+    }
+
+    [Fact]
+    public async Task ListEventCallbacksAsync_accepts_observed_success_code_200()
+    {
+        using var handler = new CapturingHandler(
+            """{"code":200,"message":"操作成功","data":[{"id":7,"type":1,"callBackUrl":"https://robot.example/results","typeName":"指令执行结果"}]}""");
+
+        var result = await Client(handler).ListEventCallbacksAsync(
+            Guid.NewGuid(),
+            TestContext.Current.CancellationToken);
+
+        var callback = Assert.Single(result);
+        Assert.Equal(1, callback.Type);
+        Assert.Equal("https://robot.example/results", callback.CallbackUrl);
     }
 
     [Fact]

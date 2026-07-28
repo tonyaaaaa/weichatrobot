@@ -28,12 +28,65 @@ public sealed class GroundedConversationRepository(
     {
         var message = await database.ConversationMessages.AsNoTracking().SingleOrDefaultAsync(item => item.Id == messageId, token)
             ?? throw new KeyNotFoundException("Inbound conversation message was not found.");
-        var exactNames = await database.GroupProfiles.AsNoTracking()
+        var allNamedGroups = database.GroupProfiles.AsNoTracking()
+            .Where(item => item.RobotConfigId == message.RobotConfigId && item.Name == groupName);
+        GroupProfileEntity[] lifecycleMatches;
+        if (string.IsNullOrWhiteSpace(groupRemark))
+        {
+            lifecycleMatches = await allNamedGroups
+                .Where(item => item.WorkToolGroupRemark == null)
+                .OrderBy(item => item.Id)
+                .Take(2)
+                .ToArrayAsync(token);
+        }
+        else
+        {
+            lifecycleMatches = await allNamedGroups
+                .Where(item => item.WorkToolGroupRemark == groupRemark)
+                .OrderBy(item => item.Id)
+                .Take(2)
+                .ToArrayAsync(token);
+            if (lifecycleMatches.Length == 0)
+                lifecycleMatches = await allNamedGroups
+                    .Where(item => item.WorkToolGroupRemark == null)
+                    .OrderBy(item => item.Id)
+                    .Take(2)
+                    .ToArrayAsync(token);
+        }
+        if (lifecycleMatches.Length == 1 && !lifecycleMatches[0].IsEnabled)
+            return NoReply(
+                messageId,
+                lifecycleMatches[0].Id,
+                lifecycleMatches[0].ArchivedAtUtc is null ? "group_disabled" : "group_archived",
+                "group_lifecycle_inactive");
+        var namedGroups = database.GroupProfiles.AsNoTracking()
             .Where(item => item.RobotConfigId == message.RobotConfigId &&
                            item.IsEnabled &&
-                           item.Name == groupName &&
-                           (item.WorkToolGroupRemark == null || item.WorkToolGroupRemark == groupRemark))
-            .OrderBy(item => item.Id).Take(2).ToArrayAsync(token);
+                           item.Name == groupName);
+        GroupProfileEntity[] exactNames;
+        if (string.IsNullOrWhiteSpace(groupRemark))
+        {
+            exactNames = await namedGroups
+                .OrderBy(item => item.Id)
+                .Take(2)
+                .ToArrayAsync(token);
+        }
+        else
+        {
+            exactNames = await namedGroups
+                .Where(item => item.WorkToolGroupRemark == groupRemark)
+                .OrderBy(item => item.Id)
+                .Take(2)
+                .ToArrayAsync(token);
+            if (exactNames.Length == 0)
+            {
+                exactNames = await namedGroups
+                    .Where(item => item.WorkToolGroupRemark == null)
+                    .OrderBy(item => item.Id)
+                    .Take(2)
+                    .ToArrayAsync(token);
+            }
+        }
         if (exactNames.Length > 1)
             return NoReply(messageId, null, "group_identity_ambiguous", "multiple_name_and_remark_candidates");
 
@@ -45,11 +98,19 @@ public sealed class GroundedConversationRepository(
         }
         else
         {
-            candidates = await database.GroupProfiles.AsNoTracking()
+            var candidateQuery = database.GroupProfiles.AsNoTracking()
                 .Where(item => item.RobotConfigId == message.RobotConfigId &&
-                               item.IsEnabled &&
-                               (item.WorkToolGroupRemark == null || item.WorkToolGroupRemark == groupRemark))
-                .OrderBy(item => item.Id).Take(MaximumPolicyCandidateGroups + 1).ToArrayAsync(token);
+                               item.IsEnabled);
+            if (!string.IsNullOrWhiteSpace(groupRemark))
+            {
+                candidateQuery = candidateQuery.Where(item =>
+                    item.WorkToolGroupRemark == null ||
+                    item.WorkToolGroupRemark == groupRemark);
+            }
+            candidates = await candidateQuery
+                .OrderBy(item => item.Id)
+                .Take(MaximumPolicyCandidateGroups + 1)
+                .ToArrayAsync(token);
             if (candidates.Length > MaximumPolicyCandidateGroups)
                 return NoReply(messageId, null, "group_rule_candidate_limit", "candidate_limit_exceeded");
         }
@@ -265,28 +326,45 @@ public sealed class GroundedConversationRepository(
             .OrderByDescending(item => item.IsDefault).ThenBy(item => item.CreatedAtUtc).FirstOrDefaultAsync(token)
             ?? throw new InvalidOperationException("No enabled chat model configuration exists.");
         var provider = modelConfigurations.ToProviderConfiguration(new(config.Id, config.Name, config.Provider, config.BaseUrl, config.Model,
-            config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault));
-        var handoffPausePolicy = Enum.TryParse<HandoffPausePolicy>(group.HandoffPausePolicy, true, out var parsedPausePolicy)
-            ? parsedPausePolicy
-            : HandoffPausePolicy.Group;
+            config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault,
+            config.EmbeddingDimension, config.WebSearchMode));
         return new(message.Id, message.RobotConfigId, robot.WorkToolRobotId, group.Id, group.Name, message.SenderDisplayName, message.StableSenderId, scope,
             message.Text, message.ReceivedAtUtc, allowedTags, history, summary, policy, provider, config.Id,
-            HandoffPausePolicy: handoffPausePolicy);
+            AnswerFallback: new GroupAnswerFallbackSettings(
+                group.WebSearchEnabled,
+                group.ModelKnowledgeFallbackEnabled,
+                group.WebSearchShowSources,
+                group.WebSearchResultCount,
+                group.WebSearchRecency,
+                group.WebSearchDomainFilter,
+                group.WebSearchContentSize,
+                group.FinalNoEvidencePolicy),
+            ModelConfigurationVersion: config.Version);
     }
 
     public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token)
     {
         await using var sendGate = await MySqlRobotSendCoordinator.AcquireAsync(database, request.RobotConfigId, token);
         await using var transaction = await database.Database.BeginTransactionAsync(token);
-        _ = await database.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {request.GroupProfileId} FOR UPDATE")
+        var groupState = await database.GroupProfiles.FromSqlInterpolated($"SELECT * FROM group_profile WHERE Id = {request.GroupProfileId} FOR UPDATE")
             .AsNoTracking().SingleAsync(token);
-        var handoffActive = await database.HandoffCases.AsNoTracking().AnyAsync(item => item.GroupProfileId == request.GroupProfileId &&
-            (item.State == "WaitingHuman" || item.State == "HumanHandling") &&
-            (item.PauseScope == "Group" || item.PauseScope == "Sender" && request.StableSenderId != null && item.StableSenderId == request.StableSenderId), token);
-        if (handoffActive)
+        if (!groupState.IsEnabled || groupState.ArchivedAtUtc is not null)
         {
-            await transaction.RollbackAsync(token);
-            throw new ConversationHandoffRaceException("A handoff became active before the answer transaction committed.");
+            var terminalReason = groupState.ArchivedAtUtc is null ? "group_disabled" : "group_archived";
+            await database.ConversationMessages.Where(item => item.Id == request.MessageId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.ProcessingState, "completed")
+                    .SetProperty(item => item.TerminalDecision, "no_reply")
+                    .SetProperty(item => item.TerminalReason, terminalReason), token);
+            if (request.ConversationSessionId != Guid.Empty && request.SessionLeaseOwner is not null)
+                await database.ConversationSessions
+                    .Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.LeaseOwner, (string?)null)
+                        .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
+                        .SetProperty(item => item.Version, item => item.Version + 1), token);
+            await transaction.CommitAsync(token);
+            return;
         }
         if (await database.RetrievalAudits.AnyAsync(item => item.ConversationMessageId == request.MessageId, token))
         {
@@ -341,6 +419,30 @@ public sealed class GroundedConversationRepository(
             ConfidenceValue = result.Audit.ConfidenceValue,
             ContextPolicy = result.Audit.ContextPolicy,
             FailureCode = result.Audit.FailureCode,
+            AnswerSource = result.Audit.AnswerSource,
+            WebSearchFailureCode = result.Audit.WebSearchFailureCode,
+            WebSearchSourcesJson = JsonSerializer.Serialize(
+                (result.Audit.WebSearchSources ?? []).Take(20).Select((source, index) => new
+                {
+                    title = source.Title,
+                    url = source.Url.AbsoluteUri,
+                    site = source.Site,
+                    publishedAt = source.PublishedAt,
+                    summary = source.Summary,
+                    index = source.Index ?? index + 1
+                })),
+            MemoryRecallJson = JsonSerializer.Serialize(new
+            {
+                failureCode = result.Audit.MemoryRecall?.FailureCode,
+                memories = (result.Audit.MemoryRecall?.Memories ?? []).Select(memory => new
+                {
+                    id = memory.Id,
+                    scope = memory.ScopeType,
+                    type = memory.MemoryType,
+                    version = memory.Version,
+                    score = memory.Score
+                })
+            }),
             EvidenceJson = JsonSerializer.Serialize(result.Audit.Evidence.Select(item => new
             {
                 item.DocumentId, item.VersionId, item.ChunkId, item.PageNumber, item.Similarity, item.TagIds, item.DocumentTitle,
@@ -355,11 +457,42 @@ public sealed class GroundedConversationRepository(
             RobotConfigId = request.RobotConfigId,
             GroupProfileId = request.GroupProfileId,
             IdempotencyKey = $"grounded-reply:{request.MessageId:D}",
-            PayloadJson = JsonSerializer.Serialize(new { request.GroupName, Text = result.Decision.GroupText }),
+            PayloadJson = JsonSerializer.Serialize(new
+            {
+                request.GroupName,
+                Text = result.Decision.GroupText,
+                MemoryRecallIds = (result.Audit.MemoryRecall?.Memories ?? []).Select(memory => memory.Id).ToArray()
+            }),
             Status = sendStatus,
             NextAttemptAtUtc = now,
             CreatedAtUtc = now
         });
+        var memoryJobId = CreateDeterministicGuid($"memory-extract:{request.MessageId:D}");
+        if (!await database.DurableJobs.AnyAsync(item => item.Id == memoryJobId, token))
+        {
+            var explicitRequest = request.Question.Contains("记住", StringComparison.Ordinal);
+            var availableAtUtc = explicitRequest ? now : now.AddMinutes(30);
+            database.DurableJobs.Add(new DurableJobEntity
+            {
+                Id = memoryJobId,
+                JobType = "ExtractConversationMemory",
+                GroupProfileId = request.GroupProfileId,
+                PayloadJson = JsonSerializer.Serialize(new
+                {
+                    messageId = request.MessageId,
+                    conversationSessionId = request.ConversationSessionId,
+                    groupProfileId = request.GroupProfileId,
+                    modelConfigurationId = request.ModelConfigurationId,
+                    modelConfigurationVersion = request.ModelConfigurationVersion,
+                    explicitRequest
+                }),
+                Status = "pending",
+                AvailableAtUtc = availableAtUtc,
+                NextAttemptAtUtc = availableAtUtc,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+        }
 
         var guarded = await database.ConversationSessions.Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner &&
                 item.LeaseExpiresAtUtc > now && item.NextSequence == sequenceState.NextSequence)
@@ -379,42 +512,153 @@ public sealed class GroundedConversationRepository(
         await transaction.CommitAsync(token);
     }
 
-    public async Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token)
+    private static Guid CreateDeterministicGuid(string value)
     {
-        await using var transaction = await database.Database.BeginTransactionAsync(token);
-        if (await database.RetrievalAudits.AnyAsync(x => x.ConversationMessageId == request.MessageId, token))
-        {
-            await database.ConversationMessages.Where(x => x.Id == request.MessageId)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ProcessingState, "completed"), token);
-            await database.ConversationSessions.Where(x => x.Id == request.ConversationSessionId && x.LeaseOwner == request.SessionLeaseOwner)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LeaseOwner, (string?)null).SetProperty(x => x.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(x => x.Version, x => x.Version + 1), token);
-            await transaction.CommitAsync(token); return;
-        }
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        var session = await database.ConversationSessions.AsNoTracking().Where(x => x.Id == request.ConversationSessionId && x.LeaseOwner == request.SessionLeaseOwner)
-            .Select(x => new { x.NextSequence }).SingleOrDefaultAsync(token) ?? throw new ConversationSessionOwnershipLostException("Conversation lease was lost before handoff commit.");
-        var inbound = await database.ConversationMessages.SingleAsync(x => x.Id == request.MessageId, token);
-        inbound.GroupProfileId = request.GroupProfileId; inbound.ConversationSessionId = request.ConversationSessionId;
-        inbound.SessionSequence = session.NextSequence + 1; inbound.ProcessingState = "completed";
-        database.RetrievalAudits.Add(new RetrievalAuditEntity { ConversationMessageId = request.MessageId, GroupProfileId = request.GroupProfileId,
-            ModelConfigurationId = request.ModelConfigurationId == Guid.Empty ? null : request.ModelConfigurationId,
-            Decision = AnswerDecisionKind.Handoff.ToString(), ConfidenceThreshold = result.Audit.ConfidenceThreshold, ConfidenceValue = result.Audit.ConfidenceValue,
-            ContextPolicy = result.Audit.ContextPolicy, FailureCode = result.Audit.FailureCode,
-            EvidenceJson = JsonSerializer.Serialize(result.Audit.Evidence.Select(x => new { x.DocumentId, x.VersionId, x.ChunkId, x.PageNumber, x.Similarity, x.TagIds })),
-            InputSummaryJson = result.Audit.InputSummaryJson, CreatedAtUtc = now });
-        var guarded = await database.ConversationSessions.Where(x => x.Id == request.ConversationSessionId && x.LeaseOwner == request.SessionLeaseOwner &&
-                x.LeaseExpiresAtUtc > now && x.NextSequence == session.NextSequence)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LeaseOwner, (string?)null).SetProperty(x => x.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(x => x.NextSequence, session.NextSequence + 1).SetProperty(x => x.LastActivityAtUtc, now)
-                .SetProperty(x => x.UpdatedAtUtc, now).SetProperty(x => x.Version, x => x.Version + 1), token);
-        if (guarded != 1) { await transaction.RollbackAsync(token); throw new ConversationSessionOwnershipLostException("Conversation lease was lost before handoff commit."); }
-        await database.SaveChangesAsync(token); await transaction.CommitAsync(token);
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value));
+        return new Guid(hash.AsSpan(0, 16));
     }
 
     public async Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(token);
+        var cleared = await ClearGroupSessionsAsync(groupProfileId, clearedAtUtc, token);
+        await transaction.CommitAsync(token);
+        return cleared;
+    }
+
+    public async Task<GroupConversationContextSourcePage?> GetGroupContextAsync(
+        Guid groupProfileId,
+        int page,
+        int pageSize,
+        CancellationToken token)
+    {
+        (page, pageSize) = NormalizePage(page, pageSize);
+        var group = await database.GroupProfiles.AsNoTracking()
+            .Where(item => item.Id == groupProfileId)
+            .Select(item => new
+            {
+                item.Id,
+                item.ConfigurationVersion,
+                item.ContextSenderIsolated,
+                item.ContextHistoryTurns,
+                item.ContextIdleTimeoutMinutes,
+                item.ContextTokenCap,
+                item.ContextSummaryEnabled,
+                item.ContextIncludeBotHistory
+            })
+            .SingleOrDefaultAsync(token);
+        if (group is null) return null;
+
+        var sessionsQuery = database.ConversationSessions.AsNoTracking()
+            .Where(item => item.GroupProfileId == groupProfileId);
+        var total = await sessionsQuery.CountAsync(token);
+        var sessions = await sessionsQuery
+            .OrderByDescending(item => item.LastActivityAtUtc)
+            .ThenBy(item => item.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(item => new
+            {
+                item.Id,
+                item.SenderScopeKey,
+                item.Summary,
+                item.ClearedAtUtc,
+                item.ClearedThroughSequence,
+                item.LastActivityAtUtc,
+                item.Version
+            })
+            .ToArrayAsync(token);
+
+        var maximumMessagesPerSession = Math.Max(
+            200,
+            ((group.ContextHistoryTurns ?? GroupConfigurationService.DefaultHistoryTurns) * 2) + 1);
+        var items = new List<ConversationContextSessionSource>(sessions.Length);
+        foreach (var session in sessions)
+        {
+            var messages = await database.ConversationMessages.AsNoTracking()
+                .Where(message => message.ConversationSessionId == session.Id
+                    && message.SessionSequence > session.ClearedThroughSequence)
+                .OrderByDescending(message => message.SessionSequence)
+                .ThenByDescending(message => message.Id)
+                .Take(maximumMessagesPerSession)
+                .Select(message => new
+                {
+                    message.Id,
+                    message.Role,
+                    message.SenderDisplayName,
+                    message.Text,
+                    message.CreatedAtUtc,
+                    message.SessionSequence
+                })
+                .ToArrayAsync(token);
+            Array.Reverse(messages);
+            var senderDisplayName = messages
+                .LastOrDefault(message => string.Equals(message.Role, "user", StringComparison.Ordinal))
+                ?.SenderDisplayName ?? "未知成员";
+            items.Add(new ConversationContextSessionSource(
+                session.Id,
+                session.SenderScopeKey,
+                senderDisplayName,
+                session.Summary,
+                session.ClearedAtUtc,
+                session.ClearedThroughSequence,
+                session.LastActivityAtUtc,
+                session.Version,
+                messages.Select(message => new ConversationHistoryMessage(
+                    message.Role,
+                    session.SenderScopeKey,
+                    message.Text,
+                    message.CreatedAtUtc,
+                    message.Id,
+                    message.SessionSequence)).ToArray()));
+        }
+
+        return new GroupConversationContextSourcePage(
+            group.Id,
+            group.ConfigurationVersion,
+            new GroupContextOverrides(
+                group.ContextSenderIsolated,
+                group.ContextHistoryTurns,
+                group.ContextIdleTimeoutMinutes,
+                group.ContextTokenCap,
+                group.ContextSummaryEnabled,
+                group.ContextIncludeBotHistory),
+            items,
+            total,
+            page,
+            pageSize);
+    }
+
+    public async Task<ClearConversationContextResult> ClearGroupContextAsync(
+        Guid groupProfileId,
+        int expectedConfigurationVersion,
+        DateTime clearedAtUtc,
+        CancellationToken token)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(token);
+        var currentVersion = await database.GroupProfiles
+            .Where(item => item.Id == groupProfileId)
+            .Select(item => (int?)item.ConfigurationVersion)
+            .SingleOrDefaultAsync(token);
+        if (currentVersion is null)
+            return new(ClearConversationContextStatus.NotFound);
+        if (currentVersion.Value != expectedConfigurationVersion)
+            return new(ClearConversationContextStatus.Conflict, CurrentConfigurationVersion: currentVersion.Value);
+
+        var cleared = await ClearGroupSessionsAsync(groupProfileId, clearedAtUtc, token);
+        await transaction.CommitAsync(token);
+        return new(
+            ClearConversationContextStatus.Cleared,
+            cleared,
+            currentVersion.Value);
+    }
+
+    private async Task<int> ClearGroupSessionsAsync(
+        Guid groupProfileId,
+        DateTime clearedAtUtc,
+        CancellationToken token)
+    {
         var cleared = await database.ConversationSessions.Where(item => item.GroupProfileId == groupProfileId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ClearedAtUtc, clearedAtUtc)
                 .SetProperty(item => item.ClearedThroughSequence, item => item.NextSequence)
@@ -433,7 +677,6 @@ public sealed class GroundedConversationRepository(
             await database.SaveChangesAsync(token);
             cleared++;
         }
-        await transaction.CommitAsync(token);
         return cleared;
     }
 

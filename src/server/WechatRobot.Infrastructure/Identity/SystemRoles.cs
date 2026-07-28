@@ -7,4 +7,5 @@ public static class SystemRoles
     public const string HumanAgent = "HumanAgent";
 
     public static readonly IReadOnlyList<string> All = [Admin, KnowledgeOperator, HumanAgent];
+    public static readonly IReadOnlyList<string> Assignable = [Admin, KnowledgeOperator];
 }

@@ -57,9 +57,13 @@ internal sealed class KnowledgeCandidateConfiguration : IEntityTypeConfiguration
         builder.ToTable("knowledge_candidate"); builder.HasKey(x => x.Id); builder.Property(x => x.Question).HasMaxLength(2048).IsRequired();
         builder.Property(x => x.Answer).HasColumnType("longtext").IsRequired(); builder.Property(x => x.EvidenceJson).HasColumnType("json").IsRequired();
         builder.Property(x => x.Status).HasMaxLength(32).IsRequired().IsConcurrencyToken(); builder.Property(x => x.Version).IsConcurrencyToken();
+        builder.Property(x => x.SourceType).HasMaxLength(32).HasDefaultValue("HistoricalHandoff").IsRequired();
         builder.HasIndex(x => x.HandoffCaseId).IsUnique(); builder.HasIndex(x => x.KnowledgeDocumentVersionId).IsUnique();
+        builder.HasIndex(x => x.SourceMemoryCandidateId).IsUnique();
         builder.HasOne<HandoffCaseEntity>().WithMany().HasForeignKey(x => x.HandoffCaseId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(x => x.QuestionMessageId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(x => x.SourceConversationMessageId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<MemoryCandidateEntity>().WithMany().HasForeignKey(x => x.SourceMemoryCandidateId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(x => x.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Restrict);
     }
 }

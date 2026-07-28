@@ -217,5 +217,11 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
     private static void Apply(HandoffCaseEntity entity, HandoffCase domain)
     { entity.State = domain.State.ToString(); entity.AssigneeUserId = domain.AssigneeUserId; entity.FinalAnswer = domain.FinalAnswer; entity.UpdatedAtUtc = domain.UpdatedAtUtc; }
     private static HandoffRecord Map(HandoffCaseEntity x) => new(x.Id, x.State, x.AssigneeUserId, x.Version);
-    private static KnowledgeCandidateRecord Map(KnowledgeCandidateEntity x) => new(x.Id, x.HandoffCaseId, x.Question, x.Answer, x.Status, x.Version);
+    private static KnowledgeCandidateRecord Map(KnowledgeCandidateEntity x) => new(
+        x.Id,
+        x.HandoffCaseId ?? Guid.Empty,
+        x.Question,
+        x.Answer,
+        x.Status,
+        x.Version);
 }

@@ -82,6 +82,22 @@ describe('knowledgeApi document administration', () => {
     );
   });
 
+  it('adds documentId only when uploading a new version', async () => {
+    const file = new File(['version content'], '产品手册-v2.pdf', {
+      type: 'application/pdf'
+    });
+
+    await knowledgeApi.upload(file, vi.fn());
+    const newDocumentForm = apiClient.post.mock.calls[0]?.[1] as FormData;
+    expect(newDocumentForm.get('file')).toBe(file);
+    expect(newDocumentForm.has('documentId')).toBe(false);
+
+    await knowledgeApi.upload(file, vi.fn(), documentId);
+    const newVersionForm = apiClient.post.mock.calls[1]?.[1] as FormData;
+    expect(newVersionForm.get('file')).toBe(file);
+    expect(newVersionForm.get('documentId')).toBe(documentId);
+  });
+
   it('models safe document administration responses without secret-bearing fields', () => {
     const detail: KnowledgeDocumentDetail = {
       document: {

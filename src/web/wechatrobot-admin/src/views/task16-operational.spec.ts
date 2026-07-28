@@ -6,7 +6,6 @@ import DocumentDetailView from './knowledge/DocumentDetailView.vue';
 import KnowledgeTagsView from './knowledge/KnowledgeTagsView.vue';
 import KnowledgeReviewView from './knowledge/KnowledgeReviewView.vue';
 import ConversationAuditView from './audit/ConversationAuditView.vue';
-import HandoffQueueView from './handoffs/HandoffQueueView.vue';
 import ModelSettingsView from './models/ModelSettingsView.vue';
 import UserRolesView from './users/UserRolesView.vue';
 import SystemSettingsView from './settings/SystemSettingsView.vue';
@@ -28,7 +27,13 @@ function createDocumentAdministrationApiStubs() {
   return {
     listDocuments: vi.fn(),
     getDocument: vi.fn(),
-    getDocumentVersions: vi.fn(),
+    getDocumentVersions: vi.fn().mockResolvedValue([{
+      id: 'ver-1', version: 1, originalFileName: 'source.docx', safeFileName: 'source.docx',
+      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      sizeBytes: 1, status: 'preview', failureReason: null, isPublished: false, hasPublicObject: true,
+      previewRevision: 2, previewCount: 3, approvedChunkCount: 0, ocrPageCount: 0, ocrFailedPageCount: 0,
+      uploadAndParseJobs: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
+    }]),
     retryDocumentUpload: vi.fn(),
     disableDocument: vi.fn(),
     requestPhysicalDelete: vi.fn(),
@@ -78,8 +83,8 @@ describe('Task 16 operational pages', () => {
   });
 
   it('previews, edits, splits and merges chunks and retries a failed index job', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    vi.spyOn(window, 'prompt').mockReturnValue('5');
+    const confirmAction = vi.fn().mockResolvedValue(true);
+    const promptAction = vi.fn().mockResolvedValue('5');
     const preview = { id: 'p1', sequence: 1, text: 'first chunk', revision: 3, status: 'draft' };
     const secondPreview = { id: 'p2', sequence: 2, text: 'second chunk', revision: 3, status: 'draft' };
     const failedStatus = {
@@ -113,7 +118,9 @@ describe('Task 16 operational pages', () => {
         documentId: 'doc-1',
         versionId: 'ver-1',
         api,
-        tagApi: createTagOptionsApi([primaryTagId])
+        tagApi: createTagOptionsApi([primaryTagId]),
+        confirmAction,
+        promptAction
       }
     });
     await flushPromises();
@@ -183,8 +190,8 @@ describe('Task 16 operational pages', () => {
     expect(api.queueIndex).toHaveBeenCalledWith('doc-1', 'ver-1', [firstTag, secondTag], false);
   });
 
-  it('rejects non-adjacent merges and sends adjacent IDs in sequence order regardless of selection order', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('rejects non-adjacent merges and sends three contiguous IDs in sequence order regardless of selection order', async () => {
+    const confirmAction = vi.fn().mockResolvedValue(true);
     const first = { id: 'p1', sequence: 1, text: 'first', status: 'draft' };
     const second = { id: 'p2', sequence: 2, text: 'second', status: 'draft' };
     const third = { id: 'p3', sequence: 3, text: 'third', status: 'draft' };
@@ -200,20 +207,21 @@ describe('Task 16 operational pages', () => {
       mergePreviews: vi.fn().mockResolvedValue({ revision: 3, items: [first, third] }),
       retryIndex: vi.fn(), generatePreviews: vi.fn(), approvePreviews: vi.fn(), queueIndex: vi.fn()
     };
-    const wrapper = mount(DocumentDetailView, { props: { documentId: 'doc-1', versionId: 'ver-1', api } });
+    const wrapper = mount(DocumentDetailView, {
+      props: { documentId: 'doc-1', versionId: 'ver-1', api, confirmAction }
+    });
     await flushPromises();
 
     await wrapper.get('[data-testid="select-p1"]').setValue(true);
     await wrapper.get('[data-testid="select-p3"]').setValue(true);
     await wrapper.get('[data-testid="merge-selected"]').trigger('click');
     expect(api.mergePreviews).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain('只能合并序号相邻的两个分段');
+    expect(wrapper.text()).toContain('合并前请选择两个或更多连续分段');
 
-    await wrapper.get('[data-testid="select-p1"]').setValue(false);
     await wrapper.get('[data-testid="select-p2"]').setValue(true);
     await wrapper.get('[data-testid="merge-selected"]').trigger('click');
     await flushPromises();
-    expect(api.mergePreviews).toHaveBeenCalledWith('ver-1', 'p2', 'p3', 2);
+    expect(api.mergePreviews).toHaveBeenCalledWith('ver-1', ['p1', 'p2', 'p3'], 2);
   });
 
   it('explains that any bound tag matches and global-public content is always visible', async () => {
@@ -238,14 +246,14 @@ describe('Task 16 operational pages', () => {
   });
 
   it('shows candidate evidence and approves a revised answer with selected tags', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmAction = vi.fn().mockResolvedValue(true);
     const api = {
       listCandidates: vi.fn().mockResolvedValue({ items: [{ id: 'c1', question: '怎么退款？', status: 'pending', version: 2, updatedAtUtc: '2026-07-22T00:00:00Z' }], total: 1, page: 1, pageSize: 20 }),
       getCandidate: vi.fn().mockResolvedValue({ id: 'c1', question: '怎么退款？', answer: '联系售后', evidenceJson: '{"source":"human"}', status: 'pending', version: 2 }),
       reviewCandidate: vi.fn().mockResolvedValue({ status: 'approved_pending_index' })
     };
     const wrapper = mount(KnowledgeReviewView, {
-      props: { api, tagApi: createTagOptionsApi([primaryTagId]) }
+      props: { api, tagApi: createTagOptionsApi([primaryTagId]), confirmAction }
     });
     await flushPromises();
     expect(api.listCandidates).toHaveBeenCalledWith('pending', 1, 20);
@@ -265,7 +273,7 @@ describe('Task 16 operational pages', () => {
   });
 
   it('requires selected tags for approval but permits rejecting without tags', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmAction = vi.fn().mockResolvedValue(true);
     const tagId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const candidate = { id: 'c1', question: 'Q', answer: 'A', evidenceJson: '{}', status: 'pending', version: 2 };
     const api = {
@@ -277,7 +285,7 @@ describe('Task 16 operational pages', () => {
       reviewCandidate: vi.fn().mockResolvedValue({ status: 'rejected' })
     };
     const wrapper = mount(KnowledgeReviewView, {
-      props: { api, tagApi: createTagOptionsApi([tagId]) }
+      props: { api, tagApi: createTagOptionsApi([tagId]), confirmAction }
     });
     await flushPromises();
     await wrapper.get('[data-testid="candidate-c1"]').trigger('click');
@@ -306,6 +314,7 @@ describe('Task 16 operational pages', () => {
   it('renders authorized audit sources but strips secrets from full evidence', async () => {
     const api = {
       groupOptions: vi.fn().mockResolvedValue([]),
+      createKnowledgeCandidate: vi.fn(),
       capability: vi.fn().mockResolvedValue({
         available: true,
         items: [{
@@ -313,10 +322,6 @@ describe('Task 16 operational pages', () => {
           evidence: { score: 0.91, apiKey: 'sk-secret', authorization: 'Bearer hidden' },
           inputSummary: { promptTemplateVersion: 'grounded-v2' },
           send: { status: 'completed', attemptCount: 1 },
-          handoff: {
-            state: 'Resolved', reasonCode: 'explicit_transfer',
-            transitions: [{ sequence: 1, fromState: 'AIActive', toState: 'WaitingHuman', reasonCode: 'explicit_transfer' }]
-          },
           knowledgeCandidate: { status: 'approved_pending_index' },
           createdAtUtc: '2026-07-22T00:00:00Z'
         }],
@@ -329,8 +334,6 @@ describe('Task 16 operational pages', () => {
     expect(wrapper.text()).toContain('0.91');
     expect(wrapper.text()).toContain('grounded-v2');
     expect(wrapper.text()).toContain('completed');
-    expect(wrapper.text()).toContain('Resolved');
-    expect(wrapper.text()).toContain('AIActive');
     expect(wrapper.text()).toContain('approved_pending_index');
     expect(wrapper.text()).not.toContain('sk-secret');
     expect(wrapper.text()).not.toContain('Bearer hidden');
@@ -347,7 +350,7 @@ describe('Task 16 operational pages', () => {
     });
   });
 
-  it('redacts secret-shaped values from review and handoff evidence', async () => {
+  it('redacts secret-shaped values from review evidence', async () => {
     const reviewApi = {
       listCandidates: vi.fn().mockResolvedValue({ items: [{ id: 'c1', question: 'Q', status: 'pending_review', version: 1, updatedAtUtc: '2026-07-22T00:00:00Z' }], total: 1, page: 1, pageSize: 20 }),
       getCandidate: vi.fn().mockResolvedValue({ id: 'c1', question: 'Q', answer: 'A', evidenceJson: '{"score":0.9,"apiKey":"sk-review-secret"}', status: 'pending_review', version: 1 }),
@@ -359,22 +362,6 @@ describe('Task 16 operational pages', () => {
     await flushPromises();
     expect(review.text()).toContain('0.9');
     expect(review.text()).not.toContain('sk-review-secret');
-
-    const handoff = { id: 'h1', state: 'WaitingHuman', reasonCode: 'low_confidence', evidenceJson: '{"authorization":"Bearer handoff-secret","score":0.5}', version: 1, updatedAtUtc: '2026-07-22T00:00:00Z' };
-    const handoffApi = {
-      assignees: vi.fn().mockResolvedValue([]),
-      list: vi.fn().mockResolvedValue({ items: [handoff], total: 1, page: 1, pageSize: 20 }),
-      detail: vi.fn().mockResolvedValue(handoff),
-      messages: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-      transitions: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-      assign: vi.fn(), resolve: vi.fn(), restore: vi.fn()
-    };
-    const queue = mount(HandoffQueueView, { props: { api: handoffApi } });
-    await flushPromises();
-    await queue.get('[data-testid="handoff-h1"]').trigger('click');
-    await flushPromises();
-    expect(queue.text()).toContain('0.5');
-    expect(queue.text()).not.toContain('Bearer handoff-secret');
   });
 
   it('recursively redacts credentials and secret-shaped free text without hiding harmless metrics', () => {
@@ -432,8 +419,8 @@ describe('Task 16 operational pages', () => {
   });
 
   it('saves the current draft before splitting at the operator-selected index', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    vi.spyOn(window, 'prompt').mockReturnValue('6');
+    const confirmAction = vi.fn().mockResolvedValue(true);
+    const promptAction = vi.fn().mockResolvedValue('6');
     const original = { id: 'p1', sequence: 1, text: 'old content', status: 'draft' };
     const edited = { ...original, text: 'fresh draft' };
     const status = {
@@ -449,7 +436,9 @@ describe('Task 16 operational pages', () => {
       splitPreview: vi.fn().mockResolvedValue({ versionId: 'ver-1', revision: 4, items: [edited] }),
       mergePreviews: vi.fn(), retryIndex: vi.fn(), generatePreviews: vi.fn(), approvePreviews: vi.fn(), queueIndex: vi.fn()
     };
-    const wrapper = mount(DocumentDetailView, { props: { documentId: 'doc-1', versionId: 'ver-1', api } });
+    const wrapper = mount(DocumentDetailView, {
+      props: { documentId: 'doc-1', versionId: 'ver-1', api, confirmAction, promptAction }
+    });
     await flushPromises();
     await wrapper.get('[data-testid="text-p1"]').setValue('fresh draft');
     await wrapper.get('[data-testid="split-p1"]').trigger('click');
@@ -461,7 +450,7 @@ describe('Task 16 operational pages', () => {
   });
 
   it('requires confirmation before regenerate, merge, and split mutations', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirmAction = vi.fn().mockResolvedValue(false);
     const first = { id: 'p1', sequence: 1, text: 'first', status: 'draft' };
     const second = { id: 'p2', sequence: 2, text: 'second', status: 'draft' };
     const api = {
@@ -475,7 +464,9 @@ describe('Task 16 operational pages', () => {
       editPreview: vi.fn(), splitPreview: vi.fn(), mergePreviews: vi.fn(), retryIndex: vi.fn(),
       generatePreviews: vi.fn(), approvePreviews: vi.fn(), queueIndex: vi.fn()
     };
-    const wrapper = mount(DocumentDetailView, { props: { documentId: 'doc-1', versionId: 'ver-1', api } });
+    const wrapper = mount(DocumentDetailView, {
+      props: { documentId: 'doc-1', versionId: 'ver-1', api, confirmAction }
+    });
     await flushPromises();
     await wrapper.get('[data-testid="select-p1"]').setValue(true);
     await wrapper.get('[data-testid="select-p2"]').setValue(true);
@@ -486,82 +477,6 @@ describe('Task 16 operational pages', () => {
     expect(api.splitPreview).not.toHaveBeenCalled();
     expect(api.mergePreviews).not.toHaveBeenCalled();
     expect(api.generatePreviews).not.toHaveBeenCalled();
-  });
-
-  it('reloads the handoff after candidate-returning resolve and never restores with the candidate id', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const handoff = { id: 'h1', state: 'WaitingHuman', reasonCode: 'low_confidence', version: 1, updatedAtUtc: '2026-07-22T00:00:00Z' };
-    const handling = { ...handoff, state: 'HumanHandling', version: 2 };
-    const resolved = { ...handoff, state: 'Resolved', version: 3, finalAnswer: '人工答案' };
-    const api = {
-      assignees: vi.fn().mockResolvedValue([{
-        id: '11111111-1111-1111-1111-111111111111',
-        displayName: '客服甲',
-        email: 'agent@example.test',
-        roles: ['HumanAgent'],
-        isEnabled: true
-      }]),
-      list: vi.fn().mockResolvedValue({ items: [handoff], total: 1, page: 1, pageSize: 20 }),
-      detail: vi.fn()
-        .mockResolvedValueOnce(handoff)
-        .mockResolvedValueOnce(handling)
-        .mockResolvedValueOnce(resolved)
-        .mockResolvedValueOnce({ ...resolved, state: 'AIActive', version: 4 }),
-      messages: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-      transitions: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-      assign: vi.fn().mockResolvedValue({ id: 'h1', state: 'HumanHandling', assigneeUserId: '11111111-1111-1111-1111-111111111111', version: 2 }),
-      resolve: vi.fn().mockResolvedValue({ id: 'c1', handoffCaseId: 'h1', question: 'Q', answer: '人工答案', status: 'pending', version: 1 }),
-      restore: vi.fn().mockResolvedValue({ id: 'h1', state: 'AIActive', assigneeUserId: null, version: 4 })
-    };
-    const wrapper = mount(HandoffQueueView, { props: { api } });
-    await flushPromises();
-    await wrapper.get('[data-testid="handoff-h1"]').trigger('click');
-    await flushPromises();
-    const assigneeSelector = wrapper.findAllComponents({ name: 'ElSelect' })
-      .find(component => component.attributes('data-testid') === 'assignee');
-    expect(assigneeSelector).toBeDefined();
-    assigneeSelector!.vm.$emit('update:modelValue', '11111111-1111-1111-1111-111111111111');
-    await wrapper.vm.$nextTick();
-    await wrapper.get('[data-testid="assign-handoff"]').trigger('click');
-    await flushPromises();
-    await wrapper.get('[data-testid="final-answer"]').setValue('人工答案');
-    await wrapper.get('[data-testid="resolve-handoff"]').trigger('click');
-    await flushPromises();
-    await wrapper.get('[data-testid="restore-handoff"]').trigger('click');
-    await flushPromises();
-    expect(api.assign).toHaveBeenCalled();
-    expect(api.resolve).toHaveBeenCalled();
-    expect(api.restore).toHaveBeenCalledWith('h1', 3);
-  });
-
-  it('paginates handoff messages and transitions independently with complete metadata', async () => {
-    const handoff = { id: 'h1', state: 'HumanHandling', reasonCode: 'manual', version: 2, updatedAtUtc: '2026-07-22T00:00:00Z' };
-    const api = {
-      assignees: vi.fn().mockResolvedValue([]),
-      list: vi.fn().mockResolvedValue({ items: [handoff], total: 1, page: 1, pageSize: 20 }),
-      detail: vi.fn().mockResolvedValue(handoff),
-      messages: vi.fn()
-        .mockResolvedValueOnce({ items: [{ id: 'm1', senderDisplayName: '客服', text: '答案', authenticationKind: 'authenticated_api', createdAtUtc: '2026-07-22T00:00:00Z' }], total: 11, page: 1, pageSize: 10 })
-        .mockResolvedValueOnce({ items: [{ id: 'm2', senderDisplayName: '用户', text: '追问', authenticationKind: 'worktool_display_name_unverified', createdAtUtc: '2026-07-22T00:01:00Z' }], total: 11, page: 2, pageSize: 10 }),
-      transitions: vi.fn()
-        .mockResolvedValueOnce({ items: [{ id: 't1', actorUserId: 'u1', sequence: 1, fromState: 'WaitingHuman', toState: 'HumanHandling', reasonCode: 'assignment', createdAtUtc: '2026-07-22T00:00:00Z' }], total: 11, page: 1, pageSize: 10 })
-        .mockResolvedValueOnce({ items: [{ id: 't2', actorUserId: 'u2', sequence: 2, fromState: 'HumanHandling', toState: 'Resolved', reasonCode: 'authenticated_resolution', createdAtUtc: '2026-07-22T00:01:00Z' }], total: 11, page: 2, pageSize: 10 }),
-      assign: vi.fn(), resolve: vi.fn(), restore: vi.fn()
-    };
-    const wrapper = mount(HandoffQueueView, { props: { api } });
-    await flushPromises();
-    await wrapper.get('[data-testid="handoff-h1"]').trigger('click');
-    await flushPromises();
-    expect(wrapper.text()).toContain('客服');
-    expect(wrapper.text()).toContain('authenticated_api');
-    expect(wrapper.text()).toContain('2026/07/22 08:00');
-    expect(wrapper.text()).toContain('#1');
-    expect(wrapper.text()).toContain('u1');
-    await wrapper.get('[data-testid="messages-next"]').trigger('click');
-    await wrapper.get('[data-testid="transitions-next"]').trigger('click');
-    await flushPromises();
-    expect(api.messages).toHaveBeenLastCalledWith('h1', 2, 10);
-    expect(api.transitions).toHaveBeenLastCalledWith('h1', 2, 10);
   });
 
   it('masks model secrets and tests a saved connection without revealing the key', async () => {
@@ -587,9 +502,8 @@ describe('Task 16 operational pages', () => {
   it('exposes implemented user administration while keeping unavailable system settings honest', async () => {
     const users = mount(UserRolesView, { props: { api: {
       list: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator', 'HumanAgent']),
-      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn(),
-      setWorkToolDisplayName: vi.fn(), clearWorkToolDisplayName: vi.fn()
+      roles: vi.fn().mockResolvedValue(['Admin', 'KnowledgeOperator']),
+      create: vi.fn(), setEnabled: vi.fn(), setRoles: vi.fn()
     } } });
     await flushPromises();
     expect(users.text()).not.toContain('后端暂未提供');

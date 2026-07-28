@@ -40,7 +40,8 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         var question = new ConversationMessageEntity { RobotConfigId = robot.Id, GroupProfileId = group.Id, GroupName = group.Name, SenderDisplayName = "客户",
             Text = "如何申请售后？", FallbackHash = Guid.NewGuid().ToString("N") };
         var embeddingConfig = new ModelConfigEntity { Name = "candidate-embedding-" + Guid.NewGuid().ToString("N"), NormalizedName = "CANDIDATE-EMBEDDING-" + Guid.NewGuid().ToString("N"), Provider = "fake", ConfigurationType = "embedding",
-            BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", TimeoutSeconds = 5, MaxRetries = 0, IsEnabled = true, IsDefault = true };
+            BaseUrl = "https://fake.test", Model = "fake", EncryptedApiKey = "fake", TimeoutSeconds = 5, MaxRetries = 0,
+            IsEnabled = true, IsDefault = true, EmbeddingDimension = 3 };
         db.AddRange(tag, reviewerUser, robot, group, question, embeddingConfig);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var handoffService = new HandoffService(new EfHandoffStore(db), TimeProvider.System);
@@ -120,7 +121,7 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
             TestContext.Current.CancellationToken);
 
         await VerifyRelationalHandoffConcurrencyAsync();
-        await VerifyHandoffWinsFinalAnswerCommitRaceAsync();
+        await VerifyHistoricalHandoffDoesNotBlockAnswerCommitAsync();
     }
 
     private WechatRobotDbContext Database() => new(new DbContextOptionsBuilder<WechatRobotDbContext>()
@@ -215,7 +216,7 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
             TestContext.Current.CancellationToken)).Status);
     }
 
-    private async Task VerifyHandoffWinsFinalAnswerCommitRaceAsync()
+    private async Task VerifyHistoricalHandoffDoesNotBlockAnswerCommitAsync()
     {
         var robot = new RobotConfigEntity { Name = "commit-race-" + Guid.NewGuid().ToString("N"), WorkToolRobotId = Guid.NewGuid().ToString("N"), CallbackSecretHash = "hash" };
         var group = new GroupProfileEntity { RobotConfigId = robot.Id, ExternalGroupId = Guid.NewGuid().ToString("N"), Name = "提交竞态群" };
@@ -254,11 +255,12 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         await Task.Delay(150, TestContext.Current.CancellationToken);
         await gateTransaction.CommitAsync(TestContext.Current.CancellationToken);
         _ = await handoffTask;
-        Assert.IsType<ConversationHandoffRaceException>(await answerTask);
+        Assert.Null(await answerTask);
         await using var verify = Database();
-        Assert.Equal(1, await verify.SendCommands.CountAsync(x => x.GroupProfileId == group.Id, TestContext.Current.CancellationToken));
-        Assert.Equal(0, await verify.RetrievalAudits.CountAsync(x => x.GroupProfileId == group.Id, TestContext.Current.CancellationToken));
-        Assert.Equal(0, await verify.ConversationMessages.CountAsync(x => x.InReplyToMessageId == message.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(1, await verify.SendCommands.CountAsync(x => x.GroupProfileId == group.Id &&
+            x.IdempotencyKey.StartsWith("grounded-reply:"), TestContext.Current.CancellationToken));
+        Assert.Equal(1, await verify.RetrievalAudits.CountAsync(x => x.GroupProfileId == group.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(1, await verify.ConversationMessages.CountAsync(x => x.InReplyToMessageId == message.Id, TestContext.Current.CancellationToken));
     }
 
     private sealed class FakeProtector : ISecretProtector

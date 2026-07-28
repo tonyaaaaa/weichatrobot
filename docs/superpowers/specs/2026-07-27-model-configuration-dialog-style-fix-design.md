@@ -20,11 +20,18 @@ Element Plus 时未加载 Dialog 与 InputNumber 的组件样式。同时，全�
 
 1. 在应用入口补充 `dialog` 与 `input-number` 的 Element Plus 样式依赖。
 2. 保留 `ModelConfigurationDialog.vue` 的现有字段和交互，不把表单移回页面。
-3. 将全局原生输入规则限制为非 Element Plus 内部控件；为
-   `.el-input__inner`、`.el-select__input` 等组件内部输入保留组件自身样式。
+3. 将全局原生 `button`、`input`、`select`、`textarea`、`label` 和聚焦态规则
+   限制为非 Element Plus 内部控件，为所有 `el-` 类组件保留组件自身样式。
 4. 使用前端组件测试验证弹框打开后具有 Dialog 结构，使用样式入口测试防止
    按需样式再次漏引入。
 5. 通过类型检查、前端测试和生产构建后，重启本地 Vite 并在运行页面验证。
+
+## 全项目样式审计
+
+当前代码使用 Alert、Button、ConfigProvider、Dialog、Empty、Form、Input、
+InputNumber、Pagination、Progress、Select、Skeleton、Switch、Table 和 Tag 等
+Element Plus 组件。入口已覆盖其他组件样式，确认仅缺 Dialog 与 InputNumber；
+Option、FormItem、TableColumn 由各自父组件样式覆盖，不需要独立导入。
 
 ## 验收标准
 
@@ -33,4 +40,3 @@ Element Plus 时未加载 Dialog 与 InputNumber 的组件样式。同时，全�
 - 所有输入控件完整包含在弹框内，无右侧越界、双边框或数字按钮错位。
 - 640px 以下视口表单为单列且无水平滚动。
 - 新增、编辑、校验和保存行为保持不变。
-

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { ElAlert, ElButton, ElEmpty, ElSkeleton, ElTag } from 'element-plus';
+import { ElAlert, ElButton, ElEmpty, ElProgress, ElSkeleton, ElTag } from 'element-plus';
 import {
   knowledgeApi,
   type KnowledgeApi,
@@ -8,10 +8,11 @@ import {
   type KnowledgeDocumentVersionSummary
 } from '../../api/knowledge';
 import { useAuthStore } from '../../stores/auth';
+import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
 type ManagementApi = Pick<
   KnowledgeApi,
-  'getDocument' | 'retryDocumentUpload' | 'disableDocument' | 'requestPhysicalDelete'
+  'upload' | 'getDocument' | 'retryDocumentUpload' | 'disableDocument' | 'requestPhysicalDelete'
 >;
 
 interface MutationError {
@@ -29,7 +30,7 @@ const props = withDefaults(defineProps<{
   confirmAction?: (message: string) => boolean | Promise<boolean>;
 }>(), {
   api: () => knowledgeApi,
-  confirmAction: (message: string) => window.confirm(message)
+  confirmAction: defaultConfirmAction
 });
 
 const auth = useAuthStore();
@@ -38,8 +39,14 @@ const loading = ref(true);
 const busy = ref('');
 const error = ref('');
 const notice = ref('');
+const selectedFile = ref<File>();
+const uploadProgress = ref(0);
 const canRequestPhysicalDelete = computed(() =>
   auth.user?.roles.includes('Admin') === true);
+const canUploadNewVersion = computed(() =>
+  detail.value?.document.status !== 'disabled');
+const isLegacyDoc = computed(() =>
+  selectedFile.value?.name.toLowerCase().endsWith('.doc') ?? false);
 const versions = computed(() =>
   [...(detail.value?.versions ?? [])].sort((left, right) => right.version - left.version));
 
@@ -63,6 +70,34 @@ async function retryUpload(): Promise<void> {
       props.documentId,
       detail.value!.document.stateVersion),
     '上传重试已提交，文档状态已刷新。');
+}
+
+function chooseNewVersionFile(event: Event): void {
+  selectedFile.value = (event.target as HTMLInputElement).files?.[0];
+  uploadProgress.value = 0;
+  error.value = '';
+  notice.value = '';
+}
+
+async function uploadNewVersion(): Promise<void> {
+  if (!selectedFile.value || !canUploadNewVersion.value || isLegacyDoc.value) return;
+  busy.value = 'upload-version';
+  error.value = '';
+  notice.value = '';
+  try {
+    const result = await props.api.upload(
+      selectedFile.value,
+      value => { uploadProgress.value = value; },
+      props.documentId);
+    uploadProgress.value = 100;
+    selectedFile.value = undefined;
+    notice.value = `新版本 v${result.version} 已提交处理。`;
+    await load();
+  } catch {
+    error.value = '新版本上传失败，请检查文件和网络后重试。';
+  } finally {
+    busy.value = '';
+  }
 }
 
 async function disable(): Promise<void> {
@@ -229,6 +264,57 @@ onMounted(load);
         </div>
       </section>
 
+      <section class="panel upload-version-panel" aria-labelledby="upload-version-title">
+        <header class="section-heading">
+          <div>
+            <h2 id="upload-version-title">上传新版本</h2>
+            <p>新文件会登记到当前文档，版本历史、配置和审计继续保留。</p>
+          </div>
+        </header>
+
+        <template v-if="canUploadNewVersion">
+          <div class="upload-version-form">
+            <label for="new-version-file">文件（Markdown / TXT / PDF / DOCX）</label>
+            <input
+              id="new-version-file"
+              data-testid="new-version-file"
+              type="file"
+              accept=".md,.txt,.pdf,.doc,.docx"
+              :disabled="busy === 'upload-version'"
+              @change="chooseNewVersionFile"
+            >
+            <p class="helper">旧版 DOC 需要先转换为 DOCX；上传后请在版本历史中查看处理状态。</p>
+            <ElAlert
+              v-if="isLegacyDoc"
+              title="检测到 DOC 文件，请先用 Word 另存为 DOCX 后再上传。"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
+          </div>
+          <ElProgress
+            v-if="busy === 'upload-version' || uploadProgress"
+            :percentage="uploadProgress"
+            :stroke-width="10"
+            :aria-label="`新版本上传进度 ${uploadProgress}%`"
+          />
+          <ElButton
+            type="primary"
+            data-testid="upload-new-version"
+            :loading="busy === 'upload-version'"
+            :disabled="!selectedFile || isLegacyDoc"
+            @click="uploadNewVersion"
+          >{{ busy === 'upload-version' ? '正在上传…' : '上传新版本' }}</ElButton>
+        </template>
+        <ElAlert
+          v-else
+          title="当前文档状态不允许上传新版本。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+      </section>
+
       <section class="panel version-panel" aria-labelledby="version-history-title">
         <header class="section-heading">
           <div>
@@ -357,9 +443,23 @@ onMounted(load);
   color: var(--color-muted-text);
 }
 
+.upload-version-panel,
 .version-panel {
   display: grid;
   gap: var(--space-lg);
+}
+
+.upload-version-form {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.upload-version-form input[type='file'] {
+  min-height: 44px;
+}
+
+.upload-version-panel .el-button {
+  justify-self: start;
 }
 
 .version-timeline {

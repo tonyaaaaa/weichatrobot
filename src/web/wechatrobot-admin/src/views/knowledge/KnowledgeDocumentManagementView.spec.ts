@@ -93,6 +93,15 @@ function detail(): KnowledgeDocumentDetail {
 
 function createApi() {
   return {
+    upload: vi.fn().mockResolvedValue({
+      documentId,
+      versionId: '44444444-4444-4444-4444-444444444444',
+      version: 3,
+      state: 'uploaded',
+      safeFileName: 'source.pdf',
+      publicUrl: null,
+      publicReadWarning: ''
+    }),
     getDocument: vi.fn().mockResolvedValue(detail()),
     retryDocumentUpload: vi.fn().mockResolvedValue({}),
     disableDocument: vi.fn().mockResolvedValue(undefined),
@@ -152,6 +161,50 @@ describe('KnowledgeDocumentManagementView', () => {
     await flushPromises();
     expect(api.disableDocument).toHaveBeenCalledWith(documentId, 4);
     expect(api.getDocument).toHaveBeenCalledTimes(3);
+  });
+
+  it('uploads a selected file as a new version of the current document', async () => {
+    const api = createApi();
+    const wrapper = mount(KnowledgeDocumentManagementView, {
+      props: { documentId, api },
+      global: { plugins: [authenticate('KnowledgeOperator')] }
+    });
+    await flushPromises();
+
+    const file = new File(['new version'], '产品手册-v3.pdf', {
+      type: 'application/pdf'
+    });
+    const input = wrapper.get('[data-testid="new-version-file"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [file]
+    });
+    await input.trigger('change');
+    await wrapper.get('[data-testid="upload-new-version"]').trigger('click');
+    await flushPromises();
+
+    expect(api.upload).toHaveBeenCalledWith(file, expect.any(Function), documentId);
+    expect(wrapper.text()).toContain('新版本 v3 已提交处理');
+    expect(api.getDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not offer new-version upload after a document is disabled', async () => {
+    const api = createApi();
+    api.getDocument.mockResolvedValue({
+      ...detail(),
+      document: {
+        ...detail().document,
+        status: 'disabled'
+      }
+    });
+    const wrapper = mount(KnowledgeDocumentManagementView, {
+      props: { documentId, api },
+      global: { plugins: [authenticate('KnowledgeOperator')] }
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="upload-new-version"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain('当前文档状态不允许上传新版本');
   });
 
   it('shows the exact asynchronous physical-delete confirmation only to Admin', async () => {

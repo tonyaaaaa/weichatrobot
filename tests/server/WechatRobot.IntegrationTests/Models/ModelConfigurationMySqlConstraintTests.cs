@@ -58,7 +58,9 @@ public sealed class ModelConfigurationMySqlConstraintTests(MySqlFixture fixture)
     {
         await using var setup = CreateDatabase();
         await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
-        await setup.ModelConfigs.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await setup.Database.ExecuteSqlRawAsync(
+            "DELETE FROM `model_config`;",
+            TestContext.Current.CancellationToken);
 
         var service = new ModelConfigurationService(new PassThroughProtector());
         var first = TestedConfig("concurrent-one", service);

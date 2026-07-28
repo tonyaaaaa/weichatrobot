@@ -1,7 +1,9 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -9,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Conversations;
 using WechatRobot.IntegrationTests.Infrastructure;
 using WechatRobot.IntegrationTests.Models;
+using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 
@@ -17,7 +20,119 @@ namespace WechatRobot.IntegrationTests.Groups;
 public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassFixture<MySqlFixture>
 {
     [Fact]
-    public async Task Handoff_pause_policy_is_persisted_with_optimistic_concurrency()
+    public async Task Lifecycle_endpoints_enforce_versions_and_archive_blockers()
+    {
+        await using var factory = new MySqlGroupApiFactory(fixture.ConnectionString);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var robot = new RobotConfigEntity
+        {
+            Name = $"lifecycle-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"lifecycle-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test"
+        };
+        var group = new GroupProfileEntity { RobotConfigId = robot.Id, Name = "生命周期群" };
+        database.AddRange(robot, group);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        using var client = factory.CreateClient();
+
+        var disabled = await client.PostAsJsonAsync(
+            $"/api/groups/{group.Id:D}/disable",
+            new { expectedStateVersion = 0 },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+        var disabledJson = await disabled.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("disabled", disabledJson.GetProperty("state").GetString());
+        Assert.Equal(1, disabledJson.GetProperty("stateVersion").GetInt32());
+
+        database.SendCommands.Add(new SendCommandEntity
+        {
+            RobotConfigId = robot.Id,
+            GroupProfileId = group.Id,
+            IdempotencyKey = $"block-{Guid.NewGuid():N}",
+            PayloadJson = "{}",
+            Status = "pending"
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var blocked = await client.PostAsJsonAsync(
+            $"/api/groups/{group.Id:D}/archive",
+            new { expectedStateVersion = 1 },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
+        var blockedJson = await blocked.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("group-active-work", blockedJson.GetProperty("error").GetString());
+        Assert.Equal(1, blockedJson.GetProperty("blockers").GetProperty("activeSendCommands").GetInt32());
+
+        database.SendCommands.Remove(database.SendCommands.Local.Single(command => command.GroupProfileId == group.Id));
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var archived = await client.PostAsJsonAsync(
+            $"/api/groups/{group.Id:D}/archive",
+            new { expectedStateVersion = 1 },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, archived.StatusCode);
+
+        var currentGroups = await client.GetFromJsonAsync<JsonElement[]>(
+            "/api/admin/worktool/groups",
+            TestContext.Current.CancellationToken);
+        Assert.DoesNotContain(currentGroups!, item => item.GetProperty("id").GetGuid() == group.Id);
+        var archivedGroups = await client.GetFromJsonAsync<JsonElement[]>(
+            "/api/admin/worktool/groups?status=archived",
+            TestContext.Current.CancellationToken);
+        var archivedGroup = Assert.Single(
+            archivedGroups!,
+            item => item.GetProperty("id").GetGuid() == group.Id);
+        Assert.Equal("archived", archivedGroup.GetProperty("state").GetString());
+        Assert.Equal(2, archivedGroup.GetProperty("stateVersion").GetInt32());
+        Assert.Equal(0, archivedGroup.GetProperty("configurationVersion").GetInt32());
+
+        var stale = await client.PostAsJsonAsync(
+            $"/api/groups/{group.Id:D}/restore",
+            new { expectedStateVersion = 1 },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+    }
+
+    [Fact]
+    public async Task Retired_human_agent_routes_return_not_found()
+    {
+        await using var factory = new MySqlGroupApiFactory(fixture.ConnectionString);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var suffix = Guid.NewGuid().ToString("N");
+        var robot = new RobotConfigEntity
+        {
+            Name = $"eligible-agent-{suffix}",
+            WorkToolRobotId = $"eligible-agent-{suffix}",
+            CallbackSecretHash = "test"
+        };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = $"eligible-group-{suffix}"
+        };
+        database.AddRange(robot, group);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        using var client = factory.CreateClient();
+
+        using var eligible = await client.GetAsync(
+            $"/api/groups/{group.Id:D}/eligible-human-agents",
+            TestContext.Current.CancellationToken);
+        using var update = await client.PutAsJsonAsync(
+            $"/api/groups/{group.Id:D}/human-agents",
+            new { userIds = Array.Empty<Guid>() },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, eligible.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, update.StatusCode);
+    }
+
+    [Fact]
+    public async Task Handoff_pause_policy_is_not_part_of_the_group_configuration_contract()
     {
         await using var factory = new MySqlGroupApiFactory(fixture.ConnectionString);
         await using var scope = factory.Services.CreateAsyncScope();
@@ -39,7 +154,7 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
 
         saved.EnsureSuccessStatusCode();
         var body = await saved.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        Assert.Equal("Sender", body.GetProperty("handoffPausePolicy").GetString());
+        Assert.False(body.TryGetProperty("handoffPausePolicy", out _));
         Assert.Equal(1, body.GetProperty("configurationVersion").GetInt32());
 
         var stale = await client.PutAsJsonAsync($"/api/groups/{group.Id}/configuration", new
@@ -52,7 +167,7 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         Assert.Equal(System.Net.HttpStatusCode.Conflict, stale.StatusCode);
         database.ChangeTracker.Clear();
         var persisted = await database.GroupProfiles.AsNoTracking().SingleAsync(item => item.Id == group.Id, TestContext.Current.CancellationToken);
-        Assert.Equal("Sender", persisted.HandoffPausePolicy);
+        Assert.Equal("Group", persisted.HandoffPausePolicy);
         Assert.Equal(1, persisted.ConfigurationVersion);
     }
 
@@ -82,6 +197,92 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         response.EnsureSuccessStatusCode();
         database.ChangeTracker.Clear();
         Assert.Equal(2, await database.GroupProfileTags.CountAsync(binding => binding.GroupProfileId == group.Id, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Answer_fallback_defaults_are_safe_and_domain_filters_are_normalized()
+    {
+        await using var factory = new MySqlGroupApiFactory(fixture.ConnectionString);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var robot = new RobotConfigEntity
+        {
+            Name = $"fallback-{Guid.NewGuid():N}",
+            WorkToolRobotId = Guid.NewGuid().ToString("N"),
+            CallbackSecretHash = "hash"
+        };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = $"fallback-{Guid.NewGuid():N}"
+        };
+        database.AddRange(robot, group);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        using var client = factory.CreateClient();
+
+        var defaults = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/groups/{group.Id:D}/configuration",
+            TestContext.Current.CancellationToken);
+        var defaultFallback = defaults.GetProperty("answerFallback");
+        Assert.False(defaultFallback.GetProperty("webSearchEnabled").GetBoolean());
+        Assert.False(defaultFallback.GetProperty("modelKnowledgeFallbackEnabled").GetBoolean());
+        Assert.Equal("InsufficientEvidence", defaultFallback.GetProperty("finalNoEvidencePolicy").GetString());
+
+        var updated = await client.PutAsJsonAsync(
+            $"/api/groups/{group.Id:D}/configuration",
+            new
+            {
+                includeRules = Array.Empty<object>(),
+                excludeRules = Array.Empty<object>(),
+                boundTagIds = Array.Empty<Guid>(),
+                context = new { },
+                clearContext = false,
+                expectedConfigurationVersion = 0,
+                answerFallback = new
+                {
+                    webSearchEnabled = true,
+                    modelKnowledgeFallbackEnabled = true,
+                    webSearchShowSources = true,
+                    webSearchResultCount = 8,
+                    webSearchRecency = "OneWeek",
+                    webSearchDomainFilter = "Example.COM; news.example.com",
+                    webSearchContentSize = "High",
+                    finalNoEvidencePolicy = "Clarification"
+                }
+            },
+            TestContext.Current.CancellationToken);
+        updated.EnsureSuccessStatusCode();
+        var body = await updated.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(
+            "example.com,news.example.com",
+            body.GetProperty("answerFallback").GetProperty("webSearchDomainFilter").GetString());
+
+        var invalid = await client.PutAsJsonAsync(
+            $"/api/groups/{group.Id:D}/configuration",
+            new
+            {
+                includeRules = Array.Empty<object>(),
+                excludeRules = Array.Empty<object>(),
+                boundTagIds = Array.Empty<Guid>(),
+                context = new { },
+                clearContext = false,
+                expectedConfigurationVersion = 1,
+                answerFallback = new
+                {
+                    webSearchEnabled = true,
+                    modelKnowledgeFallbackEnabled = true,
+                    webSearchShowSources = false,
+                    webSearchResultCount = 5,
+                    webSearchRecency = "NoLimit",
+                    webSearchDomainFilter = "https://example.com/path",
+                    webSearchContentSize = "Medium",
+                    finalNoEvidencePolicy = "InsufficientEvidence"
+                }
+            },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
     }
 
     [Fact]

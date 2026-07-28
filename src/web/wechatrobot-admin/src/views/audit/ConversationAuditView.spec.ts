@@ -21,6 +21,7 @@ describe('ConversationAuditView filters', () => {
           isEnabled: false
         }
       ]),
+      createKnowledgeCandidate: vi.fn(),
       capability: vi.fn().mockResolvedValue({
         available: true, items: [], total: 0, page: 1, pageSize: 20
       })
@@ -51,5 +52,45 @@ describe('ConversationAuditView filters', () => {
       pageSize: 20
     });
     expect(wrapper.text()).toContain('开始时间包含，结束时间不包含');
+  });
+
+  it('labels the actual answer source and renders only structured web citations', async () => {
+    const api = {
+      groupOptions: vi.fn().mockResolvedValue([]),
+      createKnowledgeCandidate: vi.fn(),
+      capability: vi.fn().mockResolvedValue({
+        available: true,
+        total: 1,
+        page: 1,
+        pageSize: 20,
+        items: [{
+          id: 'audit-1',
+          groupProfileId: 'group-1',
+          question: '今天有什么更新？',
+          answer: '联网回答',
+          answerSource: 'web_search',
+          webSearchFailureCode: null,
+          webSearchSources: [{
+            title: '官方来源',
+            url: 'https://example.com/news',
+            site: 'Example',
+            publishedAt: '2026-07-28',
+            index: 1
+          }],
+          sources: [],
+          evidence: [],
+          inputSummary: {},
+          createdAtUtc: '2026-07-28T01:00:00Z'
+        }]
+      })
+    };
+    const wrapper = mount(ConversationAuditView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('联网搜索');
+    expect(wrapper.text()).toContain('官方来源');
+    const link = wrapper.get('a[href="https://example.com/news"]');
+    expect(link.attributes('target')).toBe('_blank');
+    expect(link.attributes('rel')).toContain('noopener');
   });
 });

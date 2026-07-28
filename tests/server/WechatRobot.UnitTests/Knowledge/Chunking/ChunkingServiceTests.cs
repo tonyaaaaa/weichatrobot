@@ -96,6 +96,38 @@ public sealed class ChunkingServiceTests
     }
 
     [Fact]
+    public void Merge_combines_three_contiguous_chunks_atomically()
+    {
+        var first = new ChunkPreview(Guid.NewGuid(), 0, "第一", 1, ["标题"], false, null, null);
+        var second = new ChunkPreview(Guid.NewGuid(), 1, "第二", 1, ["标题"], false, null, null);
+        var third = new ChunkPreview(Guid.NewGuid(), 2, "第三", 1, ["标题"], false, null, null);
+        var fourth = new ChunkPreview(Guid.NewGuid(), 3, "保留", 1, ["标题"], false, null, null);
+
+        var merged = new ChunkPreviewEditor().Merge(
+            [first, second, third, fourth],
+            [third.Id, first.Id, second.Id]);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Equal("第一第二第三", merged[0].Text);
+        Assert.Equal(first.Id, merged[0].Id);
+        Assert.Equal("保留", merged[1].Text);
+        Assert.Equal([0, 1], merged.Select(item => item.Sequence));
+    }
+
+    [Fact]
+    public void Merge_rejects_non_contiguous_chunks_without_mutating_the_source()
+    {
+        var first = new ChunkPreview(Guid.NewGuid(), 0, "第一", 1, [], false, null, null);
+        var second = new ChunkPreview(Guid.NewGuid(), 1, "第二", 1, [], false, null, null);
+        var third = new ChunkPreview(Guid.NewGuid(), 2, "第三", 1, [], false, null, null);
+        IReadOnlyList<ChunkPreview> source = [first, second, third];
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new ChunkPreviewEditor().Merge(source, [first.Id, third.Id]));
+        Assert.Equal(["第一", "第二", "第三"], source.Select(item => item.Text));
+    }
+
+    [Fact]
     public void Qa_merge_rejects_incompatible_metadata_and_round_trips_compatible_split()
     {
         var first = new ChunkPreview(Guid.NewGuid(), 0, "问答 内容", null, [], false, null, null, "问题", ["同义"], "答案");

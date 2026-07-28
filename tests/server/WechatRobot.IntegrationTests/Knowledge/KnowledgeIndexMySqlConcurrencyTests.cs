@@ -159,7 +159,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             database.AddRange(tag, document, version, chunk, new ModelConfigEntity
             {
                 Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
-                Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
+                Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true, EmbeddingDimension = 3
             });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
             jobId = await setupScope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>()
@@ -213,6 +213,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         Guid documentId;
         Guid versionId;
         Guid jobId;
+        string collectionName;
         await using (var setupScope = provider.CreateAsyncScope())
         {
             var database = setupScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
@@ -231,11 +232,15 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
                 new ModelConfigEntity
                 {
                     Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding",
-                    BaseUrl = "https://fake/", Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
+                    BaseUrl = "https://fake/", Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true, EmbeddingDimension = 3
                 });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
             jobId = await setupScope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>()
                 .QueueIndexAsync(document.Id, version.Id, [tag.Id], false, TestContext.Current.CancellationToken);
+            collectionName = await database.KnowledgeIndexJobs.AsNoTracking()
+                .Where(job => job.Id == jobId)
+                .Select(job => job.CollectionName)
+                .SingleAsync(TestContext.Current.CancellationToken);
         }
 
         var indexWorker = new KnowledgeIndexWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
@@ -252,12 +257,12 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
         Assert.True(await cleanup.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
         await using var verifyScope = provider.CreateAsyncScope();
         var verify = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-        var indexJob = await verify.KnowledgeIndexJobs.AsNoTracking().SingleAsync(job => job.Id == jobId, TestContext.Current.CancellationToken);
-        Assert.Equal("cancelled", indexJob.Status);
-        Assert.Null(indexJob.LeaseOwner);
+        Assert.False(await verify.KnowledgeDocuments.AnyAsync(document => document.Id == documentId, TestContext.Current.CancellationToken));
+        Assert.False(await verify.KnowledgeDocumentVersions.AnyAsync(version => version.Id == versionId, TestContext.Current.CancellationToken));
+        Assert.False(await verify.KnowledgeIndexJobs.AnyAsync(job => job.Id == jobId, TestContext.Current.CancellationToken));
         Assert.Equal("completed", (await verify.DurableJobs.AsNoTracking().SingleAsync(job =>
             job.JobType == "CleanupKnowledgeDocument" && job.PayloadJson.Contains(documentId.ToString()), TestContext.Current.CancellationToken)).Status);
-        Assert.Empty(await realVectors.InspectVersionAsync(new VectorCollection(indexJob.CollectionName, 3, VectorDistance.Cosine), versionId,
+        Assert.Empty(await realVectors.InspectVersionAsync(new VectorCollection(collectionName, 3, VectorDistance.Cosine), versionId,
             TestContext.Current.CancellationToken));
         Assert.Single(storage.Deleted);
     }
@@ -303,7 +308,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             new ModelConfigEntity
             {
                 Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
-                Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
+                Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true, EmbeddingDimension = 3
             });
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
         var live = new VectorCollection(document.ActiveCollectionName, 3, VectorDistance.Cosine);
@@ -613,11 +618,9 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
 
         Assert.NotNull(await Record.ExceptionAsync(async () => await staleQueue));
         await using var verify = new WechatRobotDbContext(plainOptions);
-        var storedDocument = await verify.KnowledgeDocuments.AsNoTracking().SingleAsync(item => item.Id == documentId, TestContext.Current.CancellationToken);
-        Assert.True(storedDocument.IsDeleteRequested);
-        Assert.Equal("disabled", storedDocument.Status);
-        Assert.DoesNotContain(await verify.KnowledgeIndexJobs.AsNoTracking().Where(job => job.KnowledgeDocumentId == documentId)
-            .ToArrayAsync(TestContext.Current.CancellationToken), job => job.Operation is "index" or "reindex");
+        Assert.False(await verify.KnowledgeDocuments.AnyAsync(item => item.Id == documentId, TestContext.Current.CancellationToken));
+        Assert.False(await verify.KnowledgeDocumentVersions.AnyAsync(item => item.Id == versionId, TestContext.Current.CancellationToken));
+        Assert.False(await verify.KnowledgeIndexJobs.AnyAsync(job => job.KnowledgeDocumentId == documentId, TestContext.Current.CancellationToken));
         Assert.Equal("completed", (await verify.DurableJobs.AsNoTracking().SingleAsync(job => job.JobType == "CleanupKnowledgeDocument" &&
             job.PayloadJson.Contains(documentId.ToString()), TestContext.Current.CancellationToken)).Status);
     }
@@ -664,7 +667,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
                 new ModelConfigEntity
                 {
                     Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N"), Provider = "openai-compatible", ConfigurationType = "embedding", BaseUrl = "https://fake/",
-                    Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true
+                    Model = "fake", EncryptedApiKey = "key", IsDefault = true, IsEnabled = true, EmbeddingDimension = 3
                 });
             await database.SaveChangesAsync(TestContext.Current.CancellationToken);
             var service = setupScope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>();

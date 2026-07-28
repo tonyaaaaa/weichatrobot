@@ -199,7 +199,7 @@ describe('GroupRulesView', () => {
     expect(wrapper.text()).toContain('群配置已被其他操作员修改，已加载最新版本');
   });
 
-  it('keeps group human-agent configuration disabled until a verified member snapshot exists', async () => {
+  it('does not expose retired group human-agent configuration', async () => {
     const gatedApi = {
       ...api,
       getConfiguration: vi.fn().mockResolvedValue({
@@ -229,8 +229,8 @@ describe('GroupRulesView', () => {
     });
     await flushPromises();
 
-    expect(wrapper.text()).toContain('需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。');
-    expect(wrapper.text()).toContain('客服甲（企微：企微客服甲）');
-    expect(wrapper.get('[data-testid="save-human-agents"]').attributes('disabled')).toBeDefined();
+    expect(gatedApi.getEligibleHumanAgents).not.toHaveBeenCalled();
+    expect(wrapper.text()).not.toContain('群人工客服');
+    expect(wrapper.find('[data-testid="save-human-agents"]').exists()).toBe(false);
   });
 });

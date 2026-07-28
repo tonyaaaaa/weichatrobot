@@ -16,11 +16,11 @@ public sealed class UserAdministrationServiceTests
 
         var created = await service.CreateAsync(
             "admin@example.test",
-            new CreateManagedUser("agent@example.test", "客服一号", "Temporary1!Password", [SystemRoles.HumanAgent]),
+            new CreateManagedUser("agent@example.test", "知识运营一号", "Temporary1!Password", [SystemRoles.KnowledgeOperator]),
             TestContext.Current.CancellationToken);
 
         Assert.True(created.IsEnabled);
-        Assert.Equal([SystemRoles.HumanAgent], created.Roles);
+        Assert.Equal([SystemRoles.KnowledgeOperator], created.Roles);
 
         var page = await service.ListAsync("agent", null, 1, 20, TestContext.Current.CancellationToken);
         Assert.Equal(1, page.Total);
@@ -33,9 +33,9 @@ public sealed class UserAdministrationServiceTests
         var roles = await service.SetRolesAsync(
             "admin@example.test",
             created.Id,
-            new SetManagedUserRoles([SystemRoles.KnowledgeOperator, SystemRoles.HumanAgent]),
+            new SetManagedUserRoles([SystemRoles.Admin, SystemRoles.KnowledgeOperator]),
             TestContext.Current.CancellationToken);
-        Assert.Equal([SystemRoles.HumanAgent, SystemRoles.KnowledgeOperator], roles.Roles.Order().ToArray());
+        Assert.Equal([SystemRoles.Admin, SystemRoles.KnowledgeOperator], roles.Roles.Order().ToArray());
 
         var auditJson = string.Join('\n', await fixture.Database.AdministrationAudits
             .Select(item => item.SanitizedDetailJson)
@@ -58,7 +58,7 @@ public sealed class UserAdministrationServiceTests
 
         var passwordError = await Assert.ThrowsAsync<UserAdministrationException>(() =>
             service.CreateAsync("admin@example.test",
-                new CreateManagedUser("weak@example.test", "Weak", "short", [SystemRoles.HumanAgent]),
+                new CreateManagedUser("weak@example.test", "Weak", "short", [SystemRoles.KnowledgeOperator]),
                 TestContext.Current.CancellationToken));
         Assert.Equal("identity-validation", passwordError.Code);
         Assert.DoesNotContain("short", string.Join(' ', passwordError.Errors), StringComparison.Ordinal);
@@ -96,39 +96,6 @@ public sealed class UserAdministrationServiceTests
             "second-admin@example.test", first.Id, false, TestContext.Current.CancellationToken);
 
         Assert.False(result.IsEnabled);
-    }
-
-    [Fact]
-    public async Task WorkTool_display_name_is_explicit_trimmed_and_company_unique()
-    {
-        await using var fixture = await UserAdministrationFixture.CreateAsync();
-        var service = fixture.Services.GetRequiredService<UserAdministrationService>();
-        var first = await fixture.CreateUserAsync(
-            "first-agent@example.test",
-            "后台客服甲",
-            "Temporary1!Password",
-            [SystemRoles.HumanAgent]);
-        var second = await fixture.CreateUserAsync(
-            "second-agent@example.test",
-            "后台客服乙",
-            "Temporary1!Password",
-            [SystemRoles.HumanAgent]);
-
-        var bound = await service.SetWorkToolDisplayNameAsync(
-            "admin@example.test",
-            first.Id,
-            "  客服-王小明  ",
-            TestContext.Current.CancellationToken);
-
-        Assert.Equal("客服-王小明", bound.WorkToolDisplayName);
-        var conflict = await Assert.ThrowsAsync<UserAdministrationException>(() =>
-            service.SetWorkToolDisplayNameAsync(
-                "admin@example.test",
-                second.Id,
-                "客服-王小明",
-                TestContext.Current.CancellationToken));
-        Assert.Equal("worktool-display-name-conflict", conflict.Code);
-        Assert.NotEqual(first.DisplayName, bound.WorkToolDisplayName);
     }
 
     private sealed class UserAdministrationFixture : IAsyncDisposable

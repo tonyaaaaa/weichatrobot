@@ -28,11 +28,25 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             Text = request.Text,
             ReceivedAtUtc = request.ReceivedAtUtc
         };
+        var matchedGroupIds = await database.GroupProfiles.AsNoTracking()
+            .Where(group =>
+                group.RobotConfigId == request.RobotConfigId &&
+                group.Name == request.GroupName &&
+                (string.IsNullOrEmpty(request.GroupRemark)
+                    ? group.WorkToolGroupRemark == null
+                    : group.WorkToolGroupRemark == request.GroupRemark || group.WorkToolGroupRemark == null))
+            .OrderByDescending(group => group.WorkToolGroupRemark == request.GroupRemark)
+            .Select(group => group.Id)
+            .Take(2)
+            .ToArrayAsync(cancellationToken);
+        if (matchedGroupIds.Length == 1)
+            message.GroupProfileId = matchedGroupIds[0];
         database.ConversationMessages.Add(message);
         database.DurableJobs.Add(new DurableJobEntity
         {
             JobType = "ProcessInboundMessage",
             RelatedConversationMessageId = message.Id,
+            GroupProfileId = message.GroupProfileId,
             PayloadJson = JsonSerializer.Serialize(new
             {
                 messageId = message.Id,
@@ -233,13 +247,12 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                                      !database.SendCommands.Any(earlier =>
                                          earlier.RobotConfigId == command.RobotConfigId &&
                                          (earlier.Status == WorkToolCommandStatuses.Pending ||
-                                          earlier.Status == WorkToolCommandStatuses.Retrying ||
-                                          earlier.Status == WorkToolCommandStatuses.Leased ||
-                                          earlier.Status == WorkToolCommandStatuses.Dispatching ||
-                                          earlier.Status == WorkToolCommandStatuses.Blocked ||
-                                          earlier.Status == WorkToolCommandStatuses.DeliveryUnknown) &&
-                                         (earlier.CreatedAtUtc < command.CreatedAtUtc ||
-                                          (earlier.CreatedAtUtc == command.CreatedAtUtc && earlier.Id.CompareTo(command.Id) < 0)))
+                                           earlier.Status == WorkToolCommandStatuses.Retrying ||
+                                           earlier.Status == WorkToolCommandStatuses.Leased ||
+                                           earlier.Status == WorkToolCommandStatuses.Dispatching ||
+                                           earlier.Status == WorkToolCommandStatuses.Blocked) &&
+                                          (earlier.CreatedAtUtc < command.CreatedAtUtc ||
+                                           (earlier.CreatedAtUtc == command.CreatedAtUtc && earlier.Id.CompareTo(command.Id) < 0)))
                                orderby command.NextAttemptAtUtc, command.CreatedAtUtc, command.Id
                                select new { command.Id, command.RobotConfigId, command.Version })
             .FirstOrDefaultAsync(cancellationToken);
@@ -306,7 +319,15 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
             var robot = await database.RobotConfigs.FromSqlInterpolated(
                 $"SELECT * FROM robot_config WHERE Id = {command.RobotConfigId} FOR UPDATE").AsNoTracking().SingleOrDefaultAsync(cancellationToken);
-            if (robot is not null && robot.IsEnabled)
+            var groupEnabled = await database.SendCommands.AsNoTracking()
+                .Where(value => value.Id == command.Id)
+                .Select(value => value.GroupProfileId == null ||
+                    database.GroupProfiles.Any(group =>
+                        group.Id == value.GroupProfileId &&
+                        group.IsEnabled &&
+                        group.ArchivedAtUtc == null))
+                .SingleAsync(cancellationToken);
+            if (robot is not null && robot.IsEnabled && groupEnabled)
             {
                 var owned = await database.SendCommands.AsNoTracking().AnyAsync(value => value.Id == command.Id && value.Status == "leased" &&
                     value.LeaseOwner == command.LeaseOwner, cancellationToken);
@@ -342,7 +363,14 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task<bool> MarkSendDispatchingAsync(LeasedSendCommand command, DateTime dispatchedAtUtc, CancellationToken cancellationToken)
     {
         var updated = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
+            .Where(value =>
+                value.Id == command.Id &&
+                value.Status == "leased" &&
+                value.LeaseOwner == command.LeaseOwner &&
+                (value.GroupProfileId == null || database.GroupProfiles.Any(group =>
+                    group.Id == value.GroupProfileId &&
+                    group.IsEnabled &&
+                    group.ArchivedAtUtc == null)))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(value => value.Status, WorkToolCommandStatuses.Dispatching)
                 .SetProperty(value => value.ExternalDispatchStartedAtUtc, dispatchedAtUtc)
@@ -399,6 +427,10 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             throw new ArgumentException("A valid WorkTool message ID is required.", nameof(workToolMessageId));
 
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var payloadJson = await database.SendCommands.AsNoTracking()
+            .Where(value => value.Id == command.Id)
+            .Select(value => value.PayloadJson)
+            .SingleOrDefaultAsync(cancellationToken);
         var accepted = await database.SendCommands
             .Where(value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner)
             .ExecuteUpdateAsync(setters => setters
@@ -416,7 +448,40 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             await transaction.RollbackAsync(cancellationToken);
             return;
         }
+        var memoryIds = ReadMemoryRecallIds(payloadJson);
+        if (memoryIds.Length > 0)
+        {
+            await database.MemoryEntries
+                .Where(entry => memoryIds.Contains(entry.Id) && entry.Status == "active")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(entry => entry.RecallCount, entry => entry.RecallCount + 1)
+                    .SetProperty(entry => entry.LastRecalledAtUtc, acceptedAtUtc)
+                    .SetProperty(entry => entry.UpdatedAtUtc, acceptedAtUtc), cancellationToken);
+        }
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static Guid[] ReadMemoryRecallIds(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson)) return [];
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            if (!document.RootElement.TryGetProperty("MemoryRecallIds", out var values) ||
+                values.ValueKind != JsonValueKind.Array)
+                return [];
+            return values.EnumerateArray()
+                .Take(5)
+                .Where(value => value.ValueKind == JsonValueKind.String)
+                .Select(value => Guid.TryParse(value.GetString(), out var id) ? id : Guid.Empty)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToArray();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     public async Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken)

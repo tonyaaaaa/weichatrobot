@@ -46,7 +46,15 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
                 Sha256 = "a".PadLeft(64, '0'), ObjectKey = "wechatrobot/knowledge/a.txt", Status = "disabled", IndexCollectionName = "kb_cosine_3_g1",
                 EmbeddingDimension = 3, VectorDistance = "cosine", IndexGeneration = 1
             };
-            database.AddRange(document, version, new KnowledgeIndexJobEntity
+            var candidate = new KnowledgeCandidateEntity
+            {
+                KnowledgeDocumentVersionId = versionId,
+                Question = "question",
+                Answer = "answer",
+                EvidenceJson = "{}",
+                Status = "published"
+            };
+            database.AddRange(document, version, candidate, new KnowledgeIndexJobEntity
             {
                 KnowledgeDocumentId = documentId, KnowledgeDocumentVersionId = versionId, CollectionName = "kb_cosine_3_g2",
                 Dimension = 3, Distance = "cosine", Generation = 2, Status = "failed"
@@ -67,13 +75,93 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
         Assert.All(vectors.Deleted, item => Assert.Equal(versionId, item.VersionId));
         Assert.True(jobs.Completed);
         Assert.False(jobs.Failed);
+        await using (var verifyScope = provider.CreateAsyncScope())
+        {
+            var database = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            Assert.False(await database.KnowledgeDocuments.AnyAsync(item => item.Id == documentId, TestContext.Current.CancellationToken));
+            Assert.False(await database.KnowledgeDocumentVersions.AnyAsync(item => item.Id == versionId, TestContext.Current.CancellationToken));
+            Assert.Null((await database.KnowledgeCandidates.SingleAsync(TestContext.Current.CancellationToken)).KnowledgeDocumentVersionId);
+        }
         Assert.False(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Failed_external_cleanup_keeps_database_records_and_fails_job()
+    {
+        var documentId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var job = new LeasedDurableJob(Guid.NewGuid(), "CleanupKnowledgeDocument", JsonSerializer.Serialize(new { documentId }), 0, "cleanup-owner");
+        var jobs = new FakeJobs(job);
+        var storage = new FakeStorage { FailDelete = true };
+        var services = new ServiceCollection();
+        var databaseName = Guid.NewGuid().ToString();
+        services.AddDbContext<WechatRobotDbContext>(builder => builder.UseInMemoryDatabase(databaseName));
+        services.AddSingleton<IDurableJobRepository>(jobs);
+        services.AddSingleton<IObjectStorage>(storage);
+        services.AddSingleton<IVectorStore>(new FakeVectors());
+        services.AddSingleton(new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<ISecretProtector, PassThroughProtector>();
+        services.AddScoped<ModelConfigurationService>();
+        services.AddScoped<QdrantKnowledgeService>();
+        await using var provider = services.BuildServiceProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.AddRange(
+                new KnowledgeDocumentEntity { Id = documentId, Status = "disabled", IsDeleteRequested = true },
+                new KnowledgeDocumentVersionEntity
+                {
+                    Id = versionId,
+                    KnowledgeDocumentId = documentId,
+                    Version = 1,
+                    OriginalFileName = "retained.txt",
+                    SafeFileName = "retained.txt",
+                    ContentType = "text/plain",
+                    Sha256 = "b".PadLeft(64, '0'),
+                    ObjectKey = "wechatrobot/knowledge/retained.txt",
+                    Status = "disabled",
+                    IndexCollectionName = "kb_cosine_3_g1",
+                    EmbeddingDimension = 3,
+                    VectorDistance = "cosine",
+                    IndexGeneration = 1
+                },
+                new KnowledgeIndexJobEntity
+                {
+                    KnowledgeDocumentId = documentId,
+                    KnowledgeDocumentVersionId = versionId,
+                    CollectionName = "kb_cosine_3_g2",
+                    Dimension = 3,
+                    Distance = "cosine",
+                    Generation = 1,
+                    Status = "failed"
+                });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var worker = new KnowledgeDocumentCleanupWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        Assert.True(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+
+        Assert.Single(storage.Deleted);
+        Assert.True(jobs.Failed);
+        Assert.False(jobs.Completed);
+        await using var verifyScope = provider.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        Assert.True(await verify.KnowledgeDocuments.AnyAsync(item => item.Id == documentId, TestContext.Current.CancellationToken));
+        Assert.True(await verify.KnowledgeDocumentVersions.AnyAsync(item => item.Id == versionId, TestContext.Current.CancellationToken));
     }
 
     private sealed class FakeStorage : IObjectStorage
     {
         public List<string> Deleted { get; } = [];
-        public Task DeleteAsync(string objectKey, CancellationToken token) { Deleted.Add(objectKey); return Task.CompletedTask; }
+        public bool FailDelete { get; init; }
+        public Task DeleteAsync(string objectKey, CancellationToken token)
+        {
+            Deleted.Add(objectKey);
+            return FailDelete
+                ? Task.FromException(new IOException("simulated object-storage delete failure"))
+                : Task.CompletedTask;
+        }
         public Task<StoredObject> PutAsync(string objectKey, Stream content, string contentType, CancellationToken token) => throw new NotSupportedException();
     }
     private sealed class FakeVectors : IVectorStore
@@ -85,7 +173,8 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
         public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;
-        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
         public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => Task.FromResult<IReadOnlyList<VectorSearchHit>>([]);
     }
     private sealed class FakeJobs(LeasedDurableJob job) : IDurableJobRepository

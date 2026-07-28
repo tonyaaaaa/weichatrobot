@@ -7,18 +7,19 @@ import GroupListView from '../views/groups/GroupListView.vue';
 import GroupRulesView from '../views/groups/GroupRulesView.vue';
 import GroupOperationsView from '../views/groups/GroupOperationsView.vue';
 
-export type Role = 'Admin' | 'KnowledgeOperator' | 'HumanAgent';
+export type Role = 'Admin' | 'KnowledgeOperator';
 export interface NavigationItem { name: string; label: string; roles: Role[]; }
 
 export const navigation: NavigationItem[] = [
-  { name: 'dashboard', label: '工作台', roles: ['Admin', 'KnowledgeOperator', 'HumanAgent'] },
+  { name: 'dashboard', label: '工作台', roles: ['Admin', 'KnowledgeOperator'] },
   { name: 'knowledge-documents', label: '知识库', roles: ['Admin', 'KnowledgeOperator'] },
   { name: 'knowledge-tags', label: '知识库标签', roles: ['Admin', 'KnowledgeOperator'] },
-  { name: 'knowledge-review', label: '知识审核', roles: ['Admin', 'KnowledgeOperator'] },
+  { name: 'knowledge-review', label: '知识学习审核', roles: ['Admin', 'KnowledgeOperator'] },
+  { name: 'memory-center', label: '记忆中心', roles: ['Admin', 'KnowledgeOperator'] },
   { name: 'group-list', label: '群管理', roles: ['Admin'] },
-  { name: 'handoffs', label: '人工转接', roles: ['Admin', 'HumanAgent'] },
   { name: 'audit', label: '会话审计', roles: ['Admin', 'KnowledgeOperator'] },
   { name: 'administration-audit', label: '管理审计', roles: ['Admin'] },
+  { name: 'send-queue', label: '发送队列', roles: ['Admin'] },
   { name: 'model-settings', label: '模型配置', roles: ['Admin'] },
   { name: 'robot-settings', label: '机器人设置', roles: ['Admin'] },
   { name: 'users', label: '用户与角色', roles: ['Admin'] },
@@ -34,18 +35,20 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/', component: AdminLayout,
     children: [
-      { path: '', name: 'dashboard', component: DashboardView, meta: { roles: ['Admin', 'KnowledgeOperator', 'HumanAgent'] } },
+      { path: '', name: 'dashboard', component: DashboardView, meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/documents', name: 'knowledge-documents', component: () => import('../views/knowledge/KnowledgeDocumentsView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/documents/:documentId', name: 'knowledge-document-management', component: () => import('../views/knowledge/KnowledgeDocumentManagementView.vue'), props: true, meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/documents/:documentId/versions/:versionId', name: 'knowledge-document-detail', component: () => import('../views/knowledge/DocumentDetailView.vue'), props: true, meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/tags', name: 'knowledge-tags', component: () => import('../views/knowledge/KnowledgeTagsView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'knowledge/review', name: 'knowledge-review', component: () => import('../views/knowledge/KnowledgeReviewView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
+      { path: 'memory', name: 'memory-center', component: () => import('../views/memory/MemoryCenterView.vue'), props: route => ({ initialGroupId: route.query.groupId ?? '' }), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'groups', name: 'group-list', component: GroupListView, meta: { roles: ['Admin'] } },
       { path: 'groups/operations', name: 'group-operations', component: GroupOperationsView, meta: { roles: ['Admin'] } },
       { path: 'groups/:id/configuration', name: 'group-configuration', component: GroupRulesView, props: true, meta: { roles: ['Admin'] } },
-      { path: 'handoffs', name: 'handoffs', component: () => import('../views/handoffs/HandoffQueueView.vue'), meta: { roles: ['Admin', 'HumanAgent'] } },
-      { path: 'audit', name: 'audit', component: () => import('../views/audit/ConversationAuditView.vue'), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
+      { path: 'groups/:id/context', name: 'group-context', component: () => import('../views/groups/GroupContextView.vue'), props: true, meta: { roles: ['Admin'] } },
+      { path: 'audit', name: 'audit', component: () => import('../views/audit/ConversationAuditView.vue'), props: route => ({ initialGroupId: route.query.groupId ?? '' }), meta: { roles: ['Admin', 'KnowledgeOperator'] } },
       { path: 'administration-audits', name: 'administration-audit', component: () => import('../views/audit/AdministrationAuditView.vue'), meta: { roles: ['Admin'] } },
+      { path: 'operations/send-commands', name: 'send-queue', component: () => import('../views/operations/SendQueueView.vue'), meta: { roles: ['Admin'] } },
       { path: 'models', name: 'model-settings', component: () => import('../views/models/ModelSettingsView.vue'), meta: { roles: ['Admin'] } },
       { path: 'robots', name: 'robot-settings', component: () => import('../views/settings/RobotSettingsView.vue'), meta: { roles: ['Admin'] } },
       { path: 'users', name: 'users', component: () => import('../views/users/UserRolesView.vue'), meta: { roles: ['Admin'] } },

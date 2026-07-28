@@ -123,7 +123,11 @@ public sealed class KnowledgeIndexServiceTests
         public bool RetryableFailure { get; private set; }
         public List<(long Sequence, string Name)> Events { get; } = [];
         public Task<KnowledgeIndexWork> LoadIndexWorkAsync(Guid jobId, CancellationToken token) => Task.FromResult(work);
-        public Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(CancellationToken token) => Task.FromResult(new ModelProviderConfiguration("https://fake/", "fake", "cipher", TimeSpan.FromSeconds(1), 0));
+        public Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(
+            Guid? modelConfigurationId,
+            int? modelConfigurationVersion,
+            CancellationToken token) =>
+            Task.FromResult(new ModelProviderConfiguration("https://fake/", "fake", "cipher", TimeSpan.FromSeconds(1), 0));
         public Task<bool> IsIndexLeaseOwnedAsync(Guid jobId, string owner, CancellationToken token) => Task.FromResult(true);
         public Task<bool> ActivateVersionAsync(KnowledgeIndexWork value, CancellationToken token) { Activated = true; Events.Add((EventClock.Next(), "activate-mysql")); return Task.FromResult(true); }
         public Task EnqueueCleanupAsync(KnowledgeIndexWork value, CancellationToken token) { Events.Add((EventClock.Next(), "cleanup")); return Task.CompletedTask; }

@@ -21,7 +21,7 @@ public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiF
     public RoleAuthorizationTests(RoleAuthorizationApiFactory factory) => _factory = factory;
 
     [Fact]
-    public void Auth_probe_route_is_mapped()
+    public void Active_routes_are_mapped_and_handoff_routes_are_absent()
     {
         var routes = _factory.Services.GetServices<EndpointDataSource>()
             .SelectMany(source => source.Endpoints)
@@ -30,11 +30,7 @@ public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiF
             .ToArray();
 
         Assert.Contains("/api/auth/probe/knowledge", routes);
-        Assert.Contains("/api/handoffs/manual", routes);
-        Assert.Contains("/api/handoffs/", routes);
-        Assert.Contains("/api/handoffs/{id:guid}", routes);
-        Assert.Contains("/api/handoffs/{id:guid}/messages", routes);
-        Assert.Contains("/api/handoffs/{id:guid}/transitions", routes);
+        Assert.DoesNotContain(routes, route => route?.StartsWith("/api/handoffs", StringComparison.Ordinal) == true);
         Assert.Contains("/api/knowledge/candidates/", routes);
         Assert.Contains("/api/knowledge/candidates/{id:guid}", routes);
         Assert.Contains("/api/knowledge/candidates/{id:guid}/reviews", routes);
@@ -74,17 +70,12 @@ public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiF
     }
 
     [Fact]
-    public async Task Handoff_and_review_boundaries_enforce_distinct_authenticated_roles()
+    public async Task Knowledge_review_boundaries_enforce_authenticated_roles()
     {
         using var human = _factory.CreateClient();
         human.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.HumanAgent));
-        using var knowledge = _factory.CreateClient();
-        knowledge.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.KnowledgeOperator));
-
         Assert.Equal(HttpStatusCode.Forbidden, (await human.PostAsJsonAsync($"/api/knowledge/candidates/{Guid.NewGuid():D}/reviews", new { }, TestContext.Current.CancellationToken)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.PostAsJsonAsync("/api/handoffs/manual", new { }, TestContext.Current.CancellationToken)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await human.GetAsync("/api/knowledge/candidates/", TestContext.Current.CancellationToken)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await knowledge.GetAsync("/api/handoffs/", TestContext.Current.CancellationToken)).StatusCode);
     }
 
     [Fact]
@@ -109,20 +100,18 @@ public sealed class RoleAuthorizationTests : IClassFixture<RoleAuthorizationApiF
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
-    [Fact]
-    public async Task Authenticated_handoff_request_with_invalid_subject_returns_unauthorized()
+    [Theory]
+    [InlineData("/api/handoffs")]
+    [InlineData("/api/handoffs/manual")]
+    [InlineData("/api/handoffs/00000000-0000-0000-0000-000000000000")]
+    public async Task Retired_handoff_routes_return_not_found(string path)
     {
         using var client = _factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.HumanAgent, "not-a-guid"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken(SystemRoles.Admin));
 
-        var response = await client.PostAsJsonAsync($"/api/handoffs/{Guid.NewGuid():D}/resolve",
-            new { finalAnswer = "answer", expectedVersion = 0 }, TestContext.Current.CancellationToken);
+        var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
 
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
-        var assign = await client.PostAsJsonAsync($"/api/handoffs/{Guid.NewGuid():D}/assign",
-            new { assigneeUserId = Guid.NewGuid(), expectedVersion = 0 }, TestContext.Current.CancellationToken);
-        Assert.Equal(HttpStatusCode.Unauthorized, assign.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     private static string CreateToken(string role, string? subject = null)

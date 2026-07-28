@@ -7,10 +7,14 @@ namespace WechatRobot.IntegrationTests.Infrastructure;
 public sealed class MySqlFixture : IAsyncLifetime
 {
     private static readonly SemaphoreSlim ServerGate = new(1, 1);
-    private static readonly MySqlContainer SharedContainer = new MySqlBuilder("mysql:8.4.10")
+    private static readonly MySqlContainer SharedContainer = new MySqlBuilder(ResolveImage())
         .WithDatabase("wechatrobot_fixture_host")
         .WithUsername("wechatrobot")
         .WithPassword("wechatrobot-tests-password")
+        .WithCommand(
+            "--character-set-server=utf8mb4",
+            "--collation-server=utf8mb4_bin",
+            "--log-bin-trust-function-creators=1")
         // The database is disposable test state. Keeping it in the Linux VM's tmpfs avoids the
         // exceptionally slow Docker Desktop bind-layer fsync/ALTER path on Windows.
         .WithTmpfsMount("/var/lib/mysql")
@@ -106,4 +110,10 @@ public sealed class MySqlFixture : IAsyncLifetime
 
     // The process-wide container is intentionally not disposed per fixture. Testcontainers' Ryuk resource
     // reaper owns process-level cleanup; each logical fixture only creates and drops its isolated database.
+
+    private static string ResolveImage()
+    {
+        var configured = Environment.GetEnvironmentVariable("WECHATROBOT_TEST_MYSQL_IMAGE");
+        return string.IsNullOrWhiteSpace(configured) ? "mysql:8.4.10" : configured.Trim();
+    }
 }

@@ -114,7 +114,8 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
         database.RobotConfigs.Add(new RobotConfigEntity { Name = $"invalid-rate-{Guid.NewGuid():N}", WorkToolRobotId = $"invalid-rate-{Guid.NewGuid():N}", CallbackSecretHash = "test", SendRateLimitPerMinute = 61 });
 
-        await Assert.ThrowsAsync<DbUpdateException>(() => database.SaveChangesAsync(TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => database.SaveChangesAsync(TestContext.Current.CancellationToken));
     }
 
     private static DateTime TruncateToMicroseconds(DateTime value) => new(value.Ticks - value.Ticks % 10, DateTimeKind.Utc);
@@ -170,8 +171,11 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
             _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.GroupName, result.Decision.GroupText,
                 $"grounded-reply:{request.MessageId:D}"), token);
-        public Task PersistHandoffTerminalAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) => Task.CompletedTask;
         public Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
+        public Task<GroupConversationContextSourcePage?> GetGroupContextAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) =>
+            Task.FromResult<GroupConversationContextSourcePage?>(null);
+        public Task<ClearConversationContextResult> ClearGroupContextAsync(Guid groupProfileId, int expectedConfigurationVersion, DateTime clearedAtUtc, CancellationToken token) =>
+            Task.FromResult(new ClearConversationContextResult(ClearConversationContextStatus.NotFound));
         public Task<PageResult<ConversationPageItem>> GetHistoryAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
         public Task<PageResult<RetrievalAuditPageItem>> GetAuditsAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) => throw new NotSupportedException();
     }

@@ -17,4 +17,6 @@ public static class WorkToolCommandStatuses
     public const string ResultTimeout = "resultTimeout";
     public const string Blocked = "blocked";
     public const string DeadLetter = "deadLetter";
+    public const string Cancelled = "cancelled";
+    public const string DeliveryUnknownResolved = "deliveryUnknownResolved";
 }

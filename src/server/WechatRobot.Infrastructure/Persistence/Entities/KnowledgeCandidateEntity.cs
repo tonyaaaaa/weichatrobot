@@ -3,8 +3,11 @@ namespace WechatRobot.Infrastructure.Persistence.Entities;
 public sealed class KnowledgeCandidateEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid HandoffCaseId { get; set; }
+    public Guid? HandoffCaseId { get; set; }
     public Guid QuestionMessageId { get; set; }
+    public string SourceType { get; set; } = "HistoricalHandoff";
+    public Guid? SourceConversationMessageId { get; set; }
+    public Guid? SourceMemoryCandidateId { get; set; }
     public string Question { get; set; } = string.Empty;
     public string Answer { get; set; } = string.Empty;
     public string EvidenceJson { get; set; } = "{}";

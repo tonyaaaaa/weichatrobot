@@ -102,6 +102,27 @@ public sealed class RawCommandResultQueryContractTests
         Assert.Empty(results);
     }
 
+    [Fact]
+    public async Task Query_accepts_alternate_success_code_0()
+    {
+        using var http = new HttpClient(new RecordingHandler(
+            HttpStatusCode.OK,
+            """{"code":0,"message":"success","data":[]}"""))
+        {
+            BaseAddress = new Uri("https://fake.worktool.test/")
+        };
+        var sut = new WorkToolClient(http, new FixedCredentials());
+
+        var results = await sut.ListGroupMemberSnapshotResultsAsync(
+            Guid.NewGuid(),
+            "message-1",
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(results);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadGateway, """{"code":200,"data":[]}""", "worktool_http_502")]
     [InlineData(HttpStatusCode.OK, """{"code":500,"data":[]}""", "worktool_code_500")]

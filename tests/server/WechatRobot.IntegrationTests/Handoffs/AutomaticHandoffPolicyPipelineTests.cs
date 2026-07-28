@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Conversations;
-using WechatRobot.Application.Handoffs;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Messaging;
@@ -21,16 +20,8 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
 
     public AutomaticHandoffPolicyPipelineTests(MySqlFixture fixture) => this.fixture = fixture;
 
-    [Theory]
-    [InlineData("Group", "stable-a", "Group", null, false)]
-    [InlineData("Sender", "stable-a", "Sender", "stable-a", false)]
-    [InlineData("Sender", null, "Group", null, true)]
-    public async Task Real_pipeline_applies_effective_pause_policy_and_stops_before_ai_send(
-        string configuredPolicy,
-        string? stableSenderId,
-        string expectedScope,
-        string? expectedStableSenderId,
-        bool expectedDegradation)
+    [Fact]
+    public async Task Explicit_transfer_text_is_processed_as_an_ordinary_question()
     {
         using var services = Services();
         Guid groupId;
@@ -47,7 +38,7 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
                 RobotConfigId = robot.Id,
                 ExternalGroupId = $"handoff-group-{suffix}",
                 Name = $"handoff-group-{suffix}",
-                HandoffPausePolicy = configuredPolicy
+                HandoffPausePolicy = "Sender"
             };
             db.AddRange(robot, group, new ModelConfigEntity
             {
@@ -57,7 +48,7 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await scope.ServiceProvider.GetRequiredService<IDurableJobRepository>().IngestInboundMessageAsync(new(
                 robot.Id, $"handoff-message-{suffix}", $"handoff-fallback-{suffix}", DateTime.UtcNow, group.Name, null, "Alice",
-                "请转人工", DateTime.UtcNow, stableSenderId, true), TestContext.Current.CancellationToken);
+                "请转人工", DateTime.UtcNow, "stable-a", true), TestContext.Current.CancellationToken);
             groupId = group.Id;
         }
 
@@ -66,21 +57,17 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
 
         await using var verify = services.CreateAsyncScope();
         var database = verify.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-        var handoff = await database.HandoffCases.AsNoTracking().SingleAsync(item => item.GroupProfileId == groupId, TestContext.Current.CancellationToken);
-        Assert.Equal(expectedScope, handoff.PauseScope);
-        Assert.Equal(expectedStableSenderId, handoff.StableSenderId);
-        Assert.Equal(expectedDegradation, handoff.EvidenceJson.Contains("stable_sender_id_unavailable_group_pause", StringComparison.Ordinal));
-        Assert.Equal(0, await database.SendCommands.CountAsync(item => item.GroupProfileId == groupId &&
-            item.IdempotencyKey.StartsWith("grounded-reply:"), TestContext.Current.CancellationToken));
-        var handoffService = verify.ServiceProvider.GetRequiredService<HandoffService>();
-        Assert.True(await handoffService.IsPausedAsync(groupId, stableSenderId, TestContext.Current.CancellationToken));
-        Assert.Equal(expectedScope == "Group",
-            await handoffService.IsPausedAsync(groupId, "different-stable-sender", TestContext.Current.CancellationToken));
+        Assert.Equal(0, await database.HandoffCases.CountAsync(
+            item => item.GroupProfileId == groupId,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(1, await database.SendCommands.CountAsync(
+            item => item.GroupProfileId == groupId &&
+                    item.IdempotencyKey.StartsWith("grounded-reply:"),
+            TestContext.Current.CancellationToken));
     }
 
     private ServiceProvider Services()
     {
-        var handoffOptions = new HandoffTriggerOptions(["转人工"], 3);
         return new ServiceCollection()
             .AddDbContext<WechatRobotDbContext>(options => options.UseMySQL(fixture.ConnectionString))
             .AddScoped<IDurableJobRepository, DurableJobRepository>()
@@ -96,11 +83,6 @@ public sealed class AutomaticHandoffPolicyPipelineTests : IClassFixture<MySqlFix
             .AddSingleton<IChatCompletionClient, FakeChat>()
             .AddSingleton(new GroundedAnswerOptions(.7, 8, "insufficient", "failure", "handoff"))
             .AddScoped<GroundedAnswerService>()
-            .AddScoped<IHandoffStore, EfHandoffStore>()
-            .AddScoped<HandoffService>()
-            .AddSingleton(handoffOptions)
-            .AddSingleton<HandoffTriggerEvaluator>()
-            .AddScoped<IHandoffOrchestrator, HandoffOrchestrator>()
             .AddScoped<InboundMessageProcessor>()
             .AddSingleton(TimeProvider.System)
             .BuildServiceProvider();

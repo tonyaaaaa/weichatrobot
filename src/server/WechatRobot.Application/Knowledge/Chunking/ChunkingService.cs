@@ -167,6 +167,20 @@ public sealed class ChunkPreviewEditor
         }
         return Normalize(previews.Where(item => item.Id != secondId).Select(item => item.Id == firstId ? item with { Text = $"{first.Text}{suffix}" } : item));
     }
+    public IReadOnlyList<ChunkPreview> Merge(IReadOnlyList<ChunkPreview> previews, IReadOnlyList<Guid> previewIds)
+    {
+        if (previewIds.Distinct().Count() < 2 || previewIds.Count != previewIds.Distinct().Count())
+            throw new ArgumentException("At least two distinct previews are required.", nameof(previewIds));
+        foreach (var id in previewIds) EnsureExists(previews, id);
+        var selected = previews.Where(item => previewIds.Contains(item.Id)).OrderBy(item => item.Sequence).ToArray();
+        if (selected.Zip(selected.Skip(1), (left, right) => right.Sequence == left.Sequence + 1).Any(adjacent => !adjacent))
+            throw new InvalidOperationException("Only contiguous previews can be merged.");
+        IReadOnlyList<ChunkPreview> result = previews;
+        var firstId = selected[0].Id;
+        foreach (var next in selected.Skip(1))
+            result = Merge(result, firstId, next.Id);
+        return result;
+    }
     private static string Required(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("Preview text is required.");

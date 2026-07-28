@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { groupApi, type ContextOverrides, type EffectiveContext, type GroupApi, type GroupRule, type PatternKind } from '../../api/groups';
+import { groupApi, type AnswerFallbackSettings, type ContextOverrides, type EffectiveContext, type GroupApi, type GroupRule, type PatternKind } from '../../api/groups';
 import ContextPolicyForm from '../../components/groups/ContextPolicyForm.vue';
 import RuleEditor from '../../components/groups/RuleEditor.vue';
 import RulePreview from '../../components/groups/RulePreview.vue';
 
-const props = withDefaults(defineProps<{ id: string; api?: GroupApi }>(), { api: () => groupApi });
+const props = withDefaults(
+  defineProps<{
+    id: string;
+    api?: Pick<GroupApi, 'getConfiguration' | 'updateConfiguration' | 'previewRules'>;
+  }>(),
+  { api: () => groupApi }
+);
 const includeRules = ref<GroupRule[]>([]);
 const excludeRules = ref<GroupRule[]>([]);
 const boundTagIds = ref<string[]>([]);
@@ -19,11 +25,18 @@ const configurationVersion = ref(0);
 const loading = ref(true);
 const loadError = ref('');
 const configurationLoaded = ref(false);
-const humanAgentGateMessage = ref('需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。');
-const humanAgentCandidates = ref<{ userId: string; displayName: string; workToolDisplayName: string }[]>([]);
-const canConfigureHumanAgents = ref(false);
 const configured = reactive<ContextOverrides>({});
 const effective = ref<EffectiveContext>({ senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true });
+const answerFallback = reactive<AnswerFallbackSettings>({
+  webSearchEnabled: false,
+  modelKnowledgeFallbackEnabled: false,
+  webSearchShowSources: false,
+  webSearchResultCount: 5,
+  webSearchRecency: 'NoLimit',
+  webSearchDomainFilter: null,
+  webSearchContentSize: 'Medium',
+  finalNoEvidencePolicy: 'InsufficientEvidence'
+});
 const canSave = computed(() => configurationLoaded.value && !loading.value);
 
 function addRule(direction: 'include' | 'exclude', patternKind: PatternKind) {
@@ -36,8 +49,14 @@ function request(clearContext = false) { return {
   boundTagIds: boundTagIds.value,
   context: { ...configured },
   clearContext,
+  answerFallback: { ...answerFallback },
   expectedConfigurationVersion: configurationVersion.value
 }; }
+function toggleWebSearch(enabled: boolean) {
+  answerFallback.webSearchEnabled = enabled;
+  if (enabled && !answerFallback.modelKnowledgeFallbackEnabled)
+    answerFallback.modelKnowledgeFallbackEnabled = true;
+}
 async function load() {
   loading.value = true;
   loadError.value = '';
@@ -54,12 +73,8 @@ async function load() {
       : 0;
     Object.assign(configured, configuration.context.configured);
     effective.value = configuration.context.effective;
-    if (props.api.getEligibleHumanAgents) {
-      const humanAgents = await props.api.getEligibleHumanAgents(props.id);
-      humanAgentCandidates.value = humanAgents.candidates;
-      canConfigureHumanAgents.value = humanAgents.canConfigure;
-      humanAgentGateMessage.value = humanAgents.gateMessage;
-    }
+    if (configuration.answerFallback)
+      Object.assign(answerFallback, configuration.answerFallback);
     configurationLoaded.value = true;
   } catch (error) {
     const status = (error as { response?: { status?: number } }).response?.status;
@@ -151,20 +166,59 @@ watch(() => props.id, load, { immediate: true });
           </div>
           <p v-else class="empty-tags">当前没有可绑定的知识库标签。</p>
         </section>
-        <section class="group-panel human-agent-panel" aria-labelledby="human-agent-title">
-          <h2 id="human-agent-title">群人工客服</h2>
-          <p>{{ humanAgentGateMessage }}</p>
-          <div v-if="humanAgentCandidates.length" class="agent-choice-list">
-            <label v-for="agent in humanAgentCandidates" :key="agent.userId">
-              <input type="checkbox" :disabled="!canConfigureHumanAgents">
-              <span>{{ agent.displayName }}（企微：{{ agent.workToolDisplayName }}）</span>
-            </label>
-          </div>
-          <button type="button" data-testid="save-human-agents" :disabled="!canConfigureHumanAgents">
-            保存群客服
-          </button>
-        </section>
         <ContextPolicyForm :configured="configured" :effective="effective" @clear="save(true)" />
+        <section class="group-panel fallback-panel" aria-labelledby="fallback-title">
+          <h2 id="fallback-title">知识库未命中时</h2>
+          <p>按顺序尝试联网搜索、模型自身知识，最后执行无证据策略。知识库命中时不会调用这些降级能力。</p>
+          <label class="switch-row">
+            <input
+              :checked="answerFallback.webSearchEnabled"
+              data-testid="web-search-enabled"
+              type="checkbox"
+              @change="toggleWebSearch(($event.target as HTMLInputElement).checked)"
+            >
+            <span><strong>允许模型 Web Search</strong><small>仅默认对话模型明确支持 Z.AI Web Search 时有效。</small></span>
+          </label>
+          <label class="switch-row">
+            <input v-model="answerFallback.modelKnowledgeFallbackEnabled" data-testid="model-knowledge-enabled" type="checkbox">
+            <span><strong>允许模型自身知识回答</strong><small>搜索不可用或失败时继续回答，并在审计中标记来源。</small></span>
+          </label>
+          <template v-if="answerFallback.webSearchEnabled">
+            <label class="switch-row">
+              <input v-model="answerFallback.webSearchShowSources" type="checkbox">
+              <span><strong>在群消息中显示网页来源</strong><small>最多追加 3 条经过净化的链接。</small></span>
+            </label>
+            <div class="fallback-grid">
+              <label>结果数量
+                <input v-model.number="answerFallback.webSearchResultCount" type="number" min="1" max="20">
+              </label>
+              <label>时间范围
+                <select v-model="answerFallback.webSearchRecency">
+                  <option value="NoLimit">不限</option>
+                  <option value="OneDay">一天内</option>
+                  <option value="OneWeek">一周内</option>
+                  <option value="OneMonth">一月内</option>
+                  <option value="OneYear">一年内</option>
+                </select>
+              </label>
+              <label>摘要长度
+                <select v-model="answerFallback.webSearchContentSize">
+                  <option value="Medium">标准</option>
+                  <option value="High">详细</option>
+                </select>
+              </label>
+              <label>域名白名单（可选）
+                <input v-model="answerFallback.webSearchDomainFilter" placeholder="example.com,news.example.com">
+              </label>
+            </div>
+          </template>
+          <label>最终无证据策略
+            <select v-model="answerFallback.finalNoEvidencePolicy">
+              <option value="InsufficientEvidence">明确提示没有可靠答案</option>
+              <option value="Clarification">请用户补充问题</option>
+            </select>
+          </label>
+        </section>
       </aside>
       </div>
 
@@ -235,21 +289,9 @@ watch(() => props.id, load, { immediate: true });
   gap: var(--space-xl);
 }
 .panel-heading p,
-.tag-panel > p,
-.human-agent-panel > p {
+.tag-panel > p {
   margin-bottom: var(--space-lg);
   color: var(--color-muted-text);
-}
-.human-agent-panel button { margin-top: var(--space-md); }
-.agent-choice-list {
-  display: grid;
-  gap: var(--space-sm);
-}
-.agent-choice-list label {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin: 0;
 }
 .preview-editor {
   display: grid;
@@ -294,6 +336,20 @@ watch(() => props.id, load, { immediate: true });
   border-radius: .5rem;
   background: var(--color-background);
 }
+.fallback-panel { display: grid; gap: var(--space-md); }
+.fallback-panel > p { margin: 0; color: var(--color-muted-text); }
+.switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  margin: 0;
+}
+.switch-row input { width: 1.25rem; min-height: 1.25rem; margin-top: .15rem; }
+.switch-row span { display: grid; gap: var(--space-xs); }
+.switch-row small { color: var(--color-muted-text); }
+.fallback-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); }
+.fallback-grid label,
+.fallback-panel > label:not(.switch-row) { display: grid; gap: var(--space-xs); }
 .group-save-bar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -331,5 +387,6 @@ watch(() => props.id, load, { immediate: true });
     grid-column: 1;
   }
   .group-save-bar button { grid-row: auto; width: 100%; }
+  .fallback-grid { grid-template-columns: 1fr; }
 }
 </style>
