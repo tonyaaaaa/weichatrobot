@@ -20,9 +20,14 @@ WorkTool 命令结果回调已经形成可靠执行链。
    - 明确命中后原样发送模板正文；不明确或失败时继续现有知识库问答。
    - 支持全局模板、指定群模板，以及全局模板在单群停用的例外。
 
-本设计只让 Microsoft Agent Framework 负责私聊理解和工具编排，以及群固定
-模板意图路由。现有普通群知识问答、Qdrant、Worker、WorkTool、发送队列、
-审计和重试链不整体改写。
+本设计是私聊知识入库和固定模板的功能级权威设计。
+`2026-07-29-agent-framework-intelligent-reply-migration-design.md` 是统一 Agent
+运行时、群消息意图判断和普通回答渐进迁移的架构级权威设计。
+
+本功能首次交付只让 Microsoft Agent Framework 负责私聊理解和工具编排，以及
+群固定模板意图路由。现有普通群知识问答、Qdrant、Worker、WorkTool、发送队列、
+审计和重试链不在本功能阶段整体改写；后续普通回答模型执行层是否迁移，由架构
+级设计的 Shadow、灰度和等价测试门槛控制。
 
 ## 2. 已验证的外部能力边界
 
@@ -60,6 +65,13 @@ Microsoft Agent Framework 提供 Agent、会话和 Function Tool 编排。项目
   和持久化任务管理。
 - 依赖版本继续使用仓库的中央包管理，不引入第二套依赖版本管理方式。
 
+2026-07-29 已核验 `Microsoft.Agents.AI` 和
+`Microsoft.Agents.AI.OpenAI` 1.15.0 为稳定包。当前项目自定义
+`IChatCompletionClient` 只支持普通文本和 Z.AI Web Search，不具备 Function
+Tool 完整循环或 JSON Schema 输出。实施必须先增加
+`Microsoft.Extensions.AI.IChatClient` 兼容层和真实模型能力探针，不能把
+“普通聊天连接成功”当成 Agent 工具能力成功。
+
 默认聊天模型必须支持 Function Tool 才能执行 Agent 路由。模型不支持、超时
 或调用失败时，群固定模板路由必须降级到现有知识问答；私聊命令必须返回安全
 失败结果，不得虚构成功。
@@ -92,7 +104,8 @@ Microsoft Agent Framework 提供 Agent、会话和 Function Tool 编排。项目
 - 不查询签证业务系统、申请进度数据库或第三方业务 API。
 - 固定回复正文第一版不支持业务变量、占位符或外部数据填充。
 - 不让 Agent 自己生成、创建、编辑、启停或删除固定回复模板。
-- 不用 Agent Framework 重写普通群 RAG、长期记忆、联网搜索或发送 Worker。
+- 不在本功能交付阶段用 Agent Framework 重写普通群 RAG、长期记忆、联网搜索
+  或发送 Worker；后续只允许按架构级迁移设计渐进替换模型执行边界。
 - 不在 Agent 调用中直接执行不可恢复的数据修改。
 - 不把 Agent 判断置信度当成唯一安全校验。
 - 不把 Agent Framework 调用成功等同于知识发布或 WorkTool 发送成功。
@@ -106,6 +119,9 @@ WorkTool 外部群回调
   -> API 快速确认、回调鉴权、幂等入站
   -> ProcessInboundMessage Durable Job
   -> 现有群状态与回复规则
+  -> MessageIntentAgent（启用智能回复接管后）
+       -> NoReply / Uncertain / Failure：终止，不调用模板或 RAG
+       -> ReplySelected：继续
   -> 获取当前群有效固定模板
   -> Template Routing Agent
        -> match_fixed_template(templateId, expectedVersion)
@@ -117,8 +133,10 @@ WorkTool 外部群回调
   -> 现有 WorkTool 发送 Worker、结果回调、重试和死信
 ```
 
-固定模板路由在群规则之后执行。被停用、归档、未登记或规则决定不回复的消息
-不得调用 Agent。
+固定模板路由始终在“消息已经允许回复”之后执行。智能回复接管前，“允许回复”
+来自现有群技术策略；`MessageIntentAgent` 接管后，必须先取得
+`ReplySelected`。被停用、归档、未登记、技术策略拒绝或意图 Agent 判断不回复
+的消息不得调用模板 Agent 或普通回答链。
 
 ### 5.2 私聊消息
 
@@ -730,23 +748,28 @@ continue_knowledge_answer()
 
 ## 19. 实施顺序
 
-1. 引入 Microsoft Agent Framework 基础适配和 Function Tool 能力验证。
-2. 扩展会话模型以支持私聊，并接入 `roomType=2/4` Durable Job。
-3. 实现私聊普通知识问答。
-4. 增加知识来源和版本沿革字段。
-5. 实现私聊直接入库批次、标签匹配、相似比较、索引和激活。
-6. 实现固定模板、示例、群作用域和管理 API。
-7. 在群消息链增加 Template Routing Agent 和安全降级。
-8. 实现独立模板管理页面。
-9. 实现群详情固定回复模板功能。
-10. 实现私聊批次、知识来源和审计展示。
-11. 完成迁移、单元、合约、集成、前端和端到端验证。
+1. 固化现有模型和回答特征测试。
+2. 引入稳定 Agent Framework 包，新增 `IChatClient` 兼容层和真实模型的
+   Function Tool、工具结果循环及结构化输出探针。
+3. 扩展会话模型以支持私聊，并接入 `roomType=2/4` Durable Job。
+4. 实现私聊普通知识问答。
+5. 增加知识来源和版本沿革字段。
+6. 实现私聊直接入库批次、标签匹配、相似比较、索引和激活。
+7. 实现固定模板、示例、群作用域和管理 API。
+8. 在现有允许回复策略之后增加 Template Routing Agent 和安全降级。
+9. 实现独立模板管理页面。
+10. 实现群详情固定回复模板功能。
+11. 实现私聊批次、知识来源和审计展示。
+12. 完成迁移、单元、合约、集成、前端和端到端验证。
+13. MessageIntentAgent 接管后，将模板路由移动到 `ReplySelected` 之后并执行
+    架构级设计规定的回归验收；不重复实现第二套路由。
 
 ## 20. 已批准决策
 
 - 使用 Microsoft Agent Framework，而不是 Semantic Kernel。
-- Agent Framework 只负责私聊 Agent 和群固定模板路由。
-- 不整体重写现有群知识问答链。
+- 本功能首次交付中，Agent Framework 只负责私聊 Agent 和群固定模板路由。
+- 本功能不整体重写现有群知识问答链；后续模型执行迁移遵循架构级渐进迁移
+  设计，不改变 RAG、记忆、权限和可靠性业务真相。
 - 私聊普通问答支持 `roomType=2` 和 `roomType=4`。
 - 私聊直接入库仅支持 `roomType=4`。
 - 直接入库不使用口令或人工审核。
