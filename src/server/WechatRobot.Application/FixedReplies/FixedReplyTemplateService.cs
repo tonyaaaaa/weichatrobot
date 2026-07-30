@@ -90,6 +90,24 @@ public sealed class FixedReplyTemplateService(
             groupProfileId,
             cancellationToken);
 
+    public Task<IReadOnlyList<EffectiveFixedReply>> ListEffectiveForPrivateAsync(
+        int maximumCandidates = 24,
+        int examplesPerTemplate = 5,
+        CancellationToken cancellationToken = default) =>
+        store.ListEffectiveForPrivateAsync(
+            Math.Clamp(maximumCandidates, 1, 64),
+            Math.Clamp(examplesPerTemplate, 1, 10),
+            cancellationToken);
+
+    public Task<ResolvedFixedReply?> ResolveForPrivateAsync(
+        Guid templateId,
+        int expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        store.ResolveForPrivateAsync(
+            templateId,
+            expectedVersion,
+            cancellationToken);
+
     private static ValidatedFixedReplyTemplate Validate(FixedReplyTemplateDraft draft)
     {
         var name = Required(draft.Name, 128, "fixed_reply_name_required");

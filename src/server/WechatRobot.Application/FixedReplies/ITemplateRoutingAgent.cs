@@ -6,4 +6,8 @@ public interface ITemplateRoutingAgent
         Guid groupProfileId,
         string message,
         CancellationToken cancellationToken);
+
+    Task<TemplateRouteDecision> RoutePrivateAsync(
+        string message,
+        CancellationToken cancellationToken);
 }

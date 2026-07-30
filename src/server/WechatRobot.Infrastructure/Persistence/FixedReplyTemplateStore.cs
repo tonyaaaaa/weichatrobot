@@ -248,6 +248,61 @@ public sealed class FixedReplyTemplateStore(WechatRobotDbContext database)
             entity.ScopeType == "SelectedGroups");
     }
 
+    public async Task<IReadOnlyList<EffectiveFixedReply>> ListEffectiveForPrivateAsync(
+        int maximumCandidates,
+        int examplesPerTemplate,
+        CancellationToken cancellationToken)
+    {
+        var templates = await database.FixedReplyTemplates
+            .AsNoTracking()
+            .Where(item => item.IsEnabled && item.DeletedAtUtc == null)
+            .OrderByDescending(item => item.Priority)
+            .ThenBy(item => item.Id)
+            .Take(maximumCandidates)
+            .ToListAsync(cancellationToken);
+        var ids = templates.Select(item => item.Id).ToArray();
+        var examples = await database.FixedReplyTemplateExamples
+            .AsNoTracking()
+            .Where(item => ids.Contains(item.TemplateId))
+            .OrderBy(item => item.Id)
+            .ToListAsync(cancellationToken);
+        return templates.Select(item => new EffectiveFixedReply(
+            item.Id,
+            item.Version,
+            item.Name,
+            item.IntentDescription,
+            examples.Where(example => example.TemplateId == item.Id)
+                .Take(examplesPerTemplate)
+                .Select(example => example.ExampleText)
+                .ToArray(),
+            item.Priority,
+            item.ScopeType == "SelectedGroups")).ToArray();
+    }
+
+    public async Task<ResolvedFixedReply?> ResolveForPrivateAsync(
+        Guid templateId,
+        int expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var entity = await database.FixedReplyTemplates
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                item =>
+                    item.Id == templateId
+                    && item.Version == expectedVersion
+                    && item.IsEnabled
+                    && item.DeletedAtUtc == null,
+                cancellationToken);
+        return entity is null
+            ? null
+            : new ResolvedFixedReply(
+                entity.Id,
+                entity.Version,
+                entity.Name,
+                entity.ReplyText,
+                entity.ScopeType == "SelectedGroups");
+    }
+
     private async Task<IReadOnlyList<FixedReplyTemplateView>> ViewsAsync(
         IReadOnlyList<FixedReplyTemplateEntity> entities,
         CancellationToken cancellationToken)

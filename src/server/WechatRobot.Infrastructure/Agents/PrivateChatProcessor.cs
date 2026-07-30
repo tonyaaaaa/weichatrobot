@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using MySql.Data.MySqlClient;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Agents;
+using WechatRobot.Application.FixedReplies;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Models;
@@ -20,6 +21,8 @@ public sealed class PrivateChatProcessor(
     IPrivateKnowledgeIngestStore ingests,
     ConversationContextService contextService,
     TimeProvider timeProvider,
+    ITemplateRoutingAgent? templateRouter = null,
+    FixedReplyTemplateService? fixedReplies = null,
     AgentRuntimeOptions? runtimeOptions = null) : IPrivateChatProcessor
 {
     private static readonly GroupAnswerFallbackSettings PrivateAnswerFallback = new(
@@ -38,8 +41,8 @@ public sealed class PrivateChatProcessor(
         var payload = JsonSerializer.Deserialize<Payload>(job.PayloadJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidOperationException("Private message payload is invalid.");
         var message = await database.ConversationMessages.SingleAsync(x => x.Id == payload.MessageId, cancellationToken);
-        if ((runtimeOptions ?? new AgentRuntimeOptions()).PrivateChatRuntimeMode
-            == PrivateChatRuntimeMode.Disabled)
+        var runtime = runtimeOptions ?? new AgentRuntimeOptions();
+        if (runtime.PrivateChatRuntimeMode == PrivateChatRuntimeMode.Disabled)
         {
             message.ProcessingState = "completed";
             message.TerminalDecision = "no_reply";
@@ -80,6 +83,44 @@ public sealed class PrivateChatProcessor(
         {
             await ReplyAsync(message, "系统暂时不可用，请稍后再试。", cancellationToken);
             return;
+        }
+        if (runtime.TemplateRoutingRuntimeMode == TemplateRoutingRuntimeMode.AgentFramework
+            && templateRouter is not null
+            && fixedReplies is not null)
+        {
+            var route = await templateRouter.RoutePrivateAsync(
+                command.Body,
+                cancellationToken);
+            if (route is MatchFixedTemplate match)
+            {
+                var fixedReply = await fixedReplies.ResolveForPrivateAsync(
+                    match.TemplateId,
+                    match.ExpectedVersion,
+                    cancellationToken);
+                if (fixedReply is not null)
+                {
+                    var fixedResult = new GroundedAnswerResult(
+                        new AnswerDecision(
+                            AnswerDecisionKind.Answer,
+                            fixedReply.ReplyText),
+                        new RetrievalAuditDraft(
+                            [],
+                            0,
+                            1,
+                            "fixed_template",
+                            "answer",
+                            AnswerSource: "fixed_template",
+                            FixedReplyTemplateId: fixedReply.Id,
+                            FixedReplyTemplateVersion: fixedReply.Version));
+                    await ReplyAsync(
+                        message,
+                        fixedReply.ReplyText,
+                        cancellationToken,
+                        fixedResult,
+                        model.Id);
+                    return;
+                }
+            }
         }
         var tagIds = await database.KnowledgeTags.AsNoTracking().Where(x => x.IsEnabled)
             .Select(x => x.Id).ToArrayAsync(cancellationToken);

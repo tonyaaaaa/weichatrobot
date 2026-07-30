@@ -50,4 +50,14 @@ public interface IFixedReplyTemplateStore
         int expectedVersion,
         Guid groupProfileId,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<EffectiveFixedReply>> ListEffectiveForPrivateAsync(
+        int maximumCandidates,
+        int examplesPerTemplate,
+        CancellationToken cancellationToken);
+
+    Task<ResolvedFixedReply?> ResolveForPrivateAsync(
+        Guid templateId,
+        int expectedVersion,
+        CancellationToken cancellationToken);
 }

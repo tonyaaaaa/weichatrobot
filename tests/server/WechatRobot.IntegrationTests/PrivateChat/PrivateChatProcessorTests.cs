@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using WechatRobot.Application.Agents;
 using WechatRobot.Application.Conversations;
+using WechatRobot.Application.FixedReplies;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
@@ -53,6 +54,8 @@ public sealed class PrivateChatProcessorTests
         });
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
 
+        var router = new RecordingTemplateRouter(
+            new ContinueKnowledgeAnswer());
         var processor = new PrivateChatProcessor(
             database,
             new UnusedAnswerAgent(),
@@ -60,7 +63,11 @@ public sealed class PrivateChatProcessorTests
             new DurableJobRepository(database),
             new PrivateKnowledgeIngestStore(database),
             new ConversationContextService(),
-            TimeProvider.System);
+            TimeProvider.System,
+            templateRouter: router,
+            fixedReplies: new FixedReplyTemplateService(
+                new FixedReplyTemplateStore(database),
+                TimeProvider.System));
 
         await processor.ProcessAsync(
             new LeasedDurableJob(
@@ -76,6 +83,101 @@ public sealed class PrivateChatProcessorTests
         var batchJob = await database.DurableJobs.AsNoTracking()
             .SingleAsync(x => x.Id == batch.Id, TestContext.Current.CancellationToken);
         Assert.Null(batchJob.RelatedConversationMessageId);
+        Assert.Equal(0, router.PrivateCallCount);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public async Task Ordinary_private_message_returns_fixed_template_before_answer_agent(
+        int roomType)
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var template = new FixedReplyTemplateEntity
+        {
+            Name = "签证进度",
+            NormalizedName = "签证进度",
+            IntentDescription = "询问签证进度",
+            ReplyText = "固定回复正文",
+            ScopeType = "SelectedGroups",
+            Priority = 100,
+            IsEnabled = true,
+            Version = 3
+        };
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Name = "chat",
+            NormalizedName = "CHAT",
+            Provider = "OpenAI",
+            ConfigurationType = "chat",
+            BaseUrl = "https://example.test",
+            Model = "chat",
+            IsEnabled = true,
+            IsDefault = true
+        });
+        database.FixedReplyTemplates.Add(template);
+        database.ConversationMessages.Add(new ConversationMessageEntity
+        {
+            Id = messageId,
+            RobotConfigId = robotId,
+            WorkToolMessageId = $"private-fixed-{roomType}",
+            FallbackHash = $"private-fixed-{roomType}",
+            FallbackWindowStartUtc = DateTime.UnixEpoch,
+            ProcessingState = "pending",
+            ChannelType = "Private",
+            RoomType = roomType,
+            PeerDisplayName = roomType == 2 ? "外部联系人" : "内部同事",
+            ScopeHash = $"fixed-scope-{roomType}",
+            SenderDisplayName = roomType == 2 ? "外部联系人" : "内部同事",
+            Text = "签证还有多久？",
+            ReceivedAtUtc = DateTime.UtcNow
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var router = new RecordingTemplateRouter(
+            new MatchFixedTemplate(template.Id, template.Version));
+        var processor = new PrivateChatProcessor(
+            database,
+            new UnusedAnswerAgent(),
+            new ModelConfigurationService(new PassThroughProtector()),
+            new DurableJobRepository(database),
+            new PrivateKnowledgeIngestStore(database),
+            new ConversationContextService(),
+            TimeProvider.System,
+            templateRouter: router,
+            fixedReplies: new FixedReplyTemplateService(
+                new FixedReplyTemplateStore(database),
+                TimeProvider.System));
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                Guid.NewGuid(),
+                "ProcessPrivateMessage",
+                $$"""{"messageId":"{{messageId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        var outbound = await database.ConversationMessages.AsNoTracking()
+            .SingleAsync(
+                item => item.InReplyToMessageId == messageId,
+                TestContext.Current.CancellationToken);
+        var audit = await database.RetrievalAudits.AsNoTracking()
+            .SingleAsync(
+                item => item.ConversationMessageId == messageId,
+                TestContext.Current.CancellationToken);
+        Assert.Equal("固定回复正文", outbound.Text);
+        Assert.Equal("fixed_template", audit.AnswerSource);
+        Assert.Equal(template.Id, audit.FixedReplyTemplateId);
+        Assert.Equal(template.Version, audit.FixedReplyTemplateVersion);
+        Assert.Equal(1, router.PrivateCallCount);
     }
 
     [Theory]
@@ -154,6 +256,8 @@ public sealed class PrivateChatProcessorTests
             chat,
             new GroundedAnswerOptions(),
             new AnswerOutputFirewall()));
+        var router = new RecordingTemplateRouter(
+            new ContinueKnowledgeAnswer());
         var processor = new PrivateChatProcessor(
             database,
             answerAgent,
@@ -161,7 +265,11 @@ public sealed class PrivateChatProcessorTests
             new DurableJobRepository(database),
             new PrivateKnowledgeIngestStore(database),
             new ConversationContextService(),
-            TimeProvider.System);
+            TimeProvider.System,
+            templateRouter: router,
+            fixedReplies: new FixedReplyTemplateService(
+                new FixedReplyTemplateStore(database),
+                TimeProvider.System));
         var job = new LeasedDurableJob(
             Guid.NewGuid(),
             "ProcessPrivateMessage",
@@ -191,6 +299,7 @@ public sealed class PrivateChatProcessorTests
         Assert.Equal("model_knowledge", audit.AnswerSource);
         Assert.Equal("web_search_no_sources", audit.WebSearchFailureCode);
         Assert.Equal(2, answerAgent.CallCount);
+        Assert.Equal(2, router.PrivateCallCount);
         Assert.Equal(4, chat.Requests.Count);
         Assert.NotNull(chat.Requests[2].WebSearch);
         Assert.Null(chat.Requests[3].WebSearch);
@@ -267,6 +376,26 @@ public sealed class PrivateChatProcessorTests
             GroundedAnswerRequest request,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Direct ingest must not call the answer agent.");
+    }
+
+    private sealed class RecordingTemplateRouter(TemplateRouteDecision decision)
+        : ITemplateRoutingAgent
+    {
+        public int PrivateCallCount { get; private set; }
+
+        public Task<TemplateRouteDecision> RoutePrivateAsync(
+            string message,
+            CancellationToken cancellationToken)
+        {
+            PrivateCallCount++;
+            return Task.FromResult(decision);
+        }
+
+        public Task<TemplateRouteDecision> RouteAsync(
+            Guid groupProfileId,
+            string message,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Private chat must not use group routing.");
     }
 
     private sealed class PassThroughProtector : ISecretProtector

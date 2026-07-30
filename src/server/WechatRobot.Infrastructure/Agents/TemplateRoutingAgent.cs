@@ -12,16 +12,36 @@ public sealed class TemplateRoutingAgent(
     IAgentChatClientFactory clients,
     WechatRobotDbContext database) : ITemplateRoutingAgent
 {
-    public async Task<TemplateRouteDecision> RouteAsync(
+    public Task<TemplateRouteDecision> RouteAsync(
         Guid groupProfileId,
+        string message,
+        CancellationToken cancellationToken)
+        => RouteCoreAsync(
+            groupProfileId,
+            message,
+            cancellationToken);
+
+    public Task<TemplateRouteDecision> RoutePrivateAsync(
+        string message,
+        CancellationToken cancellationToken)
+        => RouteCoreAsync(
+            null,
+            message,
+            cancellationToken);
+
+    private async Task<TemplateRouteDecision> RouteCoreAsync(
+        Guid? groupProfileId,
         string message,
         CancellationToken cancellationToken)
     {
         try
         {
-            var candidates = await templates.ListEffectiveAsync(
-                groupProfileId,
-                cancellationToken: cancellationToken);
+            var candidates = groupProfileId is { } groupId
+                ? await templates.ListEffectiveAsync(
+                    groupId,
+                    cancellationToken: cancellationToken)
+                : await templates.ListEffectiveForPrivateAsync(
+                    cancellationToken: cancellationToken);
             if (candidates.Count == 0)
             {
                 return new ContinueKnowledgeAnswer("fixed_reply_no_candidates");
@@ -91,11 +111,17 @@ public sealed class TemplateRoutingAgent(
             {
                 return new ContinueKnowledgeAnswer("fixed_reply_invalid_tool_arguments");
             }
-            return await templates.ResolveAsync(
+            var resolved = groupProfileId is { } currentGroupId
+                ? await templates.ResolveAsync(
                     templateId,
                     version,
-                    groupProfileId,
-                    cancellationToken) is null
+                    currentGroupId,
+                    cancellationToken)
+                : await templates.ResolveForPrivateAsync(
+                    templateId,
+                    version,
+                    cancellationToken);
+            return resolved is null
                 ? new ContinueKnowledgeAnswer("fixed_reply_stale_match")
                 : new MatchFixedTemplate(templateId, version);
         }

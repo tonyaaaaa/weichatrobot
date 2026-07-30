@@ -128,6 +128,18 @@ public sealed class FixedReplyTemplateServiceTests
             CancellationToken cancellationToken) =>
             Task.FromResult<ResolvedFixedReply?>(null);
 
+        public Task<IReadOnlyList<EffectiveFixedReply>> ListEffectiveForPrivateAsync(
+            int maximumCandidates,
+            int examplesPerTemplate,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<EffectiveFixedReply>>([]);
+
+        public Task<ResolvedFixedReply?> ResolveForPrivateAsync(
+            Guid templateId,
+            int expectedVersion,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ResolvedFixedReply?>(null);
+
         private static FixedReplyTemplateView View(
             ValidatedFixedReplyTemplate template,
             Guid actor,
