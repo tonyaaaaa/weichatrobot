@@ -1,113 +1,68 @@
 <script setup lang="ts">
+import { ElButton, ElInput, ElOption, ElSelect, ElSwitch } from 'element-plus';
 import type { GroupRule, PatternKind } from '../../api/groups';
+
 const props = defineProps<{ includeRules: GroupRule[]; excludeRules: GroupRule[] }>();
-const emit = defineEmits<{ add: [direction: 'include' | 'exclude', kind: PatternKind]; remove: [direction: 'include' | 'exclude', index: number] }>();
-const labels: Record<PatternKind, string> = { exact: '精确', contains: '包含', regex: '正则' };
-const ruleKinds = Object.keys(labels) as PatternKind[];
-function add(direction: 'include' | 'exclude', kind: PatternKind) { emit('add', direction, kind); }
+const emit = defineEmits<{
+  add: [payload: [direction: 'include' | 'exclude', kind: PatternKind]];
+  remove: [payload: [direction: 'include' | 'exclude', index: number]];
+}>();
+const kinds: { value: PatternKind; label: string }[] = [
+  { value: 'exact', label: '精确' },
+  { value: 'contains', label: '包含' },
+  { value: 'regex', label: '正则' }
+];
 </script>
 
 <template>
-  <section class="group-panel rule-editor" aria-label="群匹配规则">
-    <header class="rule-editor-heading">
-      <div>
-        <h2>匹配规则</h2>
-        <p>先满足任一包含规则，再由任一排除规则优先拒绝。正则表达式有服务端超时保护。</p>
-      </div>
-    </header>
+  <section class="rule-editor" aria-label="群匹配规则">
     <div v-for="direction in (['include', 'exclude'] as const)" :key="direction" class="rule-group">
-      <div class="rule-section-heading">
-        <h3>{{ direction === 'include' ? '包含（任一匹配）' : '排除（优先级最高）' }}</h3>
-        <div class="rule-add-actions" :aria-label="direction === 'include' ? '添加包含规则' : '添加排除规则'">
-          <button v-for="kind in ruleKinds" :key="`${direction}-${kind}`" type="button" :aria-label="`添加${labels[kind]}${direction === 'include' ? '包含' : '排除'}规则`" :data-testid="`add-${kind}-${direction}`" @click="add(direction, kind)">添加{{ labels[kind] }}</button>
+      <header>
+        <div>
+          <h3>{{ direction === 'include' ? '包含（任一匹配）' : '排除（优先级最高）' }}</h3>
+          <p>{{ direction === 'include' ? '满足任意一条后允许进入自动回答。' : '命中任意一条时拒绝进入自动回答。' }}</p>
         </div>
-      </div>
-      <p v-if="(direction === 'include' ? props.includeRules : props.excludeRules).length === 0">尚未添加规则</p>
-      <div v-for="(rule, index) in (direction === 'include' ? props.includeRules : props.excludeRules)" :key="`${direction}-${index}`" class="rule-row">
-        <select v-model="rule.patternKind" :aria-label="`${direction}-${index}-类型`"><option value="exact">精确</option><option value="contains">包含</option><option value="regex">正则</option></select>
-        <input v-model="rule.pattern" type="text" :aria-label="`${direction}-${index}-模式`" placeholder="群名称或正则表达式" maxlength="1024">
-        <label class="rule-case-toggle"><input v-model="rule.ignoreCase" type="checkbox">忽略大小写</label>
-        <button class="rule-remove danger-action" type="button" :aria-label="`删除${direction === 'include' ? '包含' : '排除'}规则 ${index + 1}`" @click="emit('remove', direction, index)">删除</button>
+        <div class="add-actions">
+          <ElButton
+            v-for="kind in kinds"
+            :key="kind.value"
+            :data-testid="`add-${kind.value}-${direction}`"
+            @click="emit('add', [direction, kind.value])"
+          >
+            添加{{ kind.label }}
+          </ElButton>
+        </div>
+      </header>
+      <p v-if="(direction === 'include' ? props.includeRules : props.excludeRules).length === 0" class="empty">尚未添加规则</p>
+      <div
+        v-for="(rule, index) in (direction === 'include' ? props.includeRules : props.excludeRules)"
+        :key="rule.id ?? `${direction}-${index}`"
+        class="rule-row"
+      >
+        <ElSelect v-model="rule.patternKind" :aria-label="`${direction}-${index}-类型`">
+          <ElOption v-for="kind in kinds" :key="kind.value" :label="kind.label" :value="kind.value" />
+        </ElSelect>
+        <ElInput v-model="rule.pattern" :aria-label="`${direction}-${index}-模式`" placeholder="群名称或正则表达式" maxlength="1024" />
+        <label class="case-toggle">忽略大小写 <ElSwitch v-model="rule.ignoreCase" /></label>
+        <ElButton type="danger" plain :aria-label="`删除${direction === 'include' ? '包含' : '排除'}规则 ${index + 1}`" @click="emit('remove', [direction, index])">删除</ElButton>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.group-panel {
-  min-width: 0;
-  padding: var(--space-xl);
-  border: 1px solid var(--color-border);
-  border-radius: .75rem;
-  background: var(--color-surface);
-  box-shadow: var(--shadow-sm);
-}
-.rule-editor-heading p,
-.rule-group > p {
-  margin-bottom: 0;
-  color: var(--color-muted-text);
-}
-.rule-group {
-  display: grid;
-  gap: var(--space-md);
-  padding-top: var(--space-xl);
-  border-top: 1px solid var(--color-border);
-}
-.rule-group + .rule-group { margin-top: var(--space-xl); }
-.rule-section-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-md);
-}
-.rule-section-heading h3 { margin: 0; }
-.rule-add-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-md);
-}
-.rule-add-actions button {
-  min-height: 44px;
-  padding: .35rem .65rem;
-  color: var(--color-accent-strong);
-  font-size: .875rem;
-}
-.rule-row {
-  display: grid;
-  grid-template-columns: 7rem minmax(12rem, 1fr) auto auto;
-  align-items: center;
-  gap: var(--space-md);
-  padding: var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: .625rem;
-  background: var(--color-background);
-}
-.rule-case-toggle {
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  gap: var(--space-sm);
-  margin: 0;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.rule-case-toggle input {
-  width: 1.25rem;
-  min-height: 1.25rem;
-  margin: 0;
-}
-.rule-remove { white-space: nowrap; }
-@media (max-width: 700px) {
-  .rule-section-heading { align-items: flex-start; flex-direction: column; }
-  .rule-add-actions { justify-content: flex-start; }
-  .rule-row { grid-template-columns: minmax(7rem, .65fr) minmax(0, 1fr) auto; }
-  .rule-row > input[type="text"] { grid-column: 1 / -1; grid-row: 1; }
-}
-@media (max-width: 480px) {
-  .group-panel { padding: var(--space-lg); }
-  .rule-row { grid-template-columns: 1fr auto; }
-  .rule-row > input[type="text"] { grid-column: 1 / -1; }
-  .rule-row > select { min-width: 0; }
+.rule-editor { display: grid; gap: var(--space-xl); }
+.rule-group { display: grid; gap: var(--space-lg); padding: var(--space-lg) 0; }
+.rule-group + .rule-group { border-top: 1px solid var(--color-border); }
+header { display: flex; justify-content: space-between; gap: var(--space-xl); }
+h3, p { margin: 0; }
+header p, .empty { color: var(--color-muted-text); }
+.add-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm); }
+.rule-row { display: grid; grid-template-columns: 8rem minmax(12rem, 1fr) auto auto; align-items: center; gap: var(--space-md); }
+.case-toggle { display: inline-flex; align-items: center; gap: var(--space-sm); white-space: nowrap; }
+@media (max-width: 800px) {
+  header { display: grid; }
+  .add-actions { justify-content: flex-start; }
+  .rule-row { grid-template-columns: 1fr; }
 }
 </style>

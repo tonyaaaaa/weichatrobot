@@ -68,13 +68,35 @@ public sealed class KnowledgeDocumentAdministrationEndpointTests : IClassFixture
             PublicUrl = "https://public.example.test/source.txt?signature=must-not-leak",
             Status = "failed",
             FailureReason = "Object storage upload failed; retry is available.",
-            StagedContent = "secret file bytes"u8.ToArray()
+            StagedContent = "secret file bytes"u8.ToArray(),
+            SourceKind = "PrivateChatDirect",
+            SourceActorDisplayName = "接口测试成员"
+        };
+        document.ActiveVersionId = version.Id;
+        var tag = new KnowledgeTagEntity
+        {
+            Name = $"接口标签 {suffix}",
+            NormalizedName = $"接口标签 {suffix}".ToUpperInvariant()
+        };
+        var chunk = new KnowledgeChunkEntity
+        {
+            KnowledgeDocumentVersionId = version.Id,
+            Sequence = 1,
+            Text = "endpoint tag binding",
+            Status = "approved"
         };
         await using (var scope = _factory.Services.CreateAsyncScope())
         {
             var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
             database.KnowledgeDocuments.Add(document);
             database.KnowledgeDocumentVersions.Add(version);
+            database.KnowledgeTags.Add(tag);
+            database.KnowledgeChunks.Add(chunk);
+            database.KnowledgeChunkTags.Add(new KnowledgeChunkTagEntity
+            {
+                KnowledgeChunkId = chunk.Id,
+                KnowledgeTagId = tag.Id
+            });
             database.DurableJobs.Add(new DurableJobEntity
             {
                 JobType = "UploadKnowledgeDocument",
@@ -91,12 +113,25 @@ public sealed class KnowledgeDocumentAdministrationEndpointTests : IClassFixture
 
         using var client = Client(SystemRoles.KnowledgeOperator);
         var list = await client.GetFromJsonAsync<JsonElement>(
-            $"/api/knowledge/documents?query={suffix}&status=failed&page=0&pageSize=200",
+            $"/api/knowledge/documents?query={suffix}&status=failed" +
+            $"&sourceKind=PrivateChatDirect&tagId={tag.Id:D}&page=0&pageSize=200",
             TestContext.Current.CancellationToken);
         Assert.Equal(1, list.GetProperty("page").GetInt32());
         Assert.Equal(100, list.GetProperty("pageSize").GetInt32());
-        Assert.Equal(document.Id, Assert.Single(list.GetProperty("items").EnumerateArray())
-            .GetProperty("id").GetGuid());
+        var listItem = Assert.Single(list.GetProperty("items").EnumerateArray());
+        Assert.Equal(document.Id, listItem.GetProperty("id").GetGuid());
+        Assert.Equal("PrivateChatDirect", listItem.GetProperty("sourceKind").GetString());
+        Assert.Equal("接口测试成员", listItem.GetProperty("sourceActorDisplayName").GetString());
+        var listTag = Assert.Single(listItem.GetProperty("tags").EnumerateArray());
+        Assert.Equal(tag.Id, listTag.GetProperty("id").GetGuid());
+        Assert.Equal(tag.Name, listTag.GetProperty("name").GetString());
+
+        var excluded = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/knowledge/documents?query={suffix}&sourceKind=DocumentUpload" +
+            $"&tagId={tag.Id:D}&page=1&pageSize=20",
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, excluded.GetProperty("total").GetInt32());
+        Assert.Empty(excluded.GetProperty("items").EnumerateArray());
 
         using var detailResponse = await client.GetAsync(
             $"/api/knowledge/documents/{document.Id:D}",
@@ -106,15 +141,20 @@ public sealed class KnowledgeDocumentAdministrationEndpointTests : IClassFixture
             TestContext.Current.CancellationToken);
         using var detail = JsonDocument.Parse(detailJson);
         Assert.Equal(document.Id, detail.RootElement.GetProperty("document").GetProperty("id").GetGuid());
-        Assert.Equal(version.Id, Assert.Single(detail.RootElement.GetProperty("versions").EnumerateArray())
-            .GetProperty("id").GetGuid());
+        var detailVersion = Assert.Single(detail.RootElement.GetProperty("versions").EnumerateArray());
+        Assert.Equal(version.Id, detailVersion.GetProperty("id").GetGuid());
+        var detailTag = Assert.Single(detailVersion.GetProperty("tags").EnumerateArray());
+        Assert.Equal(tag.Id, detailTag.GetProperty("id").GetGuid());
+        Assert.Equal(tag.Name, detailTag.GetProperty("name").GetString());
 
         using var versionsResponse = await client.GetAsync(
             $"/api/knowledge/documents/{document.Id:D}/versions",
             TestContext.Current.CancellationToken);
         versionsResponse.EnsureSuccessStatusCode();
-        Assert.Single((await versionsResponse.Content.ReadFromJsonAsync<JsonElement>(
+        var versionItem = Assert.Single((await versionsResponse.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken)).EnumerateArray());
+        var versionTag = Assert.Single(versionItem.GetProperty("tags").EnumerateArray());
+        Assert.Equal(tag.Id, versionTag.GetProperty("id").GetGuid());
 
         var combined = detailJson + await versionsResponse.Content.ReadAsStringAsync(
             TestContext.Current.CancellationToken);

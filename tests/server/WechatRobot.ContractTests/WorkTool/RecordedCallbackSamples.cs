@@ -83,9 +83,7 @@ public sealed class RecordedCallbackSampleTests
     }
 
     [Theory]
-    [InlineData(2, 1)]
     [InlineData(3, 1)]
-    [InlineData(4, 1)]
     [InlineData(1, 2)]
     [InlineData(1, 3)]
     [InlineData(1, 9)]
@@ -104,6 +102,25 @@ public sealed class RecordedCallbackSampleTests
 
         Assert.Equal(WorkToolCallbackDisposition.Ignore, classification.Disposition);
         Assert.Equal("unsupported-message-kind", classification.Reason);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void Official_private_text_message_kinds_are_processed(int roomType)
+    {
+        var sample = new WorkToolCallbackDto
+        {
+            Spoken = "私聊问题",
+            ReceivedName = "成员甲",
+            RoomType = roomType,
+            TextType = 1
+        };
+
+        var classification = sample.Classify();
+
+        Assert.Equal(WorkToolCallbackDisposition.Process, classification.Disposition);
+        Assert.Equal(string.Empty, classification.Reason);
     }
 
     [Theory]

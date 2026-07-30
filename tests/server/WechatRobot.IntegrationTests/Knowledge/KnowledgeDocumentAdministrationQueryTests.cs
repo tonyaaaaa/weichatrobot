@@ -25,9 +25,11 @@ public sealed class KnowledgeDocumentAdministrationQueryTests
         var result = await new KnowledgeDocumentAdministrationQuery(database).ListAsync(
             "product",
             status: null,
+            sourceKind: null,
+            tagId: null,
             page: 0,
             pageSize: 200,
-            TestContext.Current.CancellationToken);
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(1, result.Page);
         Assert.Equal(100, result.PageSize);
@@ -36,6 +38,79 @@ public sealed class KnowledgeDocumentAdministrationQueryTests
         Assert.True(result.Items[0].CanRetryUpload);
         Assert.False(result.Items[1].CanRetryUpload);
         Assert.Equal("failed", result.Items[0].LatestVersionStatus);
+        Assert.Equal("LegacyUnknown", result.Items[0].SourceKind);
+        Assert.Empty(result.Items[0].Tags);
+    }
+
+    [Fact]
+    public async Task List_uses_active_version_source_and_tags_before_filtering_and_paging()
+    {
+        await using var database = NewDatabase();
+        var now = new DateTime(2026, 7, 30, 2, 0, 0, DateTimeKind.Utc);
+        var document = Document(
+            "20000000-0000-0000-0000-000000000001",
+            "签证进度",
+            "active",
+            now);
+        var activeVersion = Version(document.Id, 1, "active");
+        activeVersion.SourceKind = "PrivateChatDirect";
+        activeVersion.SourceActorDisplayName = "张伟";
+        var newerDraft = Version(document.Id, 2, "preview");
+        newerDraft.SourceKind = "DocumentUpload";
+        document.ActiveVersionId = activeVersion.Id;
+
+        var tag = new KnowledgeTagEntity
+        {
+            Name = "加拿大签证",
+            NormalizedName = "加拿大签证"
+        };
+        var chunk = new KnowledgeChunkEntity
+        {
+            KnowledgeDocumentVersionId = activeVersion.Id,
+            Sequence = 1,
+            Text = "签证进度",
+            Status = "approved"
+        };
+
+        database.KnowledgeDocuments.Add(document);
+        database.KnowledgeDocumentVersions.AddRange(activeVersion, newerDraft);
+        database.KnowledgeTags.Add(tag);
+        database.KnowledgeChunks.Add(chunk);
+        database.KnowledgeChunkTags.Add(new KnowledgeChunkTagEntity
+        {
+            KnowledgeChunkId = chunk.Id,
+            KnowledgeTagId = tag.Id
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var query = new KnowledgeDocumentAdministrationQuery(database);
+        var result = await query.ListAsync(
+            query: null,
+            status: null,
+            sourceKind: "PrivateChatDirect",
+            tagId: tag.Id,
+            page: 1,
+            pageSize: 20,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var summary = Assert.Single(result.Items);
+        Assert.Equal(1, result.Total);
+        Assert.Equal("PrivateChatDirect", summary.SourceKind);
+        Assert.Equal("张伟", summary.SourceActorDisplayName);
+        var boundTag = Assert.Single(summary.Tags);
+        Assert.Equal(tag.Id, boundTag.Id);
+        Assert.Equal("加拿大签证", boundTag.Name);
+
+        var wrongSource = await query.ListAsync(
+            query: null,
+            status: null,
+            sourceKind: "DocumentUpload",
+            tagId: tag.Id,
+            page: 1,
+            pageSize: 20,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Empty(wrongSource.Items);
+        Assert.Equal(0, wrongSource.Total);
     }
 
     [Fact]
@@ -64,6 +139,17 @@ public sealed class KnowledgeDocumentAdministrationQueryTests
             Sequence = 1,
             Text = "approved secret text",
             Status = "approved"
+        });
+        var tag = new KnowledgeTagEntity
+        {
+            Name = "签证进度",
+            NormalizedName = "签证进度"
+        };
+        database.KnowledgeTags.Add(tag);
+        database.KnowledgeChunkTags.Add(new KnowledgeChunkTagEntity
+        {
+            KnowledgeChunkId = database.KnowledgeChunks.Local.Single().Id,
+            KnowledgeTagId = tag.Id
         });
         database.KnowledgeOcrPages.AddRange(
             new KnowledgeOcrPageEntity { KnowledgeDocumentVersionId = currentVersion.Id, PageNumber = 1, Status = "completed", BlocksJson = """[{"text":"ocr secret"}]""" },
@@ -104,6 +190,9 @@ public sealed class KnowledgeDocumentAdministrationQueryTests
         Assert.Equal(2, current.OcrPageCount);
         Assert.Equal(1, current.OcrFailedPageCount);
         Assert.True(current.HasPublicObject);
+        var currentTag = Assert.Single(current.Tags);
+        Assert.Equal(tag.Id, currentTag.Id);
+        Assert.Equal("签证进度", currentTag.Name);
         Assert.Single(current.UploadAndParseJobs);
         Assert.True(Assert.Single(current.IndexJobs).HasFailure);
         var json = JsonSerializer.Serialize(detail);

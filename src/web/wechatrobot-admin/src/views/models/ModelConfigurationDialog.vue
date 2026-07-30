@@ -204,7 +204,10 @@ function close(): void {
           <ElOption label="不支持 / 不启用" value="None" />
           <ElOption label="Z.AI Chat Completions" value="ZaiChatCompletions" />
         </ElSelect>
-        <p class="field-help">仅选择已由 Z.AI 官方合同验证的模式；普通 OpenAI 兼容接口请选择“不支持”。</p>
+        <p class="field-help">
+          Z.AI 业务 Web Search 使用通用地址 https://api.z.ai/api/paas/v4；
+          Coding Plan 专用地址不等同于业务 Web Search 接口。普通 OpenAI 兼容接口请选择“不支持 / 不启用”。
+        </p>
       </ElFormItem>
       <ElFormItem label="API Key">
         <ElInput

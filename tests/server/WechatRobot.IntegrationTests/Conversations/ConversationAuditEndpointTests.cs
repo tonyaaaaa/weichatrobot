@@ -53,6 +53,23 @@ public sealed class ConversationAuditEndpointTests : IClassFixture<ConversationA
         Assert.Equal(expected, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData(SystemRoles.Admin, HttpStatusCode.OK)]
+    [InlineData(SystemRoles.KnowledgeOperator, HttpStatusCode.OK)]
+    [InlineData(SystemRoles.HumanAgent, HttpStatusCode.Forbidden)]
+    public async Task Shared_group_options_enforce_roles(string role, HttpStatusCode expected)
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Role", role);
+
+        var response = await client.GetAsync(
+            "/api/group-options",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(expected, response.StatusCode);
+    }
+
     [Fact]
     public async Task Audit_group_options_include_disabled_groups_without_secrets()
     {
@@ -73,7 +90,29 @@ public sealed class ConversationAuditEndpointTests : IClassFixture<ConversationA
         Assert.Contains(options, item => item.GetProperty("isEnabled").GetBoolean());
         Assert.Contains(options, item => !item.GetProperty("isEnabled").GetBoolean());
         Assert.All(options, item => Assert.Equal(
-            ["id", "isEnabled", "name", "robotName", "workToolGroupRemark"],
+            ["id", "isEnabled", "name", "robotName", "state", "workToolGroupRemark"],
+            item.EnumerateObject().Select(property => property.Name).Order().ToArray()));
+    }
+
+    [Fact]
+    public async Task Shared_group_options_include_lifecycle_state_without_secrets()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Role", SystemRoles.KnowledgeOperator);
+
+        var response = await client.GetAsync(
+            "/api/group-options",
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var options = document.RootElement.EnumerateArray().ToArray();
+        Assert.Equal(["技术部", "停用群"], options.Select(item => item.GetProperty("name").GetString()));
+        Assert.Equal(["enabled", "disabled"], options.Select(item => item.GetProperty("state").GetString()));
+        Assert.All(options, item => Assert.Equal(
+            ["id", "isEnabled", "name", "robotName", "state", "workToolGroupRemark"],
             item.EnumerateObject().Select(property => property.Name).Order().ToArray()));
     }
 

@@ -13,6 +13,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WechatRobot.Application.Agents;
 using WechatRobot.Application.Models;
 using WechatRobot.Application.WorkTool;
 using WechatRobot.Infrastructure.Identity;
@@ -39,6 +40,7 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
 
         Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/");
         Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/{id:guid}");
+        Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/{id:guid}/test-agent-capabilities");
         Assert.Contains(routes, endpoint => endpoint.RoutePattern.RawText == "/api/admin/model-configurations/{name}");
         Assert.All(routes, endpoint => Assert.Contains(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(), data => data.Policy == SystemRoles.Admin));
     }
@@ -171,6 +173,36 @@ public sealed class ModelConfigurationEndpointTests : IClassFixture<ModelConfigu
             item => item.Id == id,
             TestContext.Current.CancellationToken);
         Assert.Equal($"LOCAL CHAT {suffix.ToUpperInvariant()}", stored.NormalizedName);
+    }
+
+    [Fact]
+    public async Task Agent_capability_probe_returns_independent_capabilities_without_provider_details()
+    {
+        var id = Guid.NewGuid();
+        _factory.AgentProbe.Next = new AgentCapabilityReport(
+            id,
+            9,
+            new HashSet<AgentCapability>
+            {
+                AgentCapability.Chat,
+                AgentCapability.FunctionTools
+            },
+            null,
+            new DateTime(2026, 7, 29, 0, 0, 0, DateTimeKind.Utc));
+
+        using var client = _factory.CreateClient();
+        var response = await client.PostAsync(
+            $"/api/admin/model-configurations/{id:D}/test-agent-capabilities",
+            null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.True(document.RootElement.GetProperty("chat").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("functionTools").GetBoolean());
+        Assert.False(document.RootElement.GetProperty("toolResultLoop").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("rawResponse", out _));
     }
 
     [Fact]
@@ -937,6 +969,9 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
             services.AddSingleton<IChatCompletionClient>(provider => provider.GetRequiredService<RecordingChatCompletionClient>());
             services.AddSingleton<RecordingEmbeddingClient>();
             services.AddSingleton<IEmbeddingClient>(provider => provider.GetRequiredService<RecordingEmbeddingClient>());
+            foreach (var probe in services.Where(service => service.ServiceType == typeof(IAgentCapabilityProbe)).ToArray()) services.Remove(probe);
+            services.AddSingleton<RecordingAgentCapabilityProbe>();
+            services.AddSingleton<IAgentCapabilityProbe>(provider => provider.GetRequiredService<RecordingAgentCapabilityProbe>());
             services.AddAuthentication(options =>
                 {
                     options.DefaultAuthenticateScheme = "integration-admin";
@@ -949,6 +984,22 @@ public sealed class ModelConfigurationApiFactory : WebApplicationFactory<Program
 
     public RecordingChatCompletionClient ChatClient => Services.GetRequiredService<RecordingChatCompletionClient>();
     public RecordingEmbeddingClient EmbeddingClient => Services.GetRequiredService<RecordingEmbeddingClient>();
+    public RecordingAgentCapabilityProbe AgentProbe => Services.GetRequiredService<RecordingAgentCapabilityProbe>();
+}
+
+public sealed class RecordingAgentCapabilityProbe : IAgentCapabilityProbe
+{
+    public AgentCapabilityReport Next { get; set; } = new(
+        Guid.Empty,
+        0,
+        new HashSet<AgentCapability>(),
+        "agent_probe_not_configured",
+        DateTime.UnixEpoch);
+
+    public Task<AgentCapabilityReport> ProbeAsync(
+        Guid modelConfigurationId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Next with { ModelConfigurationId = modelConfigurationId });
 }
 
 public sealed class RecordingChatCompletionClient : IChatCompletionClient

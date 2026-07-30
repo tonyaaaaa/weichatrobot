@@ -8,9 +8,26 @@ namespace WechatRobot.Infrastructure.Knowledge;
 
 public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext database)
 {
+    public Task<KnowledgeDocumentPage> ListAsync(
+        string? query,
+        string? status,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken) =>
+        ListAsync(
+            query,
+            status,
+            sourceKind: null,
+            tagId: null,
+            page,
+            pageSize,
+            cancellationToken);
+
     public async Task<KnowledgeDocumentPage> ListAsync(
         string? query,
         string? status,
+        string? sourceKind,
+        Guid? tagId,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -29,6 +46,46 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
         {
             var exactStatus = status.Trim();
             documents = documents.Where(document => document.Status == exactStatus);
+        }
+
+        var effectiveVersions =
+            from document in database.KnowledgeDocuments.AsNoTracking()
+            from version in database.KnowledgeDocumentVersions.AsNoTracking()
+            where version.KnowledgeDocumentId == document.Id &&
+                  (document.ActiveVersionId == version.Id ||
+                   (document.ActiveVersionId == null &&
+                    !database.KnowledgeDocumentVersions.Any(candidate =>
+                        candidate.KnowledgeDocumentId == document.Id &&
+                        candidate.Version > version.Version)))
+            select new
+            {
+                DocumentId = document.Id,
+                VersionId = version.Id,
+                version.SourceKind
+            };
+
+        if (!string.IsNullOrWhiteSpace(sourceKind))
+        {
+            var exactSourceKind = sourceKind.Trim();
+            documents = documents.Where(document =>
+                effectiveVersions.Any(version =>
+                    version.DocumentId == document.Id &&
+                    version.SourceKind == exactSourceKind));
+        }
+
+        if (tagId.HasValue)
+        {
+            var exactTagId = tagId.Value;
+            var taggedVersionIds =
+                from chunk in database.KnowledgeChunks.AsNoTracking()
+                join binding in database.KnowledgeChunkTags.AsNoTracking()
+                    on chunk.Id equals binding.KnowledgeChunkId
+                where binding.KnowledgeTagId == exactTagId
+                select chunk.KnowledgeDocumentVersionId;
+            documents = documents.Where(document =>
+                effectiveVersions.Any(version =>
+                    version.DocumentId == document.Id &&
+                    taggedVersionIds.Contains(version.VersionId)));
         }
 
         var total = await documents.CountAsync(cancellationToken);
@@ -88,6 +145,11 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                 version.IsPublished,
                 version.PublicUrl != null && version.PublicUrl != "",
                 version.PreviewRevision,
+                version.SourceKind,
+                version.SourceActorDisplayName,
+                version.SourceBatchId,
+                version.ChangeKind,
+                version.SupersedesVersionId,
                 version.CreatedAtUtc,
                 version.UpdatedAtUtc))
             .ToArrayAsync(cancellationToken);
@@ -98,6 +160,7 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
             return new(summary, []);
         }
 
+        var tagsByVersion = await LoadVersionTagsAsync(versionIds, cancellationToken);
         var previewCounts = await CountByVersionAsync(
             versionIds,
             batch => database.KnowledgeChunkPreviews.AsNoTracking()
@@ -213,6 +276,12 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
             approvedChunkCounts.GetValueOrDefault(version.Id),
             ocrCounts.GetValueOrDefault(version.Id),
             ocrFailedCounts.GetValueOrDefault(version.Id),
+            version.SourceKind,
+            version.SourceActorDisplayName,
+            version.SourceBatchId,
+            version.ChangeKind,
+            version.SupersedesVersionId,
+            tagsByVersion.GetValueOrDefault(version.Id) ?? [],
             durableByVersion.GetValueOrDefault(version.Id) ?? [],
             indexByVersion.GetValueOrDefault(version.Id) ?? [],
             version.CreatedAtUtc,
@@ -242,7 +311,9 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                     version.Version,
                     version.Status,
                     version.FailureReason,
-                    version.StagedContent.Length > 0))
+                    version.StagedContent.Length > 0,
+                    version.SourceKind,
+                    version.SourceActorDisplayName))
                 .ToArrayAsync(cancellationToken));
         var grouped = versions
             .GroupBy(version => version.DocumentId)
@@ -251,10 +322,29 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                 group => group.OrderByDescending(version => version.Version)
                     .ThenBy(version => version.Id)
                     .ToArray());
+        var effectiveVersionByDocument = documents.ToDictionary(
+            document => document.Id,
+            document =>
+            {
+                var documentVersions = grouped.GetValueOrDefault(document.Id) ?? [];
+                return document.ActiveVersionId.HasValue
+                    ? documentVersions.FirstOrDefault(version =>
+                        version.Id == document.ActiveVersionId.Value)
+                    : documentVersions.FirstOrDefault();
+            });
+        var effectiveVersionIds = effectiveVersionByDocument.Values
+            .Where(version => version is not null)
+            .Select(version => version!.Id)
+            .Distinct()
+            .ToArray();
+        var tagsByVersion = await LoadVersionTagsAsync(
+            effectiveVersionIds,
+            cancellationToken);
         return documents.Select(document =>
         {
             var documentVersions = grouped.GetValueOrDefault(document.Id) ?? [];
             var latest = documentVersions.FirstOrDefault();
+            var effective = effectiveVersionByDocument.GetValueOrDefault(document.Id);
             return new KnowledgeDocumentSummary(
                 document.Id,
                 document.Title,
@@ -269,9 +359,60 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                 !document.IsDeleteRequested &&
                 document.Status != "disabled" &&
                 latest is { Status: "failed", HasStagedContent: true },
+                effective?.SourceKind ?? "LegacyUnknown",
+                effective?.SourceActorDisplayName,
+                effective is null
+                    ? []
+                    : tagsByVersion.GetValueOrDefault(effective.Id) ?? [],
                 document.CreatedAtUtc,
                 document.UpdatedAtUtc);
         }).ToArray();
+    }
+
+    private async Task<Dictionary<Guid, IReadOnlyList<KnowledgeDocumentTagSummary>>>
+        LoadVersionTagsAsync(
+            IReadOnlyCollection<Guid> versionIds,
+            CancellationToken cancellationToken)
+    {
+        if (versionIds.Count == 0)
+        {
+            return [];
+        }
+
+        var rows = await LoadBatchedAsync(
+            versionIds,
+            batch => database.KnowledgeChunks.AsNoTracking()
+                .Where(GuidBatchQuery.BuildPredicate<KnowledgeChunkEntity>(
+                    batch,
+                    chunk => chunk.KnowledgeDocumentVersionId))
+                .Join(
+                    database.KnowledgeChunkTags.AsNoTracking(),
+                    chunk => chunk.Id,
+                    binding => binding.KnowledgeChunkId,
+                    (chunk, binding) => new
+                    {
+                        chunk.KnowledgeDocumentVersionId,
+                        binding.KnowledgeTagId
+                    })
+                .Join(
+                    database.KnowledgeTags.AsNoTracking(),
+                    binding => binding.KnowledgeTagId,
+                    tag => tag.Id,
+                    (binding, tag) => new VersionTagRow(
+                        binding.KnowledgeDocumentVersionId,
+                        tag.Id,
+                        tag.Name))
+                .Distinct()
+                .ToArrayAsync(cancellationToken));
+        return rows
+            .GroupBy(row => row.VersionId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<KnowledgeDocumentTagSummary>)group
+                    .OrderBy(row => row.Name, StringComparer.Ordinal)
+                    .ThenBy(row => row.TagId)
+                    .Select(row => new KnowledgeDocumentTagSummary(row.TagId, row.Name))
+                    .ToArray());
     }
 
     private async Task<Dictionary<Guid, int>> CountByVersionAsync<TEntity>(
@@ -367,7 +508,9 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
         int Version,
         string Status,
         string? FailureReason,
-        bool HasStagedContent);
+        bool HasStagedContent,
+        string SourceKind,
+        string? SourceActorDisplayName);
 
     private sealed record VersionDetailRow(
         Guid Id,
@@ -381,6 +524,11 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
         bool IsPublished,
         bool HasPublicObject,
         int PreviewRevision,
+        string SourceKind,
+        string? SourceActorDisplayName,
+        Guid? SourceBatchId,
+        string ChangeKind,
+        Guid? SupersedesVersionId,
         DateTime CreatedAtUtc,
         DateTime UpdatedAtUtc);
 
@@ -404,5 +552,10 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
         DateTime UpdatedAtUtc);
 
     private sealed record OcrRow(Guid VersionId, string Status);
+
+    private sealed record VersionTagRow(
+        Guid VersionId,
+        Guid TagId,
+        string Name);
     private sealed record DocumentJobPayload(Guid DocumentId, Guid VersionId);
 }

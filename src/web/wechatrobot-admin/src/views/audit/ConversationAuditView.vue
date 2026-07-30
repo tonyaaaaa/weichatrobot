@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { ElAlert, ElButton, ElEmpty, ElMessage, ElOption, ElPagination, ElSelect, ElSkeleton, ElTag } from 'element-plus';
-import { auditApi, type AuditApi, type AuditGroupOption, type AuditPage } from '../../api/audit';
+import { auditApi, type AuditApi, type AuditPage } from '../../api/audit';
+import { groupOptionApi, type GroupOptionApi } from '../../api/groupOptions';
+import GroupProfileSelect from '../../components/groups/GroupProfileSelect.vue';
 import { formatBeijingTime } from '../../utils/beijingTime';
 import { safeEvidence, safeEvidenceText } from '../../utils/evidenceRedaction';
 import { confirmAction } from '../../utils/dialogs';
 
 const props = withDefaults(
-  defineProps<{ api?: AuditApi; initialGroupId?: string }>(),
-  { api: () => auditApi, initialGroupId: '' }
+  defineProps<{ api?: AuditApi; groupOptionApi?: GroupOptionApi; initialGroupId?: string }>(),
+  { api: () => auditApi, groupOptionApi: () => groupOptionApi, initialGroupId: '' }
 );
 const loading = ref(true); const error = ref('');
+const groupOptionError = ref('');
 const capability = ref<AuditPage>({ available: false, items: [], total: 0, page: 1, pageSize: 20 });
-const groupOptions = ref<AuditGroupOption[]>([]);
 const groupId = ref(props.initialGroupId);
+const channelType = ref<'' | 'Group' | 'Private'>('');
 const fromLocal = ref('');
 const toLocal = ref('');
 async function load(requestedPage = capability.value.page) {
@@ -21,12 +24,13 @@ async function load(requestedPage = capability.value.page) {
   try {
     capability.value = await props.api.capability({
       groupId: groupId.value.trim() || undefined,
+      channelType: channelType.value || undefined,
       fromUtc: toUtc(fromLocal.value),
       toUtc: toUtc(toLocal.value),
       page: requestedPage,
       pageSize: capability.value.pageSize
     });
-  } catch { error.value = '审计查询失败，请检查群 ID 和时间范围。'; }
+  } catch { error.value = '审计查询失败，请检查群筛选和时间范围。'; }
   finally { loading.value = false; }
 }
 async function applyFilters() { await load(1); }
@@ -37,6 +41,7 @@ function toUtc(value: string): string | undefined {
 }
 function sourceLabel(source: string) {
   return ({
+    fixed_template: '固定回复模板',
     knowledge: '知识库',
     web_search: '联网搜索',
     model_knowledge: '模型知识',
@@ -47,6 +52,7 @@ function sourceLabel(source: string) {
   } as Record<string, string>)[source] ?? '未分类';
 }
 function sourceTagType(source: string): 'success' | 'warning' | 'info' | 'danger' {
+  if (source === 'fixed_template') return 'success';
   if (source === 'knowledge') return 'success';
   if (source === 'web_search') return 'warning';
   if (source === 'system_failure') return 'danger';
@@ -65,30 +71,34 @@ async function createKnowledgeCandidate(item: AuditPage['items'][number]) {
   }
 }
 onMounted(load);
-onMounted(async () => {
-  try { groupOptions.value = await props.api.groupOptions(); }
-  catch { error.value = '群筛选选项加载失败，请刷新页面重试。'; }
-});
+function onGroupLoadError() {
+  groupOptionError.value = '群筛选选项加载失败，请刷新页面重试。';
+}
 </script>
 
 <template>
   <section class="ops-page" aria-labelledby="audit-title">
     <header class="page-header"><div><p class="eyebrow">授权证据视图</p><h1 id="audit-title">会话审计</h1><p>此页面可展示检索来源和回答证据，但会递归过滤密钥、令牌和认证头。</p></div><ElButton @click="() => load()">刷新</ElButton></header>
     <section class="panel audit-filters">
-      <label>群
-        <ElSelect v-model="groupId" data-testid="audit-group-select" filterable clearable placeholder="全部群">
-          <ElOption
-            v-for="group in groupOptions"
-            :key="group.id"
-            :value="group.id"
-            :label="`${group.name}${group.workToolGroupRemark ? `（${group.workToolGroupRemark}）` : ''} · ${group.robotName}${group.isEnabled ? '' : ' · 已停用'}`"
-          />
+      <label>会话类型
+        <ElSelect v-model="channelType" clearable placeholder="全部会话">
+          <ElOption value="Group" label="群聊" />
+          <ElOption value="Private" label="私聊" />
         </ElSelect>
+      </label>
+      <label>群
+        <GroupProfileSelect
+          v-model="groupId"
+          :api="props.groupOptionApi"
+          data-testid="audit-group-select"
+          @load-error="onGroupLoadError"
+        />
       </label>
       <label>开始时间<input v-model="fromLocal" data-testid="audit-from" type="datetime-local"></label>
       <label>结束时间<input v-model="toLocal" data-testid="audit-to" type="datetime-local"></label>
       <ElButton data-testid="apply-audit-filters" type="primary" @click="applyFilters">查询</ElButton>
       <p>时间会转换为 UTC：开始时间包含，结束时间不包含（[开始, 结束)）。</p>
+      <ElAlert v-if="groupOptionError" :title="groupOptionError" type="warning" :closable="false" />
     </section>
     <ElSkeleton v-if="loading" :rows="5" animated aria-label="正在检查审计查询能力" />
     <ElAlert v-else-if="error" :title="error" type="error" :closable="false" show-icon><ElButton @click="() => load()">重试</ElButton></ElAlert>

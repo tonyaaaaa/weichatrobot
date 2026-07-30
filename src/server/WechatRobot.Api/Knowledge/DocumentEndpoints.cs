@@ -24,12 +24,16 @@ public static class DocumentEndpoints
         KnowledgeDocumentAdministrationQuery queryService,
         string? query,
         string? status,
+        string? sourceKind,
+        Guid? tagId,
         int page = 1,
         int pageSize = 20,
         CancellationToken cancellationToken = default) =>
         Results.Ok(await queryService.ListAsync(
             query,
             status,
+            sourceKind,
+            tagId,
             page,
             pageSize,
             cancellationToken));

@@ -29,8 +29,8 @@ describe('GroupContextView', () => {
           lastActivityAtUtc: '2026-07-28T01:00:00Z',
           version: 2,
           messages: [
-            { role: 'user', content: '如何办理？', createdAtUtc: '2026-07-28T01:00:00Z' },
-            { role: 'assistant', content: '请准备材料。', createdAtUtc: '2026-07-28T01:00:01Z' }
+            { role: 'user', senderDisplayName: '客户乙', content: '如何办理？', createdAtUtc: '2026-07-28T01:00:00Z' },
+            { role: 'assistant', senderDisplayName: '机器人', content: '请准备材料。', createdAtUtc: '2026-07-28T01:00:01Z' }
           ],
           wasIdleReset: false,
           wasTokenLimited: false,
@@ -50,6 +50,7 @@ describe('GroupContextView', () => {
 
     expect(wrapper.text()).toContain('客户甲');
     expect(wrapper.text()).toContain('较早对话摘要');
+    expect(wrapper.text()).toContain('客户乙');
     expect(wrapper.text()).toContain('如何办理？');
     expect(wrapper.text()).toContain('请准备材料。');
 

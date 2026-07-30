@@ -3,9 +3,11 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
+using WechatRobot.Application.Agents;
 using WechatRobot.Domain.Groups;
 using WechatRobot.Domain.Knowledge;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Infrastructure.Groups;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 
@@ -19,6 +21,8 @@ public static class GroupEndpoints
 
     public static IEndpointRouteBuilder MapGroupEndpoints(this IEndpointRouteBuilder endpoints)
     {
+        endpoints.MapGet("/api/group-options", ListOptionsAsync)
+            .RequireAuthorization(SystemRoles.KnowledgeOperator);
         var groups = endpoints.MapGroup("/api/groups").RequireAuthorization(SystemRoles.Admin);
         groups.MapGet("{id:guid}/configuration", GetConfigurationAsync);
         groups.MapPut("{id:guid}/configuration", UpdateConfigurationAsync);
@@ -31,6 +35,11 @@ public static class GroupEndpoints
         endpoints.MapPost("/api/group-rules/preview", PreviewAsync).RequireAuthorization(SystemRoles.Admin);
         return endpoints;
     }
+
+    private static async Task<IResult> ListOptionsAsync(
+        GroupOptionQuery query,
+        CancellationToken token) =>
+        TypedResults.Ok(await query.ListAsync(token));
 
     private static async Task<IResult> GetConversationContextAsync(
         Guid id,
@@ -156,10 +165,15 @@ public static class GroupEndpoints
         return Results.Ok(result.State);
     }
 
-    private static async Task<IResult> GetConfigurationAsync(Guid id, WechatRobotDbContext database, GroupConfigurationService service, CancellationToken cancellationToken)
+    private static async Task<IResult> GetConfigurationAsync(
+        Guid id,
+        WechatRobotDbContext database,
+        GroupConfigurationService service,
+        AgentRuntimeOptions agentRuntime,
+        CancellationToken cancellationToken)
     {
         var group = await database.GroupProfiles.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        return group is null ? Results.NotFound() : Results.Ok(await ToResponseAsync(group, database, service, 0, cancellationToken));
+        return group is null ? Results.NotFound() : Results.Ok(await ToResponseAsync(group, database, service, agentRuntime, 0, cancellationToken));
     }
 
     private static async Task<IResult> UpdateConfigurationAsync(
@@ -168,6 +182,7 @@ public static class GroupEndpoints
         WechatRobotDbContext database,
         GroupConfigurationService service,
         IGroundedConversationRepository conversations,
+        AgentRuntimeOptions agentRuntime,
         CancellationToken cancellationToken)
     {
         if (request.ExpectedConfigurationVersion is null)
@@ -242,7 +257,7 @@ public static class GroupEndpoints
         var clearedSessions = request.ClearContext
             ? await conversations.ClearGroupContextAsync(id, DateTime.UtcNow, cancellationToken)
             : 0;
-        return Results.Ok(await ToResponseAsync(group, database, service, clearedSessions, cancellationToken));
+        return Results.Ok(await ToResponseAsync(group, database, service, agentRuntime, clearedSessions, cancellationToken));
     }
 
     private static IResult PreviewAsync(PreviewGroupRulesRequest request, GroupConfigurationService service)
@@ -281,16 +296,84 @@ public static class GroupEndpoints
         return Results.Ok(new PreviewGroupRulesResponse(results));
     }
 
-    private static async Task<GroupConfigurationResponse> ToResponseAsync(GroupProfileEntity group, WechatRobotDbContext database, GroupConfigurationService service, int clearedSessions, CancellationToken cancellationToken)
+    private static async Task<GroupConfigurationResponse> ToResponseAsync(
+        GroupProfileEntity group,
+        WechatRobotDbContext database,
+        GroupConfigurationService service,
+        AgentRuntimeOptions agentRuntime,
+        int clearedSessions,
+        CancellationToken cancellationToken)
     {
         var rules = await database.GroupRules.AsNoTracking().Where(rule => rule.GroupProfileId == group.Id).OrderBy(rule => rule.CreatedAtUtc).ThenBy(rule => rule.Id).ToArrayAsync(cancellationToken);
-        var boundTagIds = await database.GroupProfileTags.AsNoTracking().Where(binding => binding.GroupProfileId == group.Id).Select(binding => binding.KnowledgeTagId).ToArrayAsync(cancellationToken);
+        var persistedBoundTagIds = await database.GroupProfileTags.AsNoTracking().Where(binding => binding.GroupProfileId == group.Id).Select(binding => binding.KnowledgeTagId).ToArrayAsync(cancellationToken);
         var tags = await database.KnowledgeTags.AsNoTracking().OrderBy(tag => tag.Name).ToArrayAsync(cancellationToken);
+        var globalPublicTagIds = tags.Where(tag => tag.IsGlobalPublic).Select(tag => tag.Id).ToHashSet();
+        var boundTagIds = persistedBoundTagIds.Where(tagId => !globalPublicTagIds.Contains(tagId)).ToArray();
+        var robotName = await database.RobotConfigs.AsNoTracking()
+            .Where(robot => robot.Id == group.RobotConfigId)
+            .Select(robot => robot.Name)
+            .SingleOrDefaultAsync(cancellationToken) ?? "未找到机器人配置";
+        var defaultChatModel = await database.ModelConfigs.AsNoTracking()
+            .Where(model => model.ConfigurationType == "chat")
+            .OrderByDescending(model => model.IsDefault)
+            .ThenBy(model => model.CreatedAtUtc)
+            .Select(model => new
+            {
+                model.Name,
+                model.IsEnabled,
+                model.ConnectionStatus,
+                model.WebSearchMode
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        var canUseWebSearch = defaultChatModel is
+        {
+            IsEnabled: true,
+            ConnectionStatus: ModelConnectionStatus.Succeeded
+        } && !string.Equals(defaultChatModel.WebSearchMode, "None", StringComparison.OrdinalIgnoreCase);
+        var modelUnavailableReason = defaultChatModel is null
+            ? "not_configured"
+            : !defaultChatModel.IsEnabled
+                ? "disabled"
+                : defaultChatModel.ConnectionStatus != ModelConnectionStatus.Succeeded
+                    ? "connection_not_succeeded"
+                    : string.Equals(defaultChatModel.WebSearchMode, "None", StringComparison.OrdinalIgnoreCase)
+                        ? "not_enabled"
+                        : "none";
+        var activeGroupMemoryCount = await database.MemoryEntries.AsNoTracking()
+            .CountAsync(memory => memory.GroupProfileId == group.Id
+                                  && memory.Status == "active"
+                                  && memory.ScopeType == "Group", cancellationToken);
+        var activeMemberMemoryCount = await database.MemoryEntries.AsNoTracking()
+            .CountAsync(memory => memory.GroupProfileId == group.Id
+                                  && memory.Status == "active"
+                                  && memory.ScopeType != "Group", cancellationToken);
+        var pendingCandidateCount = await database.MemoryCandidates.AsNoTracking()
+            .CountAsync(candidate => candidate.GroupProfileId == group.Id
+                                     && (candidate.Status == "pending" || candidate.Status == "accumulating"),
+                cancellationToken);
+        var pendingOrRunningJobCount = await database.DurableJobs.AsNoTracking()
+            .CountAsync(job => job.GroupProfileId == group.Id
+                               && (job.JobType == "ExtractConversationMemory"
+                                   || job.JobType == "MaintainLongTermMemory"
+                                   || job.JobType == "IndexMemoryEntry"
+                                   || job.JobType == "RemoveMemoryEntryFromIndex")
+                               && (job.Status == "pending"
+                                   || job.Status == "retrying"
+                                   || job.Status == "leased"
+                                   || job.Status == "dispatching"),
+                cancellationToken);
         var domainTags = tags.Select(tag => new KnowledgeTag(tag.Id, tag.Name, tag.IsEnabled, tag.IsGlobalPublic)).ToArray();
         var configured = ToConfiguredContext(group);
         return new GroupConfigurationResponse(
             group.Id,
             group.Name,
+            new GroupIdentityResponse(
+                robotName,
+                group.WorkToolGroupRemark,
+                group.RegistrationSource,
+                group.ArchivedAtUtc is not null ? "archived" : group.IsEnabled ? "enabled" : "disabled",
+                group.IsEnabled,
+                group.StateVersion),
             new GroupRulesResponse(
                 rules.Where(rule => rule.RuleKind == (int)GroupRuleDirection.Include).Select(ToRuleResponse).ToArray(),
                 rules.Where(rule => rule.RuleKind == (int)GroupRuleDirection.Exclude).Select(ToRuleResponse)
@@ -302,6 +385,23 @@ public static class GroupEndpoints
             AnyBoundTagOrGlobalPublic,
             new GroupContextResponse(configured, service.GetEffectiveContext(configured)),
             ToAnswerFallback(group),
+            new DefaultChatModelCapabilityResponse(
+                defaultChatModel is not null,
+                defaultChatModel?.Name,
+                defaultChatModel?.ConnectionStatus,
+                defaultChatModel?.WebSearchMode ?? "None",
+                canUseWebSearch,
+                modelUnavailableReason),
+            new GroupMemorySummaryResponse(
+                activeGroupMemoryCount,
+                activeMemberMemoryCount,
+                pendingCandidateCount,
+                pendingOrRunningJobCount),
+            new AgentRuntimeResponse(
+                agentRuntime.IntentRuntimeMode.ToString(),
+                agentRuntime.AnswerRuntimeMode.ToString(),
+                agentRuntime.TemplateRoutingRuntimeMode.ToString(),
+                false),
             clearedSessions,
             group.ConfigurationVersion);
     }
@@ -410,10 +510,22 @@ public static class GroupEndpoints
         string? WebSearchDomainFilter = null,
         string WebSearchContentSize = "Medium",
         string FinalNoEvidencePolicy = "InsufficientEvidence");
-    public sealed record GroupConfigurationResponse(Guid Id, string Name, GroupRulesResponse Rules, IReadOnlyList<Guid> BoundTagIds, IReadOnlyList<Guid> AllowedTagIds,
+    public sealed record GroupConfigurationResponse(Guid Id, string Name, GroupIdentityResponse Identity, GroupRulesResponse Rules, IReadOnlyList<Guid> BoundTagIds, IReadOnlyList<Guid> AllowedTagIds,
         IReadOnlyList<KnowledgeTagResponse> AvailableTags, string TagVisibility, GroupContextResponse Context,
-        GroupAnswerFallbackSettings AnswerFallback, int ClearedContextSessions,
+        GroupAnswerFallbackSettings AnswerFallback, DefaultChatModelCapabilityResponse DefaultChatModel,
+        GroupMemorySummaryResponse MemorySummary, AgentRuntimeResponse AgentRuntime, int ClearedContextSessions,
         int ConfigurationVersion);
+    public sealed record AgentRuntimeResponse(
+        string IntentRuntimeMode,
+        string AnswerRuntimeMode,
+        string TemplateRoutingRuntimeMode,
+        bool Editable);
+    public sealed record DefaultChatModelCapabilityResponse(bool IsConfigured, string? ConfigurationName,
+        string? ConnectionStatus, string WebSearchMode, bool CanUseWebSearch, string UnavailableReason);
+    public sealed record GroupMemorySummaryResponse(int ActiveGroupMemoryCount, int ActiveMemberMemoryCount,
+        int PendingCandidateCount, int PendingOrRunningJobCount);
+    public sealed record GroupIdentityResponse(string RobotName, string? WorkToolGroupRemark, string RegistrationSource,
+        string State, bool IsEnabled, int StateVersion);
     public sealed record GroupRulesResponse(IReadOnlyList<RuleResponse> Include, IReadOnlyList<RuleResponse> Exclude);
     public sealed record RuleResponse(Guid Id, string Pattern, string PatternKind, bool IgnoreCase);
     public sealed record KnowledgeTagResponse(Guid Id, string Name, bool IsGlobalPublic, bool IsEnabled, bool IsBound);

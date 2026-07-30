@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace WechatRobot.Infrastructure.Configuration;
@@ -43,25 +44,37 @@ public static partial class DotEnvFileLoader
         var values = new Dictionary<string, string>(comparer);
         var lineNumber = 0;
 
-        foreach (var sourceLine in File.ReadLines(path))
+        try
         {
-            lineNumber++;
-            var line = sourceLine.Trim();
-            if (line.Length == 0 || line.StartsWith('#'))
-                continue;
+            using var reader = new StreamReader(path, new UTF8Encoding(
+                encoderShouldEmitUTF8Identifier: false,
+                throwOnInvalidBytes: true));
+            while (reader.ReadLine() is { } sourceLine)
+            {
+                lineNumber++;
+                var line = sourceLine.Trim();
+                if (line.Length == 0 || line.StartsWith('#'))
+                    continue;
 
-            if (line.StartsWith("export ", StringComparison.Ordinal))
-                line = line["export ".Length..].TrimStart();
+                if (line.StartsWith("export ", StringComparison.Ordinal))
+                    line = line["export ".Length..].TrimStart();
 
-            var separator = line.IndexOf('=');
-            if (separator <= 0)
-                throw InvalidLine(path, lineNumber, "expected NAME=VALUE");
+                var separator = line.IndexOf('=');
+                if (separator <= 0)
+                    throw InvalidLine(path, lineNumber, "expected NAME=VALUE");
 
-            var name = line[..separator].Trim();
-            if (!EnvironmentName().IsMatch(name))
-                throw InvalidLine(path, lineNumber, "invalid variable name");
-            if (!values.TryAdd(name, ParseValue(path, lineNumber, line[(separator + 1)..].Trim())))
-                throw InvalidLine(path, lineNumber, $"duplicate variable name {name}");
+                var name = line[..separator].Trim();
+                if (!EnvironmentName().IsMatch(name))
+                    throw InvalidLine(path, lineNumber, "invalid variable name");
+                if (!values.TryAdd(name, ParseValue(path, lineNumber, line[(separator + 1)..].Trim())))
+                    throw InvalidLine(path, lineNumber, $"duplicate variable name {name}");
+            }
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidOperationException(
+                $"Invalid .env file {path}: the file must be encoded as UTF-8.",
+                exception);
         }
 
         return values;

@@ -36,6 +36,7 @@ function api(items: ModelConfiguration[] = []): ModelApi {
     create: vi.fn(),
     update: vi.fn(),
     testConnection: vi.fn(),
+    testAgentCapabilities: vi.fn(),
     setEnabled: vi.fn(),
     setDefault: vi.fn(),
     clearApiKey: vi.fn(),
@@ -115,6 +116,38 @@ describe('ModelSettingsView', () => {
     expect(modelApi.update).toHaveBeenCalledWith(original.id, expect.objectContaining({ name: '改名后' }));
     expect(wrapper.findAll(`[data-testid="model-card-${original.id}"]`)).toHaveLength(1);
     expect(wrapper.text()).toContain('改名后');
+  });
+
+  it('probes chat Agent capabilities independently and hides the action for embedding models', async () => {
+    const chat = model();
+    const embedding = model({
+      id: '22222222-2222-2222-2222-222222222222',
+      configurationType: 'embedding'
+    });
+    const modelApi = api([chat, embedding]);
+    vi.mocked(modelApi.testAgentCapabilities).mockResolvedValue({
+      modelConfigurationId: chat.id,
+      modelConfigurationVersion: 3,
+      chat: true,
+      functionTools: true,
+      toolResultLoop: false,
+      jsonObject: true,
+      jsonSchema: false,
+      testedAtUtc: '2026-07-29T05:00:00Z'
+    });
+    const wrapper = mountView(modelApi);
+    await flushPromises();
+
+    expect(wrapper.find(`[data-testid="test-agent-${chat.id}"]`).exists()).toBe(true);
+    expect(wrapper.find(`[data-testid="test-agent-${embedding.id}"]`).exists()).toBe(false);
+
+    await wrapper.get(`[data-testid="test-agent-${chat.id}"]`).trigger('click');
+    await flushPromises();
+
+    expect(modelApi.testAgentCapabilities).toHaveBeenCalledWith(chat.id);
+    expect(wrapper.get(`[data-testid="agent-capabilities-${chat.id}"]`).text()).toContain('基础对话：支持');
+    expect(wrapper.get(`[data-testid="agent-capabilities-${chat.id}"]`).text()).toContain('工具结果回传：不支持');
+    expect(wrapper.get(`[data-testid="agent-capabilities-${chat.id}"]`).text()).toContain('JSON Schema：不支持');
   });
 
   it('clears keys explicitly and keeps server delete conflicts visible', async () => {

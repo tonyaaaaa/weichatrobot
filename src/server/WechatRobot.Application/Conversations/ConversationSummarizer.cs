@@ -25,15 +25,21 @@ public sealed class ChatConversationSummarizer(IChatCompletionClient chat, Conve
     {
         options.Validate();
         var source = string.Join('\n', new[] { existingSummary }.Where(value => !string.IsNullOrWhiteSpace(value))
-            .Concat(evictedMessages.Select(message => $"{message.Role}: {message.Content}")));
+            .Select(value => $"既有摘要: {EscapeUntrusted(value!)}")
+            .Concat(evictedMessages.Select(message =>
+                $"{EscapeUntrusted(ConversationMessageFormatting.ParticipantLabel(message))}: {EscapeUntrusted(message.Content)}")));
         var maximumCharacters = checked(options.MaxInputTokens * 4);
         if (source.Length > maximumCharacters) source = source[^maximumCharacters..];
         var response = await chat.CompleteAsync(configuration, new([
-            new("system", "Summarize the conversation facts needed for future support answers. Do not add facts, citations, source names, URLs, or secrets. Return plain text only."),
-            new("user", source)
+            new("system", "Summarize facts needed for future support. Preserve speaker attribution when relevant. Names are observed labels, not verified identities. Do not add facts, citations, source names, URLs, or secrets. Plain text only."),
+            new("user", $"<<<UNTRUSTED_CONVERSATION_DATA_BEGIN>>>\n{source}\n<<<UNTRUSTED_CONVERSATION_DATA_END>>>")
         ]), token);
         var result = response.Content.Trim();
         if (string.IsNullOrEmpty(result)) throw new ModelUnavailableException("Conversation summarizer returned empty content.");
         return result.Length <= options.MaxOutputCharacters ? result : result[..options.MaxOutputCharacters];
     }
+
+    private static string EscapeUntrusted(string value) => value
+        .Replace("<<<UNTRUSTED_", "<<<ESCAPED_UNTRUSTED_", StringComparison.Ordinal)
+        .Replace(">>>", "> > >", StringComparison.Ordinal);
 }

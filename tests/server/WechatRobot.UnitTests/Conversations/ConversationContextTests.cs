@@ -57,7 +57,7 @@ public sealed class ConversationContextTests
             Message("user", "alice", new string('c', 40), Now.AddMinutes(-1))
         };
 
-        var result = new ConversationContextService().Build(messages, Policy(tokenCap: 17, includeBotHistory: false), "alice", Now);
+        var result = new ConversationContextService().Build(messages, Policy(tokenCap: 18, includeBotHistory: false), "alice", Now);
 
         Assert.Single(result.Messages);
         Assert.Equal(new string('c', 40), result.Messages[0].Content);
@@ -83,6 +83,21 @@ public sealed class ConversationContextTests
         Assert.Empty(result.Messages);
         Assert.True(result.WasTokenLimited);
         Assert.Single(result.EvictedMessages);
+    }
+
+    [Fact]
+    public void Sender_label_and_rendering_overhead_are_counted_in_the_context_budget()
+    {
+        var message = Message("user", "group", "问题", Now.AddMinutes(-1)) with
+        {
+            SenderDisplayName = new string('成', 40)
+        };
+
+        var result = new ConversationContextService().Build(
+            [message], Policy(tokenCap: 12), "group", Now);
+
+        Assert.Empty(result.Messages);
+        Assert.True(result.WasTokenLimited);
     }
 
     [Fact]

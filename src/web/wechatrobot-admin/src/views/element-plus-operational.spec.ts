@@ -62,6 +62,7 @@ describe('Task 16 Element Plus operational surfaces', () => {
       create: vi.fn(),
       update: vi.fn(),
       testConnection: vi.fn(),
+      testAgentCapabilities: vi.fn(),
       setEnabled: vi.fn(),
       setDefault: vi.fn(),
       clearApiKey: vi.fn(),
@@ -73,10 +74,26 @@ describe('Task 16 Element Plus operational surfaces', () => {
     expect(models.findComponent({ name: 'ElTag' }).exists()).toBe(true);
 
     const documents = mount(KnowledgeDocumentsView, {
-      props: { api: { upload: vi.fn() } }
+      props: { api: { upload: vi.fn() } },
+      global: {
+        stubs: {
+          teleport: true,
+          ElSelect: {
+            props: ['modelValue'],
+            template: '<select :value="modelValue"><slot /></select>'
+          },
+          ElOption: {
+            props: ['label', 'value'],
+            template: '<option :value="value">{{ label }}</option>'
+          }
+        }
+      }
     });
-    expect(documents.find('input[type="file"]').exists()).toBe(true);
+    expect(documents.find('input[type="file"]').exists()).toBe(false);
     expect(documents.findComponent({ name: 'ElButton' }).exists()).toBe(true);
+    await documents.get('[data-testid="open-document-upload"]').trigger('click');
+    await flushPromises();
+    expect(documents.find('input[type="file"]').exists()).toBe(true);
     expect(documents.get('[data-testid="upload-document"]').classes()).toContain('el-button--primary');
   });
 

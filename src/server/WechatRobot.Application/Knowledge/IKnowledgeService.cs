@@ -7,7 +7,8 @@ public sealed record KnowledgeIndexWork(Guid JobId, Guid DocumentId, Guid Versio
     string CollectionName, int Dimension, VectorDistance Distance, IReadOnlyList<KnowledgeIndexChunk> Chunks,
     string? LeaseOwner = null, int Generation = 1, string? PreviousActiveCollectionName = null,
     int? PreviousActiveEmbeddingDimension = null, VectorDistance? PreviousActiveDistance = null, bool IsCollectionExclusive = false,
-    bool PreviousActiveCollectionExclusive = false, Guid? ModelConfigurationId = null, int? ModelConfigurationVersion = null);
+    bool PreviousActiveCollectionExclusive = false, Guid? ModelConfigurationId = null, int? ModelConfigurationVersion = null,
+    Guid? PrivateKnowledgeIngestBatchId = null);
 
 public interface IKnowledgeService
 {
@@ -17,6 +18,8 @@ public interface IKnowledgeService
         int? modelConfigurationVersion,
         CancellationToken cancellationToken);
     Task<bool> ActivateVersionAsync(KnowledgeIndexWork work, CancellationToken cancellationToken);
+    Task<bool> CompleteIndexAsync(KnowledgeIndexWork work, CancellationToken cancellationToken) =>
+        ActivateVersionAsync(work, cancellationToken);
     Task<bool> IsIndexLeaseOwnedAsync(Guid jobId, string owner, CancellationToken cancellationToken);
     Task EnqueueCleanupAsync(KnowledgeIndexWork work, CancellationToken cancellationToken);
     Task MarkIndexFailedAsync(Guid jobId, string? leaseOwner, string reason, bool retryable, CancellationToken cancellationToken);

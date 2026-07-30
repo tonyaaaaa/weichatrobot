@@ -31,6 +31,7 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
         var context = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
 
+        await context.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
 
         await IdentitySeeder.SeedRolesAsync(roleManager, TestContext.Current.CancellationToken);
@@ -47,6 +48,7 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
             .UseMySQL(_fixture.ConnectionString)
             .Options;
         await using var context = new WechatRobotDbContext(options);
+        await context.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await context.Database.MigrateAsync("20260721092312_InitialIdentityMessaging", TestContext.Current.CancellationToken);
 
         var modelConfigId = Guid.NewGuid();
@@ -78,6 +80,7 @@ public sealed class MigrationTests : IClassFixture<MySqlFixture>
     {
         var options = new DbContextOptionsBuilder<WechatRobotDbContext>().UseMySQL(_fixture.ConnectionString).Options;
         await using var context = new WechatRobotDbContext(options);
+        await context.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await context.Database.MigrateAsync("20260723044912_AddWorkerHeartbeat", TestContext.Current.CancellationToken);
         var robotId = Guid.NewGuid();
         var groupId = Guid.NewGuid();

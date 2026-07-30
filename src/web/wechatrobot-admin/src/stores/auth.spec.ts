@@ -68,6 +68,12 @@ describe('authentication state', () => {
 });
 
 describe('LoginView', () => {
+  it('uses the WeChat Robot product name', () => {
+    const wrapper = mount(LoginView, { global: { plugins: [createPinia()] } });
+
+    expect(wrapper.get('h1').text()).toBe('微信机器人');
+  });
+
   it('renders the authentication error without exposing HTTP details', async () => {
     const pinia = createPinia();
     const auth = useAuthStore(pinia);

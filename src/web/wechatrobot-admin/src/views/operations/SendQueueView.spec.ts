@@ -27,6 +27,17 @@ describe('SendQueueView', () => {
     expect(wrapper.find('[data-testid="cancel-command-dispatching-1"]').exists()).toBe(false);
   });
 
+  it('applies the route group to the first queue request', async () => {
+    const api = createApi();
+    mount(SendQueueView, { props: { api, initialGroup: '技术支持群' } });
+    await flushPromises();
+
+    expect(api.list).toHaveBeenCalledWith(expect.objectContaining({
+      group: '技术支持群',
+      page: 1
+    }));
+  });
+
   it('confirms, mutates with the visible version, and refreshes', async () => {
     const api = createApi();
     const wrapper = mount(SendQueueView, { props: { api } });

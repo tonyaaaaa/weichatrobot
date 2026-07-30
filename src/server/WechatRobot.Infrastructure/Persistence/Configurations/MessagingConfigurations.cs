@@ -89,6 +89,8 @@ internal sealed class KnowledgeTagConfiguration : IEntityTypeConfiguration<Knowl
         builder.Property(entity => entity.Name).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.NormalizedName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Version).IsConcurrencyToken();
+        builder.Property(entity => entity.SystemKind).HasMaxLength(32);
+        builder.HasIndex(entity => entity.SystemKind).IsUnique();
         builder.HasIndex(entity => entity.NormalizedName).IsUnique();
     }
 }
@@ -108,6 +110,10 @@ internal sealed class ConversationMessageConfiguration : IEntityTypeConfiguratio
         builder.Property(entity => entity.TerminalEvidenceJson).HasColumnType("json");
         builder.Property(entity => entity.FallbackHash).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.GroupName).HasMaxLength(256).IsRequired();
+        builder.Property(entity => entity.ChannelType).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
+        builder.Property(entity => entity.PeerDisplayName).HasMaxLength(128);
+        builder.Property(entity => entity.ScopeHash).HasMaxLength(64);
+        builder.HasIndex(entity => new { entity.RobotConfigId, entity.RoomType, entity.ScopeHash });
         builder.Property(entity => entity.GroupRemark).HasMaxLength(256);
         builder.Property(entity => entity.SenderDisplayName).HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.StableSenderId).HasMaxLength(128);
@@ -129,11 +135,16 @@ internal sealed class ConversationSessionConfiguration : IEntityTypeConfiguratio
         builder.ToTable("conversation_session");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.SenderScopeKey).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.ChannelType).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
+        builder.Property(entity => entity.PeerDisplayName).HasMaxLength(128);
+        builder.Property(entity => entity.ScopeHash).HasMaxLength(64);
         builder.Property(entity => entity.Summary).HasColumnType("longtext");
         builder.Property(entity => entity.LeaseOwner).HasMaxLength(128);
         builder.Property(entity => entity.Version).IsConcurrencyToken();
         builder.HasIndex(entity => new { entity.GroupProfileId, entity.SenderScopeKey }).IsUnique();
+        builder.HasIndex(entity => new { entity.RobotConfigId, entity.RoomType, entity.ScopeHash }).IsUnique();
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<RobotConfigEntity>().WithMany().HasForeignKey(entity => entity.RobotConfigId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -144,16 +155,21 @@ internal sealed class RetrievalAuditConfiguration : IEntityTypeConfiguration<Ret
         builder.ToTable("retrieval_audit");
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Decision).HasMaxLength(32).IsRequired();
+        builder.Property(entity => entity.ChannelType).HasMaxLength(16).HasDefaultValue("Group").IsRequired();
         builder.Property(entity => entity.ContextPolicy).HasMaxLength(1024).IsRequired();
         builder.Property(entity => entity.FailureCode).HasMaxLength(64);
         builder.Property(entity => entity.AnswerSource).HasMaxLength(32).HasDefaultValue("none").IsRequired();
+        builder.HasIndex(entity => entity.FixedReplyTemplateId);
+        builder.HasOne<FixedReplyTemplateEntity>().WithMany()
+            .HasForeignKey(entity => entity.FixedReplyTemplateId)
+            .OnDelete(DeleteBehavior.Restrict);
         builder.Property(entity => entity.WebSearchFailureCode).HasMaxLength(64);
         builder.Property(entity => entity.WebSearchSourcesJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.MemoryRecallJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.EvidenceJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.InputSummaryJson).HasColumnType("json").IsRequired();
         builder.HasIndex(entity => entity.ConversationMessageId).IsUnique();
-        builder.HasIndex(entity => new { entity.GroupProfileId, entity.CreatedAtUtc });
+        builder.HasIndex(entity => new { entity.ChannelType, entity.GroupProfileId, entity.CreatedAtUtc });
         builder.HasOne<ConversationMessageEntity>().WithMany().HasForeignKey(entity => entity.ConversationMessageId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<GroupProfileEntity>().WithMany().HasForeignKey(entity => entity.GroupProfileId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<ModelConfigEntity>().WithMany().HasForeignKey(entity => entity.ModelConfigurationId).OnDelete(DeleteBehavior.Restrict);

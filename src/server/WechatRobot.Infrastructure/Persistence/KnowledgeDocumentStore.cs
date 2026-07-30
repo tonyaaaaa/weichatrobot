@@ -25,6 +25,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
             .Select(item => (int?)item.Version).MaxAsync(cancellationToken) is { } current ? current + 1 : 1;
         var version = new KnowledgeDocumentVersionEntity
         {
+            SourceKind = "DocumentUpload",
             KnowledgeDocumentId = documentId, Version = versionNumber, OriginalFileName = request.DisplayName,
             SafeFileName = request.Document.SafeFileName, ContentType = request.Document.ContentType, Sha256 = request.Document.Sha256,
             SizeBytes = request.Document.Content.LongLength,

@@ -19,7 +19,7 @@ async function submit(): Promise<void> {
 <template>
   <main class="login-page">
     <form class="login-card" @submit.prevent="submit">
-      <h1>NewsAgent</h1>
+      <h1>微信机器人</h1>
       <p>企业微信 AI 员工助手后台</p>
       <label>邮箱<input v-model="email" type="email" autocomplete="username" required></label>
       <label>密码<input v-model="password" type="password" autocomplete="current-password" required></label>

@@ -4,8 +4,8 @@ import { getVisibleNavigation, router, routes } from './index';
 
 describe('role-aware navigation', () => {
   it.each([
-    ['Admin', ['工作台', '知识库', '知识库标签', '知识学习审核', '记忆中心', '群管理', '会话审计', '管理审计', '发送队列', '模型配置', '机器人设置', '用户与角色', '系统设置'], ['人工转接']],
-    ['KnowledgeOperator', ['工作台', '知识库', '知识库标签', '知识学习审核', '记忆中心', '会话审计'], ['群管理', '人工转接', '管理审计', '发送队列', '模型配置', '机器人设置', '用户与角色', '系统设置']]
+    ['Admin', ['工作台', '知识库', '知识库标签', '知识学习审核', '私聊知识入库', '记忆中心', '固定回复模板', '群管理', '会话审计', '管理审计', '发送队列', '智能回复诊断', '模型配置', '机器人设置', '用户与角色', '系统设置'], ['人工转接']],
+    ['KnowledgeOperator', ['工作台', '知识库', '知识库标签', '知识学习审核', '记忆中心', '会话审计'], ['私聊知识入库', '固定回复模板', '群管理', '人工转接', '管理审计', '发送队列', '智能回复诊断', '模型配置', '机器人设置', '用户与角色', '系统设置']]
   ])('%s sees only the navigation granted by route metadata', (role, visible, hidden) => {
     const labels = getVisibleNavigation([role]).map(item => item.label);
 
@@ -69,5 +69,10 @@ describe('role-aware navigation', () => {
     const queue = admin?.children?.find(route => route.path === 'operations/send-commands');
     expect(queue?.name).toBe('send-queue');
     expect(queue?.meta?.roles).toEqual(['Admin']);
+    expect(typeof queue?.props).toBe('function');
+    const props = (queue?.props as (route: { query: Record<string, string> }) => unknown)({
+      query: { group: '技术支持群' }
+    });
+    expect(props).toEqual({ initialGroup: '技术支持群' });
   });
 });

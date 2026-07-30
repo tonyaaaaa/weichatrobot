@@ -277,6 +277,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("ChannelType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("Group");
+
                     b.Property<Guid?>("ConversationSessionId")
                         .HasColumnType("char(36)");
 
@@ -313,6 +320,10 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("InReplyToMessageId")
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("PeerDisplayName")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
                     b.Property<string>("ProcessingState")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -332,6 +343,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("varchar(16)")
                         .HasDefaultValue("user");
+
+                    b.Property<int?>("RoomType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ScopeHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
 
                     b.Property<string>("SenderDisplayName")
                         .IsRequired()
@@ -371,8 +389,6 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasIndex("InReplyToMessageId")
                         .IsUnique();
 
-                    b.HasIndex("RobotConfigId");
-
                     b.HasIndex("WorkToolMessageId")
                         .IsUnique();
 
@@ -381,6 +397,8 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("FallbackHash", "FallbackWindowStartUtc")
                         .IsUnique();
+
+                    b.HasIndex("RobotConfigId", "RoomType", "ScopeHash");
 
                     b.ToTable("conversation_message", (string)null);
                 });
@@ -391,6 +409,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("ChannelType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("Group");
+
                     b.Property<DateTime?>("ClearedAtUtc")
                         .HasColumnType("datetime(6)");
 
@@ -400,7 +425,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<Guid>("GroupProfileId")
+                    b.Property<Guid?>("GroupProfileId")
                         .HasColumnType("char(36)");
 
                     b.Property<DateTime>("LastActivityAtUtc")
@@ -415,6 +440,20 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.Property<long>("NextSequence")
                         .HasColumnType("bigint");
+
+                    b.Property<string>("PeerDisplayName")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<Guid?>("RobotConfigId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int?>("RoomType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ScopeHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
 
                     b.Property<string>("SenderScopeKey")
                         .IsRequired()
@@ -434,6 +473,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("GroupProfileId", "SenderScopeKey")
+                        .IsUnique();
+
+                    b.HasIndex("RobotConfigId", "RoomType", "ScopeHash")
                         .IsUnique();
 
                     b.ToTable("conversation_session", (string)null);
@@ -536,6 +578,133 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasIndex("Status", "NextAttemptAtUtc");
 
                     b.ToTable("durable_job", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("IntentDescription")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ReplyText")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScopeType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("NormalizedName")
+                        .IsUnique();
+
+                    b.HasIndex("UpdatedByUserId");
+
+                    b.HasIndex("IsEnabled", "DeletedAtUtc", "Priority");
+
+                    b.ToTable("fixed_reply_template", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateExampleEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("ExampleText")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<string>("NormalizedText")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<Guid>("TemplateId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TemplateId", "NormalizedText")
+                        .IsUnique();
+
+                    b.ToTable("fixed_reply_template_example", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateGroupRuleEntity", b =>
+                {
+                    b.Property<Guid>("TemplateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("GroupProfileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Effect")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.HasKey("TemplateId", "GroupProfileId");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("GroupProfileId", "Effect");
+
+                    b.ToTable("fixed_reply_template_group_rule", (string)null);
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupHumanAgentEntity", b =>
@@ -1250,6 +1419,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("ChangeKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("New");
+
                     b.Property<string>("ContentType")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -1312,6 +1488,23 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<long>("SizeBytes")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("SourceActorDisplayName")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<Guid?>("SourceBatchId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("SourceConversationMessageId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("LegacyUnknown");
+
                     b.Property<byte[]>("StagedContent")
                         .IsRequired()
                         .HasColumnType("longblob");
@@ -1321,6 +1514,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)");
+
+                    b.Property<Guid?>("SupersedesVersionId")
+                        .HasColumnType("char(36)");
 
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("datetime(6)");
@@ -1336,6 +1532,10 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("Sha256")
                         .IsUnique();
+
+                    b.HasIndex("SourceConversationMessageId");
+
+                    b.HasIndex("SupersedesVersionId");
 
                     b.HasIndex("KnowledgeDocumentId", "Version")
                         .IsUnique();
@@ -1429,6 +1629,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("PreviousActiveVersionId")
                         .HasColumnType("char(36)");
 
+                    b.Property<Guid?>("PrivateKnowledgeIngestBatchId")
+                        .HasColumnType("char(36)");
+
                     b.Property<Guid?>("SourceIndexJobId")
                         .HasColumnType("char(36)");
 
@@ -1447,6 +1650,8 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("KnowledgeDocumentId");
+
+                    b.HasIndex("PrivateKnowledgeIngestBatchId");
 
                     b.HasIndex("SourceIndexJobId");
 
@@ -1578,6 +1783,10 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
+                    b.Property<string>("SystemKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
                     b.Property<int>("Version")
                         .IsConcurrencyToken()
                         .HasColumnType("int");
@@ -1585,6 +1794,9 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("NormalizedName")
+                        .IsUnique();
+
+                    b.HasIndex("SystemKind")
                         .IsUnique();
 
                     b.ToTable("knowledge_tag", (string)null);
@@ -1905,6 +2117,82 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.ToTable("memory_observation", (string)null);
                 });
 
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MessageIntentAuditEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("ConversationMessageId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<bool>("FormalConversationIncluded")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<Guid>("GroupProfileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("IntentAgentVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("IntentCategory")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<decimal>("IntentConfidence")
+                        .HasPrecision(5, 4)
+                        .HasColumnType("decimal(5,4)");
+
+                    b.Property<DateTime>("IntentDecidedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("IntentDecision")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
+
+                    b.Property<int>("IntentLatencyMilliseconds")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("IntentModelConfigurationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int?>("IntentModelVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("IntentReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("IntentRuntimeMode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationMessageId")
+                        .IsUnique();
+
+                    b.HasIndex("IntentModelConfigurationId");
+
+                    b.HasIndex("GroupProfileId", "IntentRuntimeMode", "IntentDecision", "IntentDecidedAtUtc")
+                        .HasDatabaseName("IX_intent_audit_diagnostics");
+
+                    b.ToTable("message_intent_audit", (string)null);
+                });
+
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.ModelConfigEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2012,6 +2300,162 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.ToTable("model_config", (string)null);
                 });
 
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.PrivateKnowledgeIngestBatchEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("CorrectionCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("DuplicateCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<string>("FinalNotificationState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<Guid?>("ModelConfigurationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int?>("ModelConfigurationVersion")
+                        .HasColumnType("int");
+
+                    b.Property<int>("NewCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ReceivedNotificationState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<Guid>("RobotConfigId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("RoomType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SourceActorDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<Guid>("SourceConversationMessageId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<int>("SupplementCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ModelConfigurationId");
+
+                    b.HasIndex("RobotConfigId");
+
+                    b.HasIndex("SourceConversationMessageId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "UpdatedAtUtc");
+
+                    b.ToTable("private_knowledge_ingest_batch", (string)null);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.PrivateKnowledgeIngestItemEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Answer")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("AnswerFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("ChangeKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<Guid?>("MatchedDocumentId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("MatchedVersionId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("ProposedTagsJson")
+                        .IsRequired()
+                        .HasColumnType("json");
+
+                    b.Property<string>("Question")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("varchar(2048)");
+
+                    b.Property<string>("QuestionFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("ResolvedTagIdsJson")
+                        .IsRequired()
+                        .HasColumnType("json");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("StagedDocumentId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("StagedVersionId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BatchId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("private_knowledge_ingest_item", (string)null);
+                });
+
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.RetrievalAuditEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2024,6 +2468,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)")
                         .HasDefaultValue("none");
+
+                    b.Property<string>("ChannelType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("Group");
 
                     b.Property<double>("ConfidenceThreshold")
                         .HasColumnType("double");
@@ -2055,7 +2506,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("varchar(64)");
 
-                    b.Property<Guid>("GroupProfileId")
+                    b.Property<Guid?>("FixedReplyTemplateId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int?>("FixedReplyTemplateVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("GroupProfileId")
                         .HasColumnType("char(36)");
 
                     b.Property<string>("InputSummaryJson")
@@ -2082,9 +2539,13 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasIndex("ConversationMessageId")
                         .IsUnique();
 
+                    b.HasIndex("FixedReplyTemplateId");
+
+                    b.HasIndex("GroupProfileId");
+
                     b.HasIndex("ModelConfigurationId");
 
-                    b.HasIndex("GroupProfileId", "CreatedAtUtc");
+                    b.HasIndex("ChannelType", "GroupProfileId", "CreatedAtUtc");
 
                     b.ToTable("retrieval_audit", (string)null);
                 });
@@ -2556,8 +3017,12 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
                         .WithMany()
                         .HasForeignKey("GroupProfileId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.RobotConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("RobotConfigId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.DeadLetterEntity", b =>
@@ -2574,6 +3039,51 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("RelatedConversationMessageId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UpdatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateExampleEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateEntity", null)
+                        .WithMany()
+                        .HasForeignKey("TemplateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateGroupRuleEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateEntity", null)
+                        .WithMany()
+                        .HasForeignKey("TemplateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.GroupHumanAgentEntity", b =>
@@ -2752,6 +3262,11 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasForeignKey("KnowledgeDocumentId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.KnowledgeDocumentVersionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SupersedesVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.KnowledgeIndexJobEntity", b =>
@@ -2767,6 +3282,11 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasForeignKey("KnowledgeDocumentVersionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.PrivateKnowledgeIngestBatchEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PrivateKnowledgeIngestBatchId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.KnowledgeOcrPageEntity", b =>
@@ -2863,7 +3383,7 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.RetrievalAuditEntity", b =>
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.MessageIntentAuditEntity", b =>
                 {
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ConversationMessageEntity", null)
                         .WithMany()
@@ -2876,6 +3396,59 @@ namespace WechatRobot.Infrastructure.Persistence.Migrations
                         .HasForeignKey("GroupProfileId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ModelConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("IntentModelConfigurationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.PrivateKnowledgeIngestBatchEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ModelConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ModelConfigurationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.RobotConfigEntity", null)
+                        .WithMany()
+                        .HasForeignKey("RobotConfigId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ConversationMessageEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceConversationMessageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.PrivateKnowledgeIngestItemEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.PrivateKnowledgeIngestBatchEntity", null)
+                        .WithMany()
+                        .HasForeignKey("BatchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("WechatRobot.Infrastructure.Persistence.Entities.RetrievalAuditEntity", b =>
+                {
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ConversationMessageEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ConversationMessageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.FixedReplyTemplateEntity", null)
+                        .WithMany()
+                        .HasForeignKey("FixedReplyTemplateId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.GroupProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("WechatRobot.Infrastructure.Persistence.Entities.ModelConfigEntity", null)
                         .WithMany()

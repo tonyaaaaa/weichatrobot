@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WechatRobot.Application.Agents;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Groups;
 using WechatRobot.Application.Jobs;
@@ -79,6 +80,72 @@ public sealed class InboundMessageProcessorTests
         Assert.Equal(AnswerDecisionKind.Answer, repository.Result?.Decision.Kind);
     }
 
+    [Fact]
+    public async Task Intent_shadow_records_difference_but_preserves_the_legacy_reply()
+    {
+        var repository = new FakeRepository(Request());
+        var audits = new FakeIntentAuditStore();
+        var processor = new InboundMessageProcessor(
+            repository,
+            new ConversationContextService(),
+            new RetrievalQueryBuilder(new(256)),
+            new FakeSummarizer("summary"),
+            new GroundedAnswerService(
+                new FakeRetrieval(),
+                new FakeChat(),
+                new GroundedAnswerOptions(),
+                new AnswerOutputFirewall()),
+            TimeProvider.System,
+            intentAgent: new FakeIntentAgent(IntentDecision.NoReply),
+            intentAudits: audits,
+            runtimeOptions: new AgentRuntimeOptions
+            {
+                IntentRuntimeMode = IntentRuntimeMode.Shadow
+            });
+
+        await processor.ProcessAsync(
+            Job(repository.Request.MessageId),
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(repository.Result);
+        var audit = Assert.Single(audits.Records);
+        Assert.Equal(IntentRuntimeMode.Shadow, audit.RuntimeMode);
+        Assert.Equal(IntentDecision.NoReply, audit.Result.Decision);
+        Assert.True(audit.FormalConversationIncluded);
+    }
+
+    [Fact]
+    public async Task Formal_intent_uncertain_fails_closed_before_template_rag_or_send()
+    {
+        var repository = new FakeRepository(Request());
+        var audits = new FakeIntentAuditStore();
+        var processor = new InboundMessageProcessor(
+            repository,
+            new ConversationContextService(),
+            new RetrievalQueryBuilder(new(256)),
+            new FakeSummarizer("summary"),
+            new GroundedAnswerService(
+                new FakeRetrieval(),
+                new FakeChat(),
+                new GroundedAnswerOptions(),
+                new AnswerOutputFirewall()),
+            TimeProvider.System,
+            intentAgent: new FakeIntentAgent(IntentDecision.Uncertain),
+            intentAudits: audits,
+            runtimeOptions: new AgentRuntimeOptions
+            {
+                IntentRuntimeMode = IntentRuntimeMode.AgentFramework
+            });
+
+        await processor.ProcessAsync(
+            Job(repository.Request.MessageId),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(repository.Result);
+        Assert.Equal("intent_agent_uncertain", repository.NoReplyDecision?.Reason);
+        Assert.False(Assert.Single(audits.Records).FormalConversationIncluded);
+    }
+
     private static InboundMessageProcessor Processor(FakeRepository repository, IConversationSummarizer summarizer)
     {
         var answer = new GroundedAnswerService(new FakeRetrieval(), new FakeChat(), new GroundedAnswerOptions(), new AnswerOutputFirewall());
@@ -107,10 +174,15 @@ public sealed class InboundMessageProcessorTests
         public ConversationProcessingRequest Request { get; } = request;
         public GroundedAnswerResult? Result { get; private set; }
         public GroundedAnswerResult? HandoffResult { get; private set; }
+        public InboundPolicyDecision? NoReplyDecision { get; private set; }
         public int RenewCount { get; private set; }
         public Task<InboundPolicyDecision> EvaluateInboundPolicyAsync(Guid messageId, string groupName, string? groupRemark, bool wasMentioned, CancellationToken token) =>
             Task.FromResult(new InboundPolicyDecision(messageId, InboundPolicyDecisionKind.Proceed, Request.GroupProfileId, null, "{}"));
-        public Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token) => Task.CompletedTask;
+        public Task PersistNoReplyTerminalAsync(InboundPolicyDecision decision, CancellationToken token)
+        {
+            NoReplyDecision = decision;
+            return Task.CompletedTask;
+        }
         public Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token) => Task.FromResult(Request);
         public Task<ConversationProcessingRequest> LeaseForProcessingAsync(Guid messageId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) => Task.FromResult(Request with { SessionLeaseOwner = leaseOwner });
         public Task<bool> RenewLeaseAsync(Guid sessionId, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken token) { RenewCount++; return Task.FromResult(true); }
@@ -159,6 +231,38 @@ public sealed class InboundMessageProcessorTests
         {
             LastRequest = request;
             return Task.FromResult(new ChatCompletionResponse("clean answer"));
+        }
+    }
+
+    private sealed class FakeIntentAgent(IntentDecision decision) : IMessageIntentAgent
+    {
+        public Task<MessageIntentResult> DecideAsync(
+            MessageIntentRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new MessageIntentResult(
+                decision,
+                decision == IntentDecision.Reply
+                    ? IntentCategory.DirectedToBot
+                    : IntentCategory.Uncertain,
+                decision == IntentDecision.Reply
+                    ? "explicitly_addresses_bot"
+                    : "insufficient_context",
+                .9m,
+                decision == IntentDecision.Uncertain
+                    ? "intent_agent_uncertain"
+                    : null));
+    }
+
+    private sealed class FakeIntentAuditStore : IMessageIntentAuditStore
+    {
+        public List<MessageIntentAuditRecord> Records { get; } = [];
+
+        public Task RecordAsync(
+            MessageIntentAuditRecord record,
+            CancellationToken cancellationToken)
+        {
+            Records.Add(record);
+            return Task.CompletedTask;
         }
     }
 }

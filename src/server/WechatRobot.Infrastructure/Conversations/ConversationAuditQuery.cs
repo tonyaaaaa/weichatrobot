@@ -12,6 +12,8 @@ public sealed class ConversationAuditQuery(WechatRobotDbContext database) : ICon
     {
         var query = database.RetrievalAudits.AsNoTracking();
         if (request.GroupId is { } groupId) query = query.Where(item => item.GroupProfileId == groupId);
+        if (!string.IsNullOrWhiteSpace(request.ChannelType))
+            query = query.Where(item => item.ChannelType == request.ChannelType);
         if (request.FromUtc is { } from) query = query.Where(item => item.CreatedAtUtc >= from);
         if (request.ToUtc is { } to) query = query.Where(item => item.CreatedAtUtc < to);
 
@@ -29,7 +31,9 @@ public sealed class ConversationAuditQuery(WechatRobotDbContext database) : ICon
             .GroupBy(item => item.InReplyToMessageId!.Value)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.CreatedAtUtc).First());
 
-        var sendKeys = messageIds.Select(item => $"grounded-reply:{item:D}").ToArray();
+        var sendKeys = messageIds
+            .SelectMany(item => new[] { $"grounded-reply:{item:D}", $"private-reply:{item:D}" })
+            .ToArray();
         var sends = await database.SendCommands.AsNoTracking().Where(SendKeyPredicate(sendKeys)).ToArrayAsync(token);
         var sendByKey = sends.ToDictionary(item => item.IdempotencyKey, StringComparer.Ordinal);
 
@@ -44,11 +48,13 @@ public sealed class ConversationAuditQuery(WechatRobotDbContext database) : ICon
         {
             var question = questions[audit.ConversationMessageId];
             answers.TryGetValue(question.Id, out var answer);
-            var sendKey = $"grounded-reply:{question.Id:D}";
+            var sendKey = string.Equals(audit.ChannelType, "Private", StringComparison.Ordinal)
+                ? $"private-reply:{question.Id:D}"
+                : $"grounded-reply:{question.Id:D}";
             sendByKey.TryGetValue(sendKey, out var send);
             candidateByMessage.TryGetValue(question.Id, out var candidate);
             return new ConversationAuditItem(
-                audit.Id, audit.GroupProfileId, question.Id, audit.ModelConfigurationId, question.WorkToolMessageId, question.Text, answer?.Text,
+                audit.Id, audit.GroupProfileId, audit.ChannelType, question.Id, audit.ModelConfigurationId, question.WorkToolMessageId, question.Text, answer?.Text,
                 audit.Decision, audit.ConfidenceThreshold, audit.ConfidenceValue, audit.ContextPolicy, audit.FailureCode,
                 audit.AnswerSource, audit.WebSearchFailureCode, audit.WebSearchSourcesJson,
                 audit.MemoryRecallJson, audit.EvidenceJson, audit.InputSummaryJson,

@@ -64,12 +64,13 @@ public sealed class WorkToolCallbackDto
         if (!OfficialTextTypes.Contains(TextType))
             return new(WorkToolCallbackDisposition.Reject, "unknown-text-type");
 
-        if (RoomType != 1 || TextType != 1)
+        if (TextType != 1 || RoomType == 3)
             return new(WorkToolCallbackDisposition.Ignore, "unsupported-message-kind");
 
-        if (string.IsNullOrWhiteSpace(GroupName)
-            || string.IsNullOrWhiteSpace(ReceivedName)
+        if (string.IsNullOrWhiteSpace(ReceivedName)
             || string.IsNullOrWhiteSpace(Spoken))
+            return new(WorkToolCallbackDisposition.Reject, "missing-required-text-field");
+        if (RoomType == 1 && string.IsNullOrWhiteSpace(GroupName))
             return new(WorkToolCallbackDisposition.Reject, "missing-required-group-text-field");
 
         return new(WorkToolCallbackDisposition.Process, string.Empty);

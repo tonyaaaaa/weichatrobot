@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Memory;
 using WechatRobot.Application.Models;
 
@@ -42,6 +43,15 @@ public sealed class ChatMemoryExtractor(
             {
                 id = x.Id,
                 role = Bound(x.Role, 16),
+                senderDisplayName = Bound(
+                    ConversationMessageFormatting.ParticipantLabel(new(
+                        x.Role,
+                        string.Empty,
+                        x.Content,
+                        x.CreatedAtUtc,
+                        x.Id,
+                        SenderDisplayName: x.SenderDisplayName)),
+                    128),
                 content = Bound(x.Content, 4000),
                 createdAtUtc = x.CreatedAtUtc
             })
@@ -75,6 +85,8 @@ public sealed class ChatMemoryExtractor(
         "content":"concise Chinese fact","confidence":0.0,"explicit":false,
         "sourceMessageIds":["guid"]}]}.
         Extract only durable, useful information explicitly supported by the supplied messages.
+        Sender display names are observed labels, not verified identities. Preserve attribution when
+        it is relevant, but never infer that two equal or similar names are the same person.
         Never extract passwords, API keys, access tokens, verification codes, connection strings,
         secrets, or operational credentials. An empty memories array is valid.
         """;

@@ -5,6 +5,10 @@ export interface UploadResult {
   documentId: string; versionId: string; version: number; state: string; safeFileName: string;
   publicUrl: string | null; publicReadWarning: string;
 }
+export interface KnowledgeDocumentTagSummary {
+  id: string;
+  name: string;
+}
 export interface KnowledgeDocumentSummary {
   id: string;
   title: string;
@@ -17,6 +21,9 @@ export interface KnowledgeDocumentSummary {
   latestVersionStatus: string | null;
   latestFailureReason: string | null;
   canRetryUpload: boolean;
+  sourceKind: 'DocumentUpload' | 'ConversationReview' | 'PrivateChatDirect' | 'LegacyUnknown' | string;
+  sourceActorDisplayName: string | null;
+  tags: KnowledgeDocumentTagSummary[];
   createdAtUtc: string;
   updatedAtUtc: string;
 }
@@ -59,6 +66,12 @@ export interface KnowledgeDocumentVersionSummary {
   approvedChunkCount: number;
   ocrPageCount: number;
   ocrFailedPageCount: number;
+  sourceKind?: 'DocumentUpload' | 'ConversationReview' | 'PrivateChatDirect' | 'LegacyUnknown' | string;
+  sourceActorDisplayName?: string | null;
+  sourceBatchId?: string | null;
+  changeKind?: 'New' | 'Duplicate' | 'Supplement' | 'Correction' | string;
+  supersedesVersionId?: string | null;
+  tags: KnowledgeDocumentTagSummary[];
   uploadAndParseJobs: KnowledgeDocumentJobSummary[];
   indexJobs: KnowledgeDocumentIndexJobSummary[];
   createdAtUtc: string;
@@ -71,6 +84,8 @@ export interface KnowledgeDocumentDetail {
 export interface KnowledgeDocumentListRequest {
   query?: string;
   status?: string;
+  sourceKind?: string;
+  tagId?: string;
   page: number;
   pageSize: number;
 }
@@ -143,6 +158,8 @@ export const knowledgeApi: KnowledgeApi = {
       params: {
         query: request.query || undefined,
         status: request.status || undefined,
+        sourceKind: request.sourceKind || undefined,
+        tagId: request.tagId || undefined,
         page: request.page,
         pageSize: request.pageSize
       }

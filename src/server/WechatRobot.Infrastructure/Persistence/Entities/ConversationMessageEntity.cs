@@ -18,6 +18,10 @@ public sealed class ConversationMessageEntity
     public string FallbackHash { get; set; } = string.Empty;
     public DateTime FallbackWindowStartUtc { get; set; }
     public string GroupName { get; set; } = string.Empty;
+    public string ChannelType { get; set; } = "Group";
+    public int? RoomType { get; set; } = 1;
+    public string? PeerDisplayName { get; set; }
+    public string? ScopeHash { get; set; }
     public string? GroupRemark { get; set; }
     public string SenderDisplayName { get; set; } = string.Empty;
     public string? StableSenderId { get; set; }

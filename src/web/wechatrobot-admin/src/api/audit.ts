@@ -2,20 +2,12 @@ import { apiClient } from './http';
 
 export interface AuditApi {
   capability(request?: AuditQuery): Promise<AuditPage>;
-  groupOptions(): Promise<AuditGroupOption[]>;
   createKnowledgeCandidate(auditId: string, answer: string): Promise<{ id: string; status: string; version: number }>;
-}
-
-export interface AuditGroupOption {
-  id: string;
-  name: string;
-  workToolGroupRemark?: string | null;
-  robotName: string;
-  isEnabled: boolean;
 }
 
 export interface AuditQuery {
   groupId?: string;
+  channelType?: 'Group' | 'Private';
   fromUtc?: string;
   toUtc?: string;
   page?: number;
@@ -41,11 +33,12 @@ export interface AuditWebSource {
 
 export interface AuditItem extends Record<string, unknown> {
   id: string;
-  groupProfileId: string;
+  groupProfileId?: string | null;
+  channelType?: 'Group' | 'Private';
   modelConfigurationId?: string | null;
   question: string;
   answer?: string | null;
-  answerSource: 'knowledge' | 'web_search' | 'model_knowledge' | 'insufficient' | 'clarification' | 'system_failure' | 'none';
+  answerSource: 'fixed_template' | 'knowledge' | 'web_search' | 'model_knowledge' | 'insufficient' | 'clarification' | 'system_failure' | 'none';
   webSearchFailureCode?: string | null;
   webSearchSources: AuditWebSource[];
   sources: string[];
@@ -57,6 +50,7 @@ export const auditApi: AuditApi = {
     const response = await apiClient.get<Omit<AuditPage, 'available'>>('/api/audit/conversations', {
       params: {
         groupId: request.groupId || undefined,
+        channelType: request.channelType || undefined,
         fromUtc: request.fromUtc || undefined,
         toUtc: request.toUtc || undefined,
         page: request.page ?? 1,
@@ -64,9 +58,6 @@ export const auditApi: AuditApi = {
       }
     });
     return { available: true, ...response.data };
-  },
-  async groupOptions() {
-    return (await apiClient.get<AuditGroupOption[]>('/api/audit/group-options')).data;
   },
   async createKnowledgeCandidate(auditId, answer) {
     return (await apiClient.post<{ id: string; status: string; version: number }>(

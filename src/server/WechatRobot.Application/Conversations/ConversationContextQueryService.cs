@@ -6,6 +6,7 @@ namespace WechatRobot.Application.Conversations;
 
 public sealed record ConversationContextMessagePreview(
     string Role,
+    string SenderDisplayName,
     string Content,
     DateTime CreatedAtUtc);
 
@@ -62,6 +63,11 @@ public sealed class ConversationContextQueryService(
                 session.Version,
                 context.Messages.Select(message => new ConversationContextMessagePreview(
                     message.Role,
+                    string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase)
+                        ? "机器人"
+                        : string.IsNullOrWhiteSpace(message.SenderDisplayName)
+                            ? session.SenderDisplayName
+                            : message.SenderDisplayName,
                     message.Content,
                     message.CreatedAtUtc)).ToArray(),
                 context.WasIdleReset,

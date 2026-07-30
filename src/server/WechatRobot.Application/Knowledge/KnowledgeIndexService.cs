@@ -75,7 +75,7 @@ public sealed class KnowledgeIndexService(
 
             await RetryVectorAsync(() => vectorStore.SetVersionActiveAsync(collection, work.VersionId, true, cancellationToken));
             await EnsureLeaseOwnedAsync(work, collection);
-            if (!await knowledge.ActivateVersionAsync(work, cancellationToken))
+            if (!await knowledge.CompleteIndexAsync(work, cancellationToken))
             {
                 await vectorStore.SetVersionActiveAsync(collection, work.VersionId, false, cancellationToken);
                 throw new KnowledgeActivationConflictException();

@@ -2,6 +2,8 @@ using System.Text.Json;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Models;
+using WechatRobot.Application.FixedReplies;
+using WechatRobot.Application.Agents;
 
 namespace WechatRobot.Application.Messaging;
 
@@ -11,7 +13,13 @@ public sealed class InboundMessageProcessor(
     RetrievalQueryBuilder retrievalQueries,
     IConversationSummarizer summarizer,
     GroundedAnswerService answers,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    ITemplateRoutingAgent? templateRouter = null,
+    FixedReplyTemplateService? fixedReplies = null,
+    IMessageIntentAgent? intentAgent = null,
+    IMessageIntentAuditStore? intentAudits = null,
+    AgentRuntimeOptions? runtimeOptions = null,
+    IAnswerAgent? answerAgent = null)
 {
     private static readonly TimeSpan SessionLeaseDuration = TimeSpan.FromMinutes(1);
     public async Task ProcessAsync(LeasedDurableJob job, CancellationToken cancellationToken)
@@ -43,11 +51,136 @@ public sealed class InboundMessageProcessor(
             await conversations.PersistNoReplyTerminalAsync(policy, cancellationToken);
             return;
         }
+        var runtime = runtimeOptions ?? new AgentRuntimeOptions();
+        runtime.Validate();
+        if (runtime.IntentRuntimeMode == IntentRuntimeMode.Paused)
+        {
+            var paused = new MessageIntentResult(
+                IntentDecision.NoReply,
+                IntentCategory.Uncertain,
+                "insufficient_context",
+                1,
+                "intent_runtime_paused");
+            if (intentAudits is not null && policy.GroupProfileId is { } pausedGroupId)
+            {
+                await intentAudits.RecordAsync(
+                    new(
+                        payload.MessageId,
+                        pausedGroupId,
+                        IntentRuntimeMode.Paused,
+                        paused,
+                        false,
+                        timeProvider.GetUtcNow().UtcDateTime),
+                    cancellationToken);
+            }
+            await conversations.PersistNoReplyTerminalAsync(
+                new(
+                    payload.MessageId,
+                    InboundPolicyDecisionKind.NoReply,
+                    policy.GroupProfileId,
+                    "intent_runtime_paused",
+                    """{"decision":"no_reply","reason":"intent_runtime_paused"}"""),
+                cancellationToken);
+            return;
+        }
+        if (runtime.IntentRuntimeMode is IntentRuntimeMode.Shadow or IntentRuntimeMode.AgentFramework)
+        {
+            var groupId = policy.GroupProfileId
+                ?? throw new InvalidOperationException("Proceed policy must identify one group.");
+            var intent = intentAgent is null
+                ? new MessageIntentResult(
+                    IntentDecision.Uncertain,
+                    IntentCategory.Uncertain,
+                    "insufficient_context",
+                    0,
+                    "intent_agent_unavailable")
+                : await intentAgent.DecideAsync(
+                    new(payload.MessageId, groupId, payload.WasMentioned),
+                    cancellationToken);
+            var formalConversationIncluded =
+                runtime.IntentRuntimeMode == IntentRuntimeMode.Shadow
+                || intent.Decision == IntentDecision.Reply;
+            if (intentAudits is not null)
+            {
+                await intentAudits.RecordAsync(
+                    new(
+                        payload.MessageId,
+                        groupId,
+                        runtime.IntentRuntimeMode,
+                        intent,
+                        formalConversationIncluded,
+                        timeProvider.GetUtcNow().UtcDateTime),
+                    cancellationToken);
+            }
+            if (runtime.IntentRuntimeMode == IntentRuntimeMode.AgentFramework
+                && intent.Decision != IntentDecision.Reply)
+            {
+                var reason = intent.FailureCode
+                    ?? (intent.Decision == IntentDecision.NoReply
+                        ? intent.ReasonCode
+                        : "intent_agent_uncertain");
+                await conversations.PersistNoReplyTerminalAsync(
+                    new(
+                        payload.MessageId,
+                        InboundPolicyDecisionKind.NoReply,
+                        groupId,
+                        reason,
+                        JsonSerializer.Serialize(new
+                        {
+                            decision = "no_reply",
+                            reason,
+                            category = intent.Category.ToString(),
+                            runtimeMode = runtime.IntentRuntimeMode.ToString()
+                        })),
+                    cancellationToken);
+                return;
+            }
+        }
         var request = await conversations.LeaseForProcessingAsync(payload.MessageId, sessionLeaseOwner, timeProvider.GetUtcNow().UtcDateTime,
             SessionLeaseDuration, cancellationToken);
         var committed = false;
         try
         {
+        if (runtime.TemplateRoutingRuntimeMode == TemplateRoutingRuntimeMode.AgentFramework
+            && templateRouter is not null
+            && fixedReplies is not null)
+        {
+            var route = await templateRouter.RouteAsync(
+                request.GroupProfileId,
+                request.Question,
+                cancellationToken);
+            if (route is MatchFixedTemplate match)
+            {
+                var fixedReply = await fixedReplies.ResolveAsync(
+                    match.TemplateId,
+                    match.ExpectedVersion,
+                    request.GroupProfileId,
+                    cancellationToken);
+                if (fixedReply is not null)
+                {
+                    await EnsureLeaseAsync(request, cancellationToken);
+                    var fixedResult = new GroundedAnswerResult(
+                        new AnswerDecision(
+                            AnswerDecisionKind.Answer,
+                            fixedReply.ReplyText),
+                        new RetrievalAuditDraft(
+                            [],
+                            0,
+                            1,
+                            "fixed_template",
+                            "answer",
+                            AnswerSource: "fixed_template",
+                            FixedReplyTemplateId: fixedReply.Id,
+                            FixedReplyTemplateVersion: fixedReply.Version));
+                    await conversations.PersistAnswerAndEnqueueAsync(
+                        request,
+                        fixedResult,
+                        cancellationToken);
+                    committed = true;
+                    return;
+                }
+            }
+        }
         var effectiveContext = context.Build(request.History, request.ContextPolicy, request.Scope.ScopeKey, request.ReceivedAtUtc, request.Summary);
         string? updatedSummary = null;
         string? summaryFailureCode = null;
@@ -74,10 +207,16 @@ public sealed class InboundMessageProcessor(
         }
         var retrievalQuery = retrievalQueries.Build(request.Question, effectiveContext);
         await EnsureLeaseAsync(request, cancellationToken);
-        var result = await answers.AnswerAsync(new(request.MessageId, request.GroupProfileId, request.Scope.ScopeKey, request.Question,
+        var answerRequest = new GroundedAnswerRequest(request.MessageId, request.GroupProfileId, request.Scope.ScopeKey, request.Question,
             request.AllowedTagIds, effectiveContext, request.ContextPolicy, request.ChatConfiguration, retrievalQuery, request.ModelConfigurationId,
             request.Scope.DegradationReason, summaryFailureCode, request.AnswerFallback,
-            request.RobotConfigId, request.SenderDisplayName), cancellationToken);
+            RobotConfigId: request.RobotConfigId,
+            SubjectKey: request.SenderDisplayName,
+            SenderDisplayName: request.SenderDisplayName);
+        var result = runtime.AnswerRuntimeMode == AnswerRuntimeMode.AgentFramework
+                     && answerAgent is not null
+            ? await answerAgent.AnswerAsync(answerRequest, cancellationToken)
+            : await answers.AnswerAsync(answerRequest, cancellationToken);
         if (effectiveContext.WasIdleReset) result = result with { ResetContextBeforeCurrent = true, UpdatedSummary = null };
         if (updatedSummary is not null) result = result with { UpdatedSummary = updatedSummary };
         await EnsureLeaseAsync(request, cancellationToken);

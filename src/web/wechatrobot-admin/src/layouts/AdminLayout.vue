@@ -6,13 +6,20 @@ import { getVisibleNavigation } from '../router';
 import { useAuthStore } from '../stores/auth';
 const auth = useAuthStore();
 const navigation = computed(() => getVisibleNavigation(auth.user?.roles ?? []));
+const accountLabel = computed(() => {
+  const currentUser = auth.user;
+  if (!currentUser) return '';
+  return currentUser.displayName.includes('\uFFFD')
+    ? currentUser.email
+    : currentUser.displayName;
+});
 const navigationOpen = ref(false);
 </script>
 
 <template>
   <div class="admin-layout">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
-    <header><strong>NewsAgent · AI 群助手</strong><span>{{ auth.user?.displayName }}</span><ElButton class="nav-toggle" data-testid="navigation-toggle" aria-controls="admin-navigation" :aria-expanded="navigationOpen" @click="navigationOpen = !navigationOpen">{{ navigationOpen ? '收起导航' : '展开导航' }}</ElButton></header>
+    <header><strong>微信机器人</strong><span>{{ accountLabel }}</span><ElButton class="nav-toggle" data-testid="navigation-toggle" aria-controls="admin-navigation" :aria-expanded="navigationOpen" @click="navigationOpen = !navigationOpen">{{ navigationOpen ? '收起导航' : '展开导航' }}</ElButton></header>
     <nav id="admin-navigation" :class="{ 'is-open': navigationOpen }" aria-label="后台导航"><RouterLink v-for="item in navigation" :key="item.name" :to="{ name: item.name }" @click="navigationOpen = false">{{ item.label }}</RouterLink></nav>
     <main id="main-content" tabindex="-1"><RouterView /></main>
   </div>

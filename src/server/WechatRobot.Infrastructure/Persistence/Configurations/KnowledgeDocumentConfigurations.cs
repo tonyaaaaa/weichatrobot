@@ -39,6 +39,13 @@ internal sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigu
         builder.Property(entity => entity.StagedContent).HasColumnType("longblob").IsRequired();
         builder.Property(entity => entity.IndexCollectionName).HasMaxLength(128);
         builder.Property(entity => entity.VectorDistance).HasMaxLength(16);
+        builder.Property(entity => entity.SourceKind).HasMaxLength(32).HasDefaultValue("LegacyUnknown").IsRequired();
+        builder.Property(entity => entity.SourceActorDisplayName).HasMaxLength(128);
+        builder.Property(entity => entity.ChangeKind).HasMaxLength(32).HasDefaultValue("New").IsRequired();
+        builder.HasIndex(entity => entity.SourceConversationMessageId);
+        builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany()
+            .HasForeignKey(entity => entity.SupersedesVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(entity => entity.Sha256).IsUnique();
         builder.HasIndex(entity => new { entity.KnowledgeDocumentId, entity.Version }).IsUnique();
         builder.HasOne<KnowledgeDocumentEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentId).OnDelete(DeleteBehavior.Cascade);
@@ -112,6 +119,7 @@ internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Operation).HasMaxLength(32).IsRequired();
         builder.HasIndex(entity => entity.SourceIndexJobId);
+        builder.HasIndex(entity => entity.PrivateKnowledgeIngestBatchId);
         builder.Property(entity => entity.PreviousActiveCollectionName).HasMaxLength(128);
         builder.Property(entity => entity.PreviousActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.CollectionName).HasMaxLength(128).IsRequired();
@@ -125,5 +133,8 @@ internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<
         builder.HasIndex(entity => new { entity.KnowledgeDocumentVersionId, entity.Operation, entity.Status });
         builder.HasOne<KnowledgeDocumentEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne<KnowledgeDocumentVersionEntity>().WithMany().HasForeignKey(entity => entity.KnowledgeDocumentVersionId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<PrivateKnowledgeIngestBatchEntity>().WithMany()
+            .HasForeignKey(entity => entity.PrivateKnowledgeIngestBatchId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

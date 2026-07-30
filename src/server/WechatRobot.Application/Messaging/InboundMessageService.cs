@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.WorkTool;
+using WechatRobot.Application.Conversations;
 
 namespace WechatRobot.Application.Messaging;
 
@@ -13,10 +14,17 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
     public async Task<InboundMessageIngestResult> IngestAsync(Guid robotConfigId, string robotDeduplicationScope, WorkToolCallbackDto callback, CancellationToken cancellationToken)
     {
         var receivedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        var isPrivate = callback.RoomType is 2 or 4;
+        var privateScope = isPrivate
+            ? PrivateConversationScope.Create(
+                robotConfigId,
+                callback.RoomType!.Value,
+                callback.ReceivedName!)
+            : null;
         var deduplication = CreateDeduplicationKey(
             robotDeduplicationScope,
             callback.MessageId,
-            callback.GroupName!,
+            isPrivate ? privateScope!.ScopeHash : callback.GroupName!,
             callback.GroupRemark,
             callback.ReceivedName!,
             callback.Spoken!,
@@ -30,13 +38,17 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
             Normalize(callback.MessageId) ?? string.Empty,
             fallbackHash,
             fallbackWindowStartUtc,
-            Normalize(callback.GroupName)!,
+            Normalize(callback.GroupName) ?? string.Empty,
             Normalize(callback.GroupRemark),
             Normalize(callback.ReceivedName)!,
-            Normalize(callback.Spoken)!,
+            NormalizeMessageText(callback.Spoken)!,
             receivedAtUtc,
             Normalize(callback.ConnectorStableSenderId),
-            callback.AtMe == true), cancellationToken);
+            callback.AtMe == true,
+            isPrivate ? "Private" : "Group",
+            callback.RoomType,
+            privateScope?.PeerDisplayName,
+            privateScope?.ScopeHash), cancellationToken);
     }
 
     public static DeduplicationKey CreateDeduplicationKey(
@@ -68,6 +80,19 @@ public sealed class InboundMessageService(IDurableJobRepository durableJobs, Tim
         }
 
         return Whitespace.Replace(value.Trim(), " ");
+    }
+
+    private static string? NormalizeMessageText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Trim();
     }
 
     private static DateTime FloorToWindow(DateTime timestampUtc, TimeSpan timeBucket)

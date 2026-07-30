@@ -93,7 +93,12 @@ public sealed class MemoryExtractionWorker(
             .OrderByDescending(x => x.SessionSequence)
             .Take(30)
             .OrderBy(x => x.SessionSequence)
-            .Select(x => new MemoryExtractionMessage(x.Id, x.Role, x.Text, x.CreatedAtUtc))
+            .Select(x => new MemoryExtractionMessage(
+                x.Id,
+                x.Role,
+                x.Text,
+                x.CreatedAtUtc,
+                x.SenderDisplayName))
             .ToArrayAsync(cancellationToken);
 
         var scope = MemoryScope.Create(

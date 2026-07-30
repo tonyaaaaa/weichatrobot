@@ -110,6 +110,19 @@ public sealed class DotEnvFileLoaderTests
         Assert.Contains("line 2", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Non_utf8_files_fail_before_loading_corrupted_values()
+    {
+        using var scope = new EnvironmentScope();
+        var file = scope.WriteEnvBytes([0x4e, 0x41, 0x4d, 0x45, 0x3d, 0xff, 0x0a]);
+        scope.Set(DotEnvFileLoader.EnvironmentFileVariable, file);
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => DotEnvFileLoader.Load(scope.ApplicationDirectory));
+
+        Assert.Contains("UTF-8", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("missing-equals")]
     [InlineData("NOT A KEY=value")]
@@ -153,6 +166,13 @@ public sealed class DotEnvFileLoaderTests
         {
             var path = Path.Combine(Root, $"{Guid.NewGuid():N}.env");
             File.WriteAllText(path, content);
+            return path;
+        }
+
+        public string WriteEnvBytes(byte[] content)
+        {
+            var path = Path.Combine(Root, $"{Guid.NewGuid():N}.env");
+            File.WriteAllBytes(path, content);
             return path;
         }
 

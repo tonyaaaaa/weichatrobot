@@ -84,6 +84,16 @@ describe('ModelConfigurationDialog', () => {
     }));
   });
 
+  it('explains that Z.AI business web search uses the general API endpoint', () => {
+    const wrapper = mount(ModelConfigurationDialog, {
+      props: { modelValue: true },
+      global: { stubs: { ElDialog: dialogStub } }
+    });
+
+    expect(wrapper.text()).toContain('https://api.z.ai/api/paas/v4');
+    expect(wrapper.text()).toContain('Coding Plan 专用地址不等同于业务 Web Search 接口');
+  });
+
   it('requires and emits a vector dimension only for embedding configurations', async () => {
     const wrapper = mount(ModelConfigurationDialog, {
       props: { modelValue: true },

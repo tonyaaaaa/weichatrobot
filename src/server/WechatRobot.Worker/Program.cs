@@ -13,8 +13,12 @@ using WechatRobot.Application.Knowledge.Ocr;
 using WechatRobot.Infrastructure.Knowledge.Ocr;
 using WechatRobot.Infrastructure.Storage;
 using WechatRobot.Application.Models;
+using WechatRobot.Application.Agents;
+using WechatRobot.Application.FixedReplies;
+using WechatRobot.Application.PrivateChat;
 using WechatRobot.Application.Security;
 using WechatRobot.Infrastructure.Models;
+using WechatRobot.Infrastructure.Agents;
 using WechatRobot.Infrastructure.Security;
 using WechatRobot.Infrastructure.WorkTool;
 using WechatRobot.Application.Conversations;
@@ -25,6 +29,7 @@ using WechatRobot.Infrastructure.Logging;
 using WechatRobot.Infrastructure.Configuration;
 using WechatRobot.Application.Memory;
 using WechatRobot.Infrastructure.Memory;
+using Microsoft.Extensions.Options;
 
 DotEnvFileLoader.Load();
 var builder = Host.CreateApplicationBuilder(args);
@@ -78,6 +83,29 @@ builder.Services.AddSingleton(knowledgeIndexOptions);
 builder.Services.AddSingleton(KnowledgeIndexWorkerOptions.Default);
 builder.Services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
 builder.Services.AddScoped<ModelConfigurationService>();
+builder.Services.AddScoped<IAgentChatClientFactory, OpenAiCompatibleAgentChatClientFactory>();
+builder.Services.AddScoped<IAgentModelConfigurationReader, AgentModelConfigurationReader>();
+builder.Services.AddScoped<IAgentCapabilityProbe, AgentCapabilityProbe>();
+builder.Services.AddOptions<AgentRuntimeOptions>()
+    .BindConfiguration(AgentRuntimeOptions.SectionName)
+    .Validate(options =>
+    {
+        try { options.Validate(); return true; }
+        catch (InvalidOperationException) { return false; }
+    }, "Agent runtime options are invalid.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(services =>
+    services.GetRequiredService<IOptions<AgentRuntimeOptions>>().Value);
+builder.Services.AddScoped<IMessageIntentAgent, MessageIntentAgent>();
+builder.Services.AddScoped<IMessageIntentAuditStore, MessageIntentAuditStore>();
+builder.Services.AddScoped<IAnswerAgent, AnswerAgent>();
+builder.Services.AddScoped<IFixedReplyTemplateStore, FixedReplyTemplateStore>();
+builder.Services.AddScoped<FixedReplyTemplateService>();
+builder.Services.AddScoped<ITemplateRoutingAgent, TemplateRoutingAgent>();
+builder.Services.AddScoped<IPrivateKnowledgeIngestStore, PrivateKnowledgeIngestStore>();
+builder.Services.AddScoped<IPrivateChatProcessor, PrivateChatProcessor>();
+builder.Services.AddScoped<IPrivateKnowledgeProposalAgent, PrivateKnowledgeProposalAgent>();
+builder.Services.AddScoped<IPrivateKnowledgeIngestProcessor, PrivateKnowledgeIngestProcessor>();
 builder.Services.AddSingleton<MemoryExtractionValidator>();
 builder.Services.AddScoped<IMemoryExtractor, ChatMemoryExtractor>();
 builder.Services.AddScoped<IMemoryRelationshipClassifier, ChatMemoryRelationshipClassifier>();

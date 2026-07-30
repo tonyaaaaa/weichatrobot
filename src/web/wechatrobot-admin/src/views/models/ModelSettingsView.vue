@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { ElAlert, ElButton, ElEmpty, ElSkeleton, ElTag } from 'element-plus';
 import {
   modelApi,
+  type AgentCapabilityTestResult,
   type ModelApi,
   type ModelConfiguration,
   type ModelConfigurationApiError,
@@ -27,6 +28,7 @@ const notice = ref('');
 const items = ref<ModelConfiguration[]>([]);
 const dialogOpen = ref(false);
 const editing = ref<ModelConfiguration>();
+const agentCapabilities = ref<Record<string, AgentCapabilityTestResult>>({});
 
 const groups = computed(() => ([
   {
@@ -107,6 +109,27 @@ async function testWebSearch(configuration: ModelConfiguration): Promise<void> {
   } finally {
     busyId.value = '';
   }
+}
+
+async function testAgentCapabilities(configuration: ModelConfiguration): Promise<void> {
+  busyId.value = `${configuration.id}:agent`;
+  error.value = '';
+  try {
+    const result = await props.api.testAgentCapabilities(configuration.id);
+    agentCapabilities.value = {
+      ...agentCapabilities.value,
+      [configuration.id]: result
+    };
+    notice.value = `${configuration.name} Agent 能力探测完成。`;
+  } catch {
+    error.value = `${configuration.name} Agent 能力探测失败；连接测试状态不受影响。`;
+  } finally {
+    busyId.value = '';
+  }
+}
+
+function capabilityText(supported: boolean): string {
+  return supported ? '支持' : '不支持';
 }
 
 async function toggleEnabled(configuration: ModelConfiguration): Promise<void> {
@@ -270,6 +293,19 @@ onMounted(load);
               最近测试失败：{{ item.lastTestFailureSummary ?? 'invalid_response' }}
             </p>
 
+            <div
+              v-if="item.configurationType === 'chat' && agentCapabilities[item.id]"
+              class="capability-summary"
+              :data-testid="`agent-capabilities-${item.id}`"
+              aria-live="polite"
+            >
+              <span>基础对话：{{ capabilityText(agentCapabilities[item.id].chat) }}</span>
+              <span>函数工具：{{ capabilityText(agentCapabilities[item.id].functionTools) }}</span>
+              <span>工具结果回传：{{ capabilityText(agentCapabilities[item.id].toolResultLoop) }}</span>
+              <span>JSON Object：{{ capabilityText(agentCapabilities[item.id].jsonObject) }}</span>
+              <span>JSON Schema：{{ capabilityText(agentCapabilities[item.id].jsonSchema) }}</span>
+            </div>
+
             <footer class="card-actions">
               <ElButton :data-testid="`edit-${item.id}`" @click="openEdit(item)">编辑</ElButton>
               <ElButton
@@ -277,6 +313,12 @@ onMounted(load);
                 :loading="busyId === `${item.id}:test`"
                 @click="testConnection(item)"
               >测试连接</ElButton>
+              <ElButton
+                v-if="item.configurationType === 'chat'"
+                :data-testid="`test-agent-${item.id}`"
+                :loading="busyId === `${item.id}:agent`"
+                @click="testAgentCapabilities(item)"
+              >测试 Agent 能力</ElButton>
               <ElButton
                 v-if="item.configurationType === 'chat' && item.webSearchMode === 'ZaiChatCompletions'"
                 :data-testid="`test-web-search-${item.id}`"
@@ -417,6 +459,18 @@ onMounted(load);
 .failure-note {
   margin: -4px 0 14px;
   color: var(--el-color-danger);
+  font-size: 13px;
+}
+
+.capability-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: -2px 0 14px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 

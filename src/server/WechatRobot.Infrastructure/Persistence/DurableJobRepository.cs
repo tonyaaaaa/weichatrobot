@@ -13,6 +13,18 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     private MySqlRobotSendLock? activeSendGate;
     public async Task<InboundMessageIngestResult> IngestInboundMessageAsync(InboundMessageIngestRequest request, CancellationToken cancellationToken)
     {
+        var hasWorkToolMessageId = !string.IsNullOrWhiteSpace(request.WorkToolMessageId);
+        var alreadyIngested = await database.ConversationMessages.AsNoTracking().AnyAsync(
+            message =>
+                hasWorkToolMessageId && message.WorkToolMessageId == request.WorkToolMessageId
+                || message.FallbackHash == request.FallbackHash
+                && message.FallbackWindowStartUtc == request.FallbackWindowStartUtc,
+            cancellationToken);
+        if (alreadyIngested)
+        {
+            return InboundMessageIngestResult.Duplicate;
+        }
+
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         var message = new ConversationMessageEntity
         {
@@ -21,6 +33,10 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             FallbackHash = request.FallbackHash,
             FallbackWindowStartUtc = request.FallbackWindowStartUtc,
             GroupName = request.GroupName,
+            ChannelType = request.ChannelType,
+            RoomType = request.RoomType,
+            PeerDisplayName = request.PeerDisplayName,
+            ScopeHash = request.ScopeHash,
             GroupRemark = request.GroupRemark,
             SenderDisplayName = request.SenderDisplayName,
             StableSenderId = request.StableSenderId,
@@ -28,7 +44,9 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             Text = request.Text,
             ReceivedAtUtc = request.ReceivedAtUtc
         };
-        var matchedGroupIds = await database.GroupProfiles.AsNoTracking()
+        var matchedGroupIds = request.ChannelType == "Private"
+            ? []
+            : await database.GroupProfiles.AsNoTracking()
             .Where(group =>
                 group.RobotConfigId == request.RobotConfigId &&
                 group.Name == request.GroupName &&
@@ -44,7 +62,9 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         database.ConversationMessages.Add(message);
         database.DurableJobs.Add(new DurableJobEntity
         {
-            JobType = "ProcessInboundMessage",
+            JobType = request.ChannelType == "Private"
+                ? "ProcessPrivateMessage"
+                : "ProcessInboundMessage",
             RelatedConversationMessageId = message.Id,
             GroupProfileId = message.GroupProfileId,
             PayloadJson = JsonSerializer.Serialize(new
@@ -56,6 +76,10 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 request.SenderDisplayName,
                 request.StableSenderId,
                 request.WasMentioned,
+                request.ChannelType,
+                request.RoomType,
+                request.PeerDisplayName,
+                request.ScopeHash,
                 request.Text,
                 request.ReceivedAtUtc
             })

@@ -52,7 +52,7 @@ public sealed class GroupConversationContextEndpointTests(MySqlFixture fixture) 
         };
         var oldMessage = Message(robot.Id, group, session, 1, "旧问题", "user", "客户甲", now.AddMinutes(-2));
         var currentQuestion = Message(robot.Id, group, session, 2, "当前问题", "user", "客户甲", now.AddSeconds(-2));
-        var currentAnswer = Message(robot.Id, group, session, 3, "当前回答", "assistant", "机器人", now.AddSeconds(-1));
+        var currentAnswer = Message(robot.Id, group, session, 3, "当前回答", "assistant", "错误成员", now.AddSeconds(-1));
         database.AddRange(robot, group, session, oldMessage, currentQuestion, currentAnswer);
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
 
@@ -73,7 +73,9 @@ public sealed class GroupConversationContextEndpointTests(MySqlFixture fixture) 
         Assert.Equal("历史摘要", item.GetProperty("summary").GetString());
         Assert.Equal(2, item.GetProperty("messages").GetArrayLength());
         Assert.Equal("当前问题", item.GetProperty("messages")[0].GetProperty("content").GetString());
+        Assert.Equal("客户甲", item.GetProperty("messages")[0].GetProperty("senderDisplayName").GetString());
         Assert.Equal("当前回答", item.GetProperty("messages")[1].GetProperty("content").GetString());
+        Assert.Equal("机器人", item.GetProperty("messages")[1].GetProperty("senderDisplayName").GetString());
 
         using var cleared = await client.PostAsJsonAsync(
             $"/api/groups/{group.Id:D}/conversation-context/clear",

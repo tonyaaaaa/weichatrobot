@@ -14,7 +14,9 @@ public sealed record RetrievalAuditDraft(IReadOnlyList<RetrievalEvidence> Eviden
     string ContextPolicy, string Decision, string? FailureCode = null, string InputSummaryJson = "{}",
     string AnswerSource = "none", string? WebSearchFailureCode = null,
     IReadOnlyList<ChatSource>? WebSearchSources = null,
-    MemoryRecallResult? MemoryRecall = null);
+    MemoryRecallResult? MemoryRecall = null,
+    Guid? FixedReplyTemplateId = null,
+    int? FixedReplyTemplateVersion = null);
 public sealed record GroundedAnswerResult(AnswerDecision Decision, RetrievalAuditDraft Audit, string? UpdatedSummary = null, bool ResetContextBeforeCurrent = false);
 public sealed record GroundedAnswerRequest(Guid MessageId, Guid GroupProfileId, string SessionScopeKey, string Question,
     IReadOnlyList<Guid> AllowedTagIds, ConversationContextResult Context, GroupContextSettings ContextPolicy,
@@ -22,7 +24,8 @@ public sealed record GroundedAnswerRequest(Guid MessageId, Guid GroupProfileId, 
     string? DegradationReason = null, string? SummaryFailureCode = null,
     GroupAnswerFallbackSettings? AnswerFallback = null,
     Guid? RobotConfigId = null,
-    string? SubjectKey = null);
+    string? SubjectKey = null,
+    string? SenderDisplayName = null);
 
 public interface IRetrievalEvidenceProvider
 {

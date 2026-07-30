@@ -245,9 +245,10 @@ public sealed class GroundedAnswerService(
             messages.Add(new("user",
                 $"<<<UNTRUSTED_CONVERSATION_SUMMARY_BEGIN>>>\n{EscapeUntrusted(request.Context.Summary)}\n<<<UNTRUSTED_CONVERSATION_SUMMARY_END>>>"));
         foreach (var message in request.Context.Messages)
-            messages.Add(new(message.Role, EscapeUntrusted(message.Content)));
+            messages.Add(new("user",
+                $"<<<UNTRUSTED_CONVERSATION_MESSAGE_BEGIN>>>\n{FormatConversationData(message)}\n<<<UNTRUSTED_CONVERSATION_MESSAGE_END>>>"));
         messages.Add(new("user",
-            $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{EscapeUntrusted(request.Question)}\n<<<UNTRUSTED_QUESTION_END>>>"));
+            $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{FormatCurrentQuestion(request)}\n<<<UNTRUSTED_QUESTION_END>>>"));
         return new(messages, webSearch);
     }
 
@@ -283,15 +284,23 @@ public sealed class GroundedAnswerService(
         var contextText = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(request.Context.Summary)) contextText.AppendLine($"Summary data: {EscapeUntrusted(request.Context.Summary)}");
         foreach (var message in request.Context.Messages)
-            contextText.AppendLine($"{message.Role} data: {EscapeUntrusted(message.Content)}");
+            contextText.AppendLine(FormatConversationData(message));
         if (contextText.Length > 0)
             messages.Add(new("user", $"<<<UNTRUSTED_CONVERSATION_CONTEXT_BEGIN>>>\n{contextText}<<<UNTRUSTED_CONVERSATION_CONTEXT_END>>>"));
         var evidenceText = new StringBuilder();
         for (var index = 0; index < evidence.Count; index++) evidenceText.AppendLine($"Evidence data {index + 1}: {EscapeUntrusted(evidence[index].Text)}");
         messages.Add(new("user", $"<<<UNTRUSTED_BUSINESS_EVIDENCE_BEGIN>>>\n{evidenceText}<<<UNTRUSTED_BUSINESS_EVIDENCE_END>>>\n" +
-            $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{EscapeUntrusted(request.Question)}\n<<<UNTRUSTED_QUESTION_END>>>"));
+            $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{FormatCurrentQuestion(request)}\n<<<UNTRUSTED_QUESTION_END>>>"));
         return new(messages);
     }
+
+    private static string FormatConversationData(ConversationHistoryMessage message) =>
+        $"participant: {EscapeUntrusted(ConversationMessageFormatting.ParticipantLabel(message))}\n" +
+        $"content: {EscapeUntrusted(message.Content)}";
+
+    private static string FormatCurrentQuestion(GroundedAnswerRequest request) =>
+        $"participant: {EscapeUntrusted(string.IsNullOrWhiteSpace(request.SenderDisplayName) ? "未知成员" : request.SenderDisplayName.Trim())}\n" +
+        $"content: {EscapeUntrusted(request.Question)}";
 
     private static string EscapeUntrusted(string value) => value
         .Replace("<<<UNTRUSTED_", "<<<ESCAPED_UNTRUSTED_", StringComparison.Ordinal)

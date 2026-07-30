@@ -26,13 +26,35 @@ public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixtu
             ContentType = "text/plain",
             Sha256 = Guid.NewGuid().ToString("N").PadRight(64, '0'),
             ObjectKey = $"test/{suffix}",
-            Status = "uploaded"
+            Status = "uploaded",
+            SourceKind = "PrivateChatDirect",
+            SourceActorDisplayName = "MySQL 测试成员"
+        };
+        document.ActiveVersionId = version.Id;
+        var tag = new KnowledgeTagEntity
+        {
+            Name = $"签证 {suffix}",
+            NormalizedName = $"签证 {suffix}".ToUpperInvariant()
+        };
+        var chunk = new KnowledgeChunkEntity
+        {
+            KnowledgeDocumentVersionId = version.Id,
+            Sequence = 1,
+            Text = "MySQL tag translation",
+            Status = "approved"
         };
         await using (var setup = CreateDatabase())
         {
             await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
             setup.KnowledgeDocuments.Add(document);
             setup.KnowledgeDocumentVersions.Add(version);
+            setup.KnowledgeTags.Add(tag);
+            setup.KnowledgeChunks.Add(chunk);
+            setup.KnowledgeChunkTags.Add(new KnowledgeChunkTagEntity
+            {
+                KnowledgeChunkId = chunk.Id,
+                KnowledgeTagId = tag.Id
+            });
             await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
@@ -41,6 +63,8 @@ public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixtu
         var page = await query.ListAsync(
             suffix,
             "uploaded",
+            "PrivateChatDirect",
+            tag.Id,
             1,
             20,
             TestContext.Current.CancellationToken);
@@ -49,6 +73,8 @@ public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixtu
             TestContext.Current.CancellationToken);
 
         Assert.Equal(document.Id, Assert.Single(page.Items).Id);
+        Assert.Equal("PrivateChatDirect", Assert.Single(page.Items).SourceKind);
+        Assert.Equal(tag.Id, Assert.Single(Assert.Single(page.Items).Tags).Id);
         Assert.Equal(version.Id, Assert.Single(detail!.Versions).Id);
     }
 

@@ -317,7 +317,14 @@ public sealed class GroundedConversationRepository(
             .Where(item => item.Direction != "inbound" || item.ProcessingState == "completed")
             .Where(item => policy.IncludeBotHistory || item.Role == "user")
             .OrderByDescending(item => item.SessionSequence ?? 0).ThenByDescending(item => item.Id).Take(maximumRows)
-            .Select(item => new ConversationHistoryMessage(item.Role, scope.ScopeKey, item.Text, item.CreatedAtUtc, item.Id, item.SessionSequence)).ToArrayAsync(token))
+            .Select(item => new ConversationHistoryMessage(
+                item.Role,
+                scope.ScopeKey,
+                item.Text,
+                item.CreatedAtUtc,
+                item.Id,
+                item.SessionSequence,
+                item.SenderDisplayName)).ToArrayAsync(token))
             .Reverse().ToArray();
         var summary = session?.Summary;
         var allowedTags = await database.GroupProfileTags.AsNoTracking().Where(item => item.GroupProfileId == group.Id)
@@ -402,8 +409,8 @@ public sealed class GroundedConversationRepository(
             InReplyToMessageId = request.MessageId,
             FallbackHash = $"outbound:{request.MessageId:D}",
             FallbackWindowStartUtc = DateTime.UnixEpoch,
-            SenderDisplayName = request.SenderDisplayName,
-            StableSenderId = request.StableSenderId,
+            SenderDisplayName = "机器人",
+            StableSenderId = null,
             Text = result.Decision.GroupText,
             ReceivedAtUtc = now,
             CreatedAtUtc = now
@@ -420,6 +427,8 @@ public sealed class GroundedConversationRepository(
             ContextPolicy = result.Audit.ContextPolicy,
             FailureCode = result.Audit.FailureCode,
             AnswerSource = result.Audit.AnswerSource,
+            FixedReplyTemplateId = result.Audit.FixedReplyTemplateId,
+            FixedReplyTemplateVersion = result.Audit.FixedReplyTemplateVersion,
             WebSearchFailureCode = result.Audit.WebSearchFailureCode,
             WebSearchSourcesJson = JsonSerializer.Serialize(
                 (result.Audit.WebSearchSources ?? []).Take(20).Select((source, index) => new
@@ -611,7 +620,8 @@ public sealed class GroundedConversationRepository(
                     message.Text,
                     message.CreatedAtUtc,
                     message.Id,
-                    message.SessionSequence)).ToArray()));
+                    message.SessionSequence,
+                    message.SenderDisplayName)).ToArray()));
         }
 
         return new GroupConversationContextSourcePage(

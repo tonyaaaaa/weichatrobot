@@ -92,6 +92,211 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
     }
 
     [Fact]
+    public async Task Configuration_does_not_expose_a_redundant_global_public_tag_as_group_bound()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.GroupProfileTags.Add(new GroupProfileTagEntity
+            {
+                GroupProfileId = groupId,
+                KnowledgeTagId = GlobalPublicTagId
+            });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var configuration = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/groups/{groupId}/configuration",
+            TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(
+            GlobalPublicTagId,
+            configuration.GetProperty("boundTagIds").EnumerateArray().Select(value => value.GetGuid()));
+        var globalTag = configuration.GetProperty("availableTags").EnumerateArray()
+            .Single(tag => tag.GetProperty("id").GetGuid() == GlobalPublicTagId);
+        Assert.False(globalTag.GetProperty("isBound").GetBoolean());
+        Assert.Contains(
+            GlobalPublicTagId,
+            configuration.GetProperty("allowedTagIds").EnumerateArray().Select(value => value.GetGuid()));
+    }
+
+    [Fact]
+    public async Task Configuration_returns_authoritative_read_only_group_identity()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var group = await database.GroupProfiles.SingleAsync(
+                item => item.Id == groupId,
+                TestContext.Current.CancellationToken);
+            group.WorkToolGroupRemark = "售后支持";
+            group.RegistrationSource = "WorkToolImport";
+            group.IsEnabled = false;
+            group.ArchivedAtUtc = DateTime.UtcNow;
+            group.StateVersion = 3;
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var response = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/groups/{groupId}/configuration",
+            TestContext.Current.CancellationToken);
+        var identity = response.GetProperty("identity");
+
+        Assert.Equal("groups-test-robot", identity.GetProperty("robotName").GetString());
+        Assert.Equal("售后支持", identity.GetProperty("workToolGroupRemark").GetString());
+        Assert.Equal("WorkToolImport", identity.GetProperty("registrationSource").GetString());
+        Assert.Equal("archived", identity.GetProperty("state").GetString());
+        Assert.False(identity.GetProperty("isEnabled").GetBoolean());
+        Assert.Equal(3, identity.GetProperty("stateVersion").GetInt32());
+    }
+
+    [Fact]
+    public async Task Configuration_returns_default_chat_capability_and_bounded_group_memory_summary()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        var otherGroupId = await SeedGroupAndTagsAsync();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var existingDefaults = await database.ModelConfigs
+                .Where(model => model.ConfigurationType == "chat" && model.IsDefault)
+                .ToArrayAsync(TestContext.Current.CancellationToken);
+            foreach (var existing in existingDefaults) existing.IsDefault = false;
+
+            var suffix = Guid.NewGuid().ToString("N");
+            database.ModelConfigs.Add(new ModelConfigEntity
+            {
+                Name = $"group-chat-{suffix}",
+                NormalizedName = $"GROUP-CHAT-{suffix}".ToUpperInvariant(),
+                Provider = "test",
+                ConfigurationType = "chat",
+                BaseUrl = "https://model.example.test",
+                Model = "test-chat",
+                IsEnabled = true,
+                IsDefault = true,
+                ConnectionStatus = ModelConnectionStatus.Succeeded,
+                WebSearchMode = "ZaiChatCompletions"
+            });
+            database.MemoryEntries.AddRange(
+                new MemoryEntryEntity
+                {
+                    GroupProfileId = groupId, ScopeType = "Group", Status = "active",
+                    Content = "group", NormalizedKey = "group", ValidFromUtc = DateTime.UtcNow
+                },
+                new MemoryEntryEntity
+                {
+                    GroupProfileId = groupId, ScopeType = "User", Status = "active",
+                    Content = "member", NormalizedKey = "member", ValidFromUtc = DateTime.UtcNow
+                },
+                new MemoryEntryEntity
+                {
+                    GroupProfileId = groupId, ScopeType = "Group", Status = "forgotten",
+                    Content = "forgotten", NormalizedKey = "forgotten", ValidFromUtc = DateTime.UtcNow
+                },
+                new MemoryEntryEntity
+                {
+                    GroupProfileId = otherGroupId, ScopeType = "Group", Status = "active",
+                    Content = "other", NormalizedKey = "other", ValidFromUtc = DateTime.UtcNow
+                });
+            database.MemoryCandidates.AddRange(
+                new MemoryCandidateEntity
+                {
+                    GroupProfileId = groupId, ScopeType = "User", Status = "pending",
+                    Content = "pending", NormalizedKey = "pending", Fingerprint = $"pending-{suffix}",
+                    ScopeHash = $"scope-{suffix}", CreatedAtUtc = DateTime.UtcNow, UpdatedAtUtc = DateTime.UtcNow
+                },
+                new MemoryCandidateEntity
+                {
+                    GroupProfileId = groupId, ScopeType = "User", Status = "rejected",
+                    Content = "rejected", NormalizedKey = "rejected", Fingerprint = $"rejected-{suffix}",
+                    ScopeHash = $"scope-rejected-{suffix}", CreatedAtUtc = DateTime.UtcNow, UpdatedAtUtc = DateTime.UtcNow
+                });
+            database.DurableJobs.AddRange(
+                new DurableJobEntity
+                {
+                    GroupProfileId = groupId, JobType = "ExtractConversationMemory",
+                    PayloadJson = "{}", Status = "pending"
+                },
+                new DurableJobEntity
+                {
+                    GroupProfileId = groupId, JobType = "MaintainLongTermMemory",
+                    PayloadJson = "{}", Status = "retrying"
+                },
+                new DurableJobEntity
+                {
+                    GroupProfileId = groupId, JobType = "IndexMemoryEntry",
+                    PayloadJson = "{}", Status = "completed"
+                },
+                new DurableJobEntity
+                {
+                    GroupProfileId = otherGroupId, JobType = "ExtractConversationMemory",
+                    PayloadJson = "{}", Status = "pending"
+                });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var response = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/groups/{groupId}/configuration",
+            TestContext.Current.CancellationToken);
+
+        var model = response.GetProperty("defaultChatModel");
+        Assert.True(model.GetProperty("isConfigured").GetBoolean());
+        Assert.True(model.GetProperty("canUseWebSearch").GetBoolean());
+        Assert.Equal("none", model.GetProperty("unavailableReason").GetString());
+        Assert.Equal("ZaiChatCompletions", model.GetProperty("webSearchMode").GetString());
+
+        var memory = response.GetProperty("memorySummary");
+        Assert.Equal(1, memory.GetProperty("activeGroupMemoryCount").GetInt32());
+        Assert.Equal(1, memory.GetProperty("activeMemberMemoryCount").GetInt32());
+        Assert.Equal(1, memory.GetProperty("pendingCandidateCount").GetInt32());
+        Assert.Equal(2, memory.GetProperty("pendingOrRunningJobCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Configuration_reports_disabled_web_search_mode_as_not_enabled()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var existingDefaults = await database.ModelConfigs
+                .Where(model => model.ConfigurationType == "chat" && model.IsDefault)
+                .ToArrayAsync(TestContext.Current.CancellationToken);
+            foreach (var existing in existingDefaults) existing.IsDefault = false;
+
+            var suffix = Guid.NewGuid().ToString("N");
+            database.ModelConfigs.Add(new ModelConfigEntity
+            {
+                Name = $"group-chat-none-{suffix}",
+                NormalizedName = $"GROUP-CHAT-NONE-{suffix}".ToUpperInvariant(),
+                Provider = "test",
+                ConfigurationType = "chat",
+                BaseUrl = "https://model.example.test",
+                Model = "test-chat",
+                IsEnabled = true,
+                IsDefault = true,
+                ConnectionStatus = ModelConnectionStatus.Succeeded,
+                WebSearchMode = "None"
+            });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var response = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/groups/{groupId}/configuration",
+            TestContext.Current.CancellationToken);
+        var model = response.GetProperty("defaultChatModel");
+
+        Assert.False(model.GetProperty("canUseWebSearch").GetBoolean());
+        Assert.Equal("not_enabled", model.GetProperty("unavailableReason").GetString());
+    }
+
+    [Fact]
     public async Task Disabled_bound_tag_is_exposed_for_removal_but_cannot_be_newly_or_still_bound_on_save()
     {
         var groupId = await SeedGroupAndTagsAsync();

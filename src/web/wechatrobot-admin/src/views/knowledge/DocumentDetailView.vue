@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElAlert, ElButton, ElEmpty, ElInput, ElSkeleton, ElTag } from 'element-plus';
-import { knowledgeApi, type ChunkPolicy, type IndexStatus, type KnowledgeApi, type PreviewItem, type PreviewSet } from '../../api/knowledge';
+import {
+  knowledgeApi,
+  type ChunkPolicy,
+  type IndexStatus,
+  type KnowledgeApi,
+  type KnowledgeDocumentVersionSummary,
+  type PreviewItem,
+  type PreviewSet
+} from '../../api/knowledge';
 import { knowledgeTagApi, type KnowledgeTagApi } from '../../api/knowledgeTags';
 import KnowledgeTagSelector from '../../components/knowledge/KnowledgeTagSelector.vue';
 import { confirmAction as defaultConfirmAction, promptAction as defaultPromptAction } from '../../utils/dialogs';
@@ -25,6 +33,7 @@ const error = ref('');
 const notice = ref('');
 const revision = ref(0);
 const versionStatus = ref('unknown');
+const versionDetail = ref<KnowledgeDocumentVersionSummary>();
 const previews = ref<PreviewItem[]>([]);
 const drafts = ref<Record<string, string>>({});
 const selected = ref<string[]>([]);
@@ -41,7 +50,29 @@ const indexStatus = ref<IndexStatus>({
   documentId: props.documentId, documentStatus: 'unknown', approvedChunkCount: 0,
   consistency: 'not-checked', driftDetails: [], jobs: []
 });
-const canMutatePreviews = computed(() => versionStatus.value === 'uploaded' || versionStatus.value === 'preview');
+const isAutomaticSource = computed(() =>
+  versionDetail.value?.sourceKind === 'ConversationReview' ||
+  versionDetail.value?.sourceKind === 'PrivateChatDirect');
+const isLegacySource = computed(() =>
+  versionDetail.value?.sourceKind === 'LegacyUnknown');
+const canMutatePreviews = computed(() =>
+  !isAutomaticSource.value &&
+  (versionStatus.value === 'uploaded' || versionStatus.value === 'preview'));
+const pageTitle = computed(() =>
+  isAutomaticSource.value ? '入库内容与索引' : '分段与索引');
+const contentTitle = computed(() =>
+  isAutomaticSource.value ? '入库内容' : '分段预览');
+const contentDescription = computed(() =>
+  isAutomaticSource.value
+    ? `共 ${previews.value.length} 段，正文由原入库流程生成并保持只读。`
+    : `修订号 ${revision.value}。合并前请选择两个或更多连续分段。`);
+const sourceText = computed(() => ({
+  DocumentUpload: '文档上传',
+  ConversationReview: '消息审核入库',
+  PrivateChatDirect: '私聊直接入库',
+  LegacyUnknown: '历史数据'
+} as Record<string, string>)[versionDetail.value?.sourceKind ?? 'LegacyUnknown']
+  ?? '其他来源');
 const selectedPreviews = computed(() => selected.value
   .map(id => previews.value.find(item => item.id === id))
   .filter((item): item is PreviewItem => item !== undefined)
@@ -68,9 +99,11 @@ async function load() {
     ]);
     applySet(previewValue);
     indexStatus.value = status;
-    versionStatus.value = Array.isArray(versions)
-      ? versions.find(version => version.id === props.versionId)?.status ?? status.documentStatus
-      : status.documentStatus;
+    versionDetail.value = Array.isArray(versions)
+      ? versions.find(version => version.id === props.versionId)
+      : undefined;
+    versionStatus.value = versionDetail.value?.status ?? status.documentStatus;
+    selectedTagIds.value = versionDetail.value?.tags.map(tag => tag.id) ?? [];
   } catch { error.value = '详情加载失败，请检查服务后重试。'; }
   finally { loading.value = false; }
 }
@@ -211,13 +244,40 @@ onMounted(load);
 
 <template>
   <section class="ops-page" aria-labelledby="document-detail-title">
-    <header class="page-header"><div><p class="eyebrow">知识文档 / 版本</p><h1 id="document-detail-title">分段与索引</h1><p class="mono">文档 {{ documentId }} · 版本 {{ versionId }}</p></div><ElButton @click="load">刷新</ElButton></header>
+    <header class="page-header"><div><p class="eyebrow">知识文档 / 版本</p><h1 id="document-detail-title">{{ pageTitle }}</h1><p class="mono">文档 {{ documentId }} · 版本 {{ versionId }}</p></div><ElButton @click="load">刷新</ElButton></header>
     <ElSkeleton v-if="loading" :rows="7" animated aria-label="正在加载分段和索引状态" />
     <ElAlert v-else-if="error && !previews.length" :title="error" type="error" :closable="false" show-icon><ElButton @click="load">重试</ElButton></ElAlert>
     <template v-else>
       <section class="panel">
+        <div v-if="versionDetail" class="source-evidence">
+          <div><span class="source-label">知识来源</span><strong>{{ sourceText }}</strong></div>
+          <div v-if="versionDetail.sourceActorDisplayName">
+            <span class="source-label">来源成员</span>
+            <strong>{{ versionDetail.sourceActorDisplayName }}</strong>
+          </div>
+          <div>
+            <span class="source-label">当前绑定</span>
+            <strong>{{ versionDetail.tags.length
+              ? versionDetail.tags.map(tag => tag.name).join('、')
+              : '未绑定' }}</strong>
+          </div>
+        </div>
         <ElAlert
-          v-if="!canMutatePreviews"
+          v-if="isAutomaticSource"
+          title="该内容由消息流程自动入库，正文只读；可调整绑定知识库并重新索引。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <ElAlert
+          v-else-if="isLegacySource"
+          title="该版本来自历史数据，来源信息不完整；为保证兼容，保留原有分段与索引操作。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <ElAlert
+          v-else-if="!canMutatePreviews"
           title="当前版本已经批准，分段内容已锁定；如需修改，请上传新版本后重新分段。"
           type="info"
           :closable="false"
@@ -238,7 +298,7 @@ onMounted(load);
         <p v-if="tagError" id="index-tag-error" data-testid="index-tag-error" class="field-error" role="alert">{{ tagError }}</p>
       </section>
       <section class="panel">
-        <div class="policy-grid">
+        <div v-if="!isAutomaticSource" class="policy-grid">
           <label>分段策略
             <select v-model="policyKind" data-testid="chunk-policy-kind">
               <option value="smart">智能分段</option>
@@ -260,15 +320,20 @@ onMounted(load);
             <textarea v-model="qaEntriesText" data-testid="chunk-qa-entries" rows="5" />
           </label>
         </div>
-        <div class="section-heading"><div><h2>分段预览</h2><p>修订号 {{ revision }}。合并前请选择两个或更多连续分段。</p></div>
-          <div class="actions"><ElButton data-testid="generate-previews" :disabled="busy || !canMutatePreviews" @click="generate">重新生成预览</ElButton><ElButton data-testid="merge-selected" :disabled="busy || !canMerge" @click="merge">合并所选{{ selected.length ? `（${selected.length}）` : '' }}</ElButton><ElButton data-testid="approve-previews" type="primary" :disabled="busy || !previews.length || !canMutatePreviews" @click="approve">批准分段</ElButton></div>
+        <div class="section-heading"><div><h2>{{ contentTitle }}</h2><p>{{ contentDescription }}</p></div>
+          <div v-if="!isAutomaticSource" class="actions"><ElButton data-testid="generate-previews" :disabled="busy || !canMutatePreviews" @click="generate">重新生成预览</ElButton><ElButton data-testid="merge-selected" :disabled="busy || !canMerge" @click="merge">合并所选{{ selected.length ? `（${selected.length}）` : '' }}</ElButton><ElButton data-testid="approve-previews" type="primary" :disabled="busy || !previews.length || !canMutatePreviews" @click="approve">批准分段</ElButton></div>
         </div>
-        <ElEmpty v-if="!previews.length" description="暂无分段。请先通过生成预览接口创建分段。" />
+        <ElEmpty
+          v-if="!previews.length"
+          :description="isAutomaticSource
+            ? '该入库记录暂无可展示内容。'
+            : '暂无分段。请先通过生成预览接口创建分段。'"
+        />
         <ol v-else class="chunk-list">
           <li v-for="item in previews" :key="item.id" class="chunk-card">
-            <label class="chunk-select"><input v-model="selected" type="checkbox" :disabled="!canMutatePreviews" :value="item.id" :data-testid="`select-${item.id}`"> 用于合并：选择第 {{ item.sequence + 1 }} 段</label>
+            <label v-if="!isAutomaticSource" class="chunk-select"><input v-model="selected" type="checkbox" :disabled="!canMutatePreviews" :value="item.id" :data-testid="`select-${item.id}`"> 用于合并：选择第 {{ item.sequence + 1 }} 段</label>
             <label :for="`text-${item.id}`">分段内容</label><textarea :id="`text-${item.id}`" v-model="drafts[item.id]" :readonly="!canMutatePreviews" :data-testid="`text-${item.id}`" rows="4" />
-            <div class="actions"><ElButton :data-testid="`edit-${item.id}`" :disabled="busy || !canMutatePreviews" @click="edit(item)">编辑</ElButton><ElButton :data-testid="`split-${item.id}`" :disabled="busy || !canMutatePreviews" @click="split(item)">拆分</ElButton><ElButton :data-testid="`delete-${item.id}`" type="danger" plain :disabled="busy || !canMutatePreviews" @click="remove(item)">删除</ElButton></div>
+            <div v-if="!isAutomaticSource" class="actions"><ElButton :data-testid="`edit-${item.id}`" :disabled="busy || !canMutatePreviews" @click="edit(item)">编辑</ElButton><ElButton :data-testid="`split-${item.id}`" :disabled="busy || !canMutatePreviews" @click="split(item)">拆分</ElButton><ElButton :data-testid="`delete-${item.id}`" type="danger" plain :disabled="busy || !canMutatePreviews" @click="remove(item)">删除</ElButton></div>
           </li>
         </ol>
       </section>
@@ -277,3 +342,33 @@ onMounted(load);
     <p class="sr-live" aria-live="polite">{{ notice }}</p>
   </section>
 </template>
+
+<style scoped>
+.source-evidence {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.source-evidence > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: .65rem;
+  background: var(--color-background);
+}
+
+.source-label {
+  color: var(--color-muted-text);
+  font-size: .85rem;
+}
+
+@media (max-width: 760px) {
+  .source-evidence {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

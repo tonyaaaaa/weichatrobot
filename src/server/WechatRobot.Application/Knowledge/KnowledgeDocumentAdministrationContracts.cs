@@ -1,5 +1,9 @@
 namespace WechatRobot.Application.Knowledge;
 
+public sealed record KnowledgeDocumentTagSummary(
+    Guid Id,
+    string Name);
+
 public sealed record KnowledgeDocumentSummary(
     Guid Id,
     string Title,
@@ -12,6 +16,9 @@ public sealed record KnowledgeDocumentSummary(
     string? LatestVersionStatus,
     string? LatestFailureReason,
     bool CanRetryUpload,
+    string SourceKind,
+    string? SourceActorDisplayName,
+    IReadOnlyList<KnowledgeDocumentTagSummary> Tags,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc);
 
@@ -54,6 +61,12 @@ public sealed record KnowledgeDocumentVersionSummary(
     int ApprovedChunkCount,
     int OcrPageCount,
     int OcrFailedPageCount,
+    string SourceKind,
+    string? SourceActorDisplayName,
+    Guid? SourceBatchId,
+    string ChangeKind,
+    Guid? SupersedesVersionId,
+    IReadOnlyList<KnowledgeDocumentTagSummary> Tags,
     IReadOnlyList<KnowledgeDocumentJobSummary> UploadAndParseJobs,
     IReadOnlyList<KnowledgeDocumentIndexJobSummary> IndexJobs,
     DateTime CreatedAtUtc,

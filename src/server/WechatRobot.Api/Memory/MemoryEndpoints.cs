@@ -97,9 +97,12 @@ public static class MemoryEndpoints
     {
         if (!TryPage(page, pageSize, out var actualPage, out var actualPageSize))
             return Results.BadRequest(new { error = "Invalid pagination." });
-        var types = new[] { "ExtractConversationMemory", "MaintainLongTermMemory", "IndexMemoryEntry", "RemoveMemoryEntryFromIndex" };
         var query = database.DurableJobs.AsNoTracking()
-            .Where(x => types.Contains(x.JobType))
+            .Where(x =>
+                x.JobType == "ExtractConversationMemory"
+                || x.JobType == "MaintainLongTermMemory"
+                || x.JobType == "IndexMemoryEntry"
+                || x.JobType == "RemoveMemoryEntryFromIndex")
             .Where(x => groupProfileId == null || x.GroupProfileId == groupProfileId)
             .Where(x => string.IsNullOrEmpty(status) || x.Status == status);
         var total = await query.CountAsync(cancellationToken);

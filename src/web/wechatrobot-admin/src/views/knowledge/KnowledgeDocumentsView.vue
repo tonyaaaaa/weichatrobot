@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { ElAlert, ElButton, ElEmpty, ElProgress, ElSkeleton, ElTag } from 'element-plus';
+import {
+  ElAlert,
+  ElButton,
+  ElDialog,
+  ElEmpty,
+  ElOption,
+  ElProgress,
+  ElSelect,
+  ElSkeleton,
+  ElTag
+} from 'element-plus';
 import { getActivePinia } from 'pinia';
 import {
   knowledgeApi,
@@ -9,6 +19,11 @@ import {
   type KnowledgeDocumentSummary,
   type UploadResult
 } from '../../api/knowledge';
+import {
+  knowledgeTagApi,
+  type KnowledgeTagApi,
+  type KnowledgeTagOption
+} from '../../api/knowledgeTags';
 import { useAuthStore } from '../../stores/auth';
 import { confirmAction as defaultConfirmAction } from '../../utils/dialogs';
 
@@ -28,8 +43,10 @@ interface DocumentMutationError {
 
 const props = withDefaults(defineProps<{
   api?: Partial<DocumentsApi>;
+  tagApi?: Pick<KnowledgeTagApi, 'options'>;
   confirmAction?: (message: string) => boolean | Promise<boolean>;
 }>(), {
+  tagApi: () => knowledgeTagApi,
   confirmAction: defaultConfirmAction
 });
 const activePinia = getActivePinia();
@@ -39,9 +56,14 @@ const progress = ref(0);
 const uploading = ref(false);
 const uploadError = ref('');
 const result = ref<UploadResult>();
+const uploadDialogVisible = ref(false);
+const tagOptions = ref<KnowledgeTagOption[]>([]);
+const tagOptionsError = ref('');
 const filters = reactive({
   query: '',
   status: '',
+  sourceKind: '',
+  tagId: '',
   page: 1,
   pageSize: 20
 });
@@ -91,11 +113,21 @@ async function upload(): Promise<void> {
       value => { progress.value = value; });
     progress.value = 100;
     if (canListDocuments()) await load();
+    uploadDialogVisible.value = false;
+    notice.value = `${result.value.safeFileName} 已上传，文档列表已刷新。`;
   } catch (value) {
     uploadError.value = message(value);
   } finally {
     uploading.value = false;
   }
+}
+
+function openUploadDialog(): void {
+  selectedFile.value = undefined;
+  progress.value = 0;
+  uploadError.value = '';
+  result.value = undefined;
+  uploadDialogVisible.value = true;
 }
 
 function canListDocuments(): boolean {
@@ -120,6 +152,25 @@ async function load(): Promise<void> {
 async function applyFilters(): Promise<void> {
   filters.page = 1;
   await load();
+}
+
+async function resetFilters(): Promise<void> {
+  filters.query = '';
+  filters.status = '';
+  filters.sourceKind = '';
+  filters.tagId = '';
+  filters.page = 1;
+  await load();
+}
+
+async function loadTagOptions(): Promise<void> {
+  tagOptionsError.value = '';
+  try {
+    tagOptions.value = await props.tagApi.options();
+  } catch {
+    tagOptions.value = [];
+    tagOptionsError.value = '知识库筛选项加载失败，文档列表仍可正常使用。';
+  }
 }
 
 async function goToPage(value: number): Promise<void> {
@@ -229,8 +280,34 @@ function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   return 'warning';
 }
 
+function statusLabel(status: string): string {
+  return ({
+    uploading: '上传中',
+    failed: '处理失败',
+    uploaded: '已上传',
+    parsing: '解析中',
+    preview: '待审核分段',
+    approved: '分段已批准',
+    indexing: '索引中',
+    active: '已生效',
+    disabled: '已停用'
+  } as Record<string, string>)[status] ?? status;
+}
+
+function sourceLabel(sourceKind: string): string {
+  return ({
+    DocumentUpload: '文档上传',
+    ConversationReview: '消息审核入库',
+    PrivateChatDirect: '私聊直接入库',
+    LegacyUnknown: '历史数据'
+  } as Record<string, string>)[sourceKind] ?? '其他来源';
+}
+
 onMounted(() => {
-  if (canListDocuments()) void load();
+  if (canListDocuments()) {
+    void load();
+    void loadTagOptions();
+  }
 });
 </script>
 
@@ -240,63 +317,77 @@ onMounted(() => {
       <div>
         <p class="eyebrow">知识库运营</p>
         <h1 id="documents-title">知识文档</h1>
-        <p>上传并管理 Markdown、TXT、PDF 或 DOCX，按持久化状态进入版本、分段和索引流程。</p>
+        <p>统一查看知识来源、绑定知识库和处理状态，再进入详情处理版本、分段与索引。</p>
       </div>
-      <ElButton v-if="canListDocuments()" :loading="loading" @click="load">刷新列表</ElButton>
+      <div class="header-actions">
+        <ElButton
+          type="primary"
+          data-testid="open-document-upload"
+          @click="openUploadDialog"
+        >上传文档</ElButton>
+        <ElButton v-if="canListDocuments()" :loading="loading" @click="load">刷新列表</ElButton>
+      </div>
     </header>
 
-    <section class="panel upload-panel" aria-labelledby="upload-title">
-      <div class="panel-heading">
-        <div>
-          <h2 id="upload-title">上传文档</h2>
-          <p>上传成功只代表源文件已接收；解析、OCR、分段审核与索引状态以文档列表和详情为准。</p>
+    <ElDialog
+      v-model="uploadDialogVisible"
+      title="上传知识文档"
+      width="min(42rem, calc(100vw - 2rem))"
+      append-to-body
+      :close-on-click-modal="!uploading"
+      :close-on-press-escape="!uploading"
+      :show-close="!uploading"
+    >
+      <div data-testid="document-upload-dialog" class="upload-dialog-content">
+        <p class="helper">上传成功只代表源文件已接收；后续解析、分段与索引状态请从文档详情查看。</p>
+        <div class="form-row">
+          <label for="knowledge-file">文件（Markdown / TXT / PDF / DOCX）</label>
+          <input id="knowledge-file" type="file" accept=".md,.txt,.pdf,.doc,.docx" @change="chooseFile">
+          <p class="helper">旧版 DOC 需要先转换为 DOCX；系统不会在后台静默转换格式。</p>
+          <ElAlert
+            v-if="isLegacyDoc"
+            title="检测到 DOC 文件，请先用 Word 另存为 DOCX 后再上传。"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
         </div>
-      </div>
-      <div class="form-row">
-        <label for="knowledge-file">文件（Markdown / TXT / PDF / DOCX）</label>
-        <input id="knowledge-file" type="file" accept=".md,.txt,.pdf,.doc,.docx" @change="chooseFile">
-        <p class="helper">旧版 DOC 需要先转换为 DOCX；系统不会在后台静默转换格式。</p>
+        <div v-if="uploading || progress" class="progress-block" aria-live="polite">
+          <ElProgress
+            :percentage="progress"
+            :stroke-width="10"
+            :aria-label="`上传进度 ${progress}%`"
+          />
+        </div>
         <ElAlert
-          v-if="isLegacyDoc"
-          title="检测到 DOC 文件，请先用 Word 另存为 DOCX 后再上传。"
-          type="warning"
+          v-if="uploadError"
+          :title="`${uploadError} 请修正后重新上传。`"
+          type="error"
           :closable="false"
           show-icon
+          role="alert"
         />
       </div>
-      <div v-if="uploading || progress" class="progress-block" aria-live="polite">
-        <ElProgress
-          :percentage="progress"
-          :stroke-width="10"
-          :aria-label="`上传进度 ${progress}%`"
-        />
-      </div>
-      <ElAlert
-        v-if="uploadError"
-        :title="`${uploadError} 请修正后重新上传。`"
-        type="error"
-        :closable="false"
-        show-icon
-        role="alert"
-      />
-      <div v-if="result" class="notice success" aria-live="polite">
-        <p>已上传 {{ result.safeFileName }}，当前状态：{{ result.state }}。</p>
-        <a
-          class="primary-link"
-          data-testid="open-document-detail"
-          :href="`/knowledge/documents/${result.documentId}/versions/${result.versionId}`"
-        >进入分段与索引</a>
-      </div>
-      <ElButton
-        type="primary"
-        data-testid="upload-document"
-        :loading="uploading"
-        :disabled="isLegacyDoc"
-        @click="upload"
-      >
-        {{ uploading ? '正在上传…' : '上传文档' }}
-      </ElButton>
-    </section>
+      <template #footer>
+        <ElButton :disabled="uploading" @click="uploadDialogVisible = false">取消</ElButton>
+        <ElButton
+          type="primary"
+          data-testid="upload-document"
+          :loading="uploading"
+          :disabled="isLegacyDoc"
+          @click="upload"
+        >{{ uploading ? '正在上传…' : '开始上传' }}</ElButton>
+      </template>
+    </ElDialog>
+
+    <div v-if="result" class="notice success upload-result" aria-live="polite">
+      <p>已上传 {{ result.safeFileName }}，当前状态：{{ statusLabel(result.state) }}。</p>
+      <a
+        class="primary-link"
+        data-testid="open-document-detail"
+        :href="`/knowledge/documents/${result.documentId}/versions/${result.versionId}`"
+      >进入分段与索引</a>
+    </div>
 
     <ElAlert
       v-if="listError"
@@ -317,6 +408,16 @@ onMounted(() => {
       role="alert"
     />
     <ElAlert
+      v-if="tagOptionsError"
+      data-testid="document-tag-options-error"
+      :title="tagOptionsError"
+      type="warning"
+      :closable="false"
+      show-icon
+    >
+      <ElButton @click="loadTagOptions">重试加载筛选项</ElButton>
+    </ElAlert>
+    <ElAlert
       v-if="notice"
       data-testid="document-list-notice"
       :title="notice"
@@ -334,7 +435,7 @@ onMounted(() => {
       </header>
 
       <div class="filter-bar">
-        <label>
+        <label class="query-filter">
           <span>文档名称</span>
           <input
             v-model.trim="filters.query"
@@ -345,29 +446,67 @@ onMounted(() => {
           >
         </label>
         <label>
-          <span>持久化状态</span>
-          <select
+          <span>绑定知识库</span>
+          <ElSelect
+            v-model="filters.tagId"
+            data-testid="document-tag-filter"
+            placeholder="全部知识库"
+            clearable
+          >
+            <ElOption
+              v-for="tag in tagOptions"
+              :key="tag.id"
+              :label="tag.name"
+              :value="tag.id"
+            />
+          </ElSelect>
+        </label>
+        <label>
+          <span>来源</span>
+          <ElSelect
+            v-model="filters.sourceKind"
+            data-testid="document-source-filter"
+            placeholder="全部来源"
+            clearable
+          >
+            <ElOption label="文档上传" value="DocumentUpload" />
+            <ElOption label="消息审核入库" value="ConversationReview" />
+            <ElOption label="私聊直接入库" value="PrivateChatDirect" />
+            <ElOption label="历史数据" value="LegacyUnknown" />
+          </ElSelect>
+        </label>
+        <label>
+          <span>状态</span>
+          <ElSelect
             v-model="filters.status"
             data-testid="document-status-filter"
-            @change="applyFilters"
+            placeholder="全部状态"
+            clearable
           >
-            <option value="">全部状态</option>
-            <option value="uploading">uploading</option>
-            <option value="failed">failed</option>
-            <option value="uploaded">uploaded</option>
-            <option value="parsing">parsing</option>
-            <option value="preview">preview</option>
-            <option value="approved">approved</option>
-            <option value="indexing">indexing</option>
-            <option value="active">active</option>
-            <option value="disabled">disabled</option>
-          </select>
+            <ElOption label="上传中" value="uploading" />
+            <ElOption label="处理失败" value="failed" />
+            <ElOption label="已上传" value="uploaded" />
+            <ElOption label="解析中" value="parsing" />
+            <ElOption label="待审核分段" value="preview" />
+            <ElOption label="分段已批准" value="approved" />
+            <ElOption label="索引中" value="indexing" />
+            <ElOption label="已生效" value="active" />
+            <ElOption label="已停用" value="disabled" />
+          </ElSelect>
         </label>
-        <ElButton
-          data-testid="apply-document-filters"
-          :loading="loading"
-          @click="applyFilters"
-        >查询</ElButton>
+        <div class="filter-actions">
+          <ElButton
+            data-testid="reset-document-filters"
+            :disabled="loading"
+            @click="resetFilters"
+          >重置</ElButton>
+          <ElButton
+            type="primary"
+            data-testid="apply-document-filters"
+            :loading="loading"
+            @click="applyFilters"
+          >查询</ElButton>
+        </div>
       </div>
 
       <ElSkeleton
@@ -385,9 +524,9 @@ onMounted(() => {
           <thead>
             <tr>
               <th>文档</th>
-              <th>文档状态</th>
-              <th>最新版本</th>
-              <th>失败摘要</th>
+              <th>绑定知识库</th>
+              <th>来源</th>
+              <th>状态</th>
               <th>更新时间</th>
               <th class="actions-column">操作</th>
             </tr>
@@ -400,21 +539,35 @@ onMounted(() => {
             >
               <td>
                 <strong>{{ document.title }}</strong>
-                <span class="secondary-line">共 {{ document.versionCount }} 个版本</span>
-              </td>
-              <td>
-                <ElTag :type="statusType(document.status)" effect="plain">
-                  {{ document.status }}
-                </ElTag>
-              </td>
-              <td>
-                <span v-if="document.latestVersion !== null">
-                  v{{ document.latestVersion }} · {{ document.latestVersionStatus ?? 'unknown' }}
+                <span class="secondary-line">
+                  {{ document.latestVersion === null ? '暂无版本' : `最新 v${document.latestVersion}` }}
+                  · 共 {{ document.versionCount }} 个版本
                 </span>
-                <span v-else class="muted">暂无版本</span>
               </td>
-              <td class="failure-cell">
-                {{ document.latestFailureReason ?? '—' }}
+              <td class="tag-cell">
+                <div v-if="document.tags.length" class="tag-list">
+                  <ElTag
+                    v-for="tag in document.tags"
+                    :key="tag.id"
+                    effect="plain"
+                    type="success"
+                  >{{ tag.name }}</ElTag>
+                </div>
+                <span v-else class="muted">未绑定</span>
+              </td>
+              <td>
+                <strong>{{ sourceLabel(document.sourceKind) }}</strong>
+                <span v-if="document.sourceActorDisplayName" class="secondary-line">
+                  {{ document.sourceActorDisplayName }}
+                </span>
+              </td>
+              <td class="status-cell">
+                <ElTag :type="statusType(document.status)" effect="plain">
+                  {{ statusLabel(document.status) }}
+                </ElTag>
+                <span v-if="document.latestFailureReason" class="failure-summary secondary-line">
+                  {{ document.latestFailureReason }}
+                </span>
               </td>
               <td>{{ dateText(document.updatedAtUtc) }}</td>
               <td>
@@ -443,6 +596,71 @@ onMounted(() => {
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div v-if="!loading && page.items.length" class="document-cards">
+        <article
+          v-for="document in page.items"
+          :key="document.id"
+          class="document-card"
+          :data-testid="`document-card-${document.id}`"
+        >
+          <header>
+            <div>
+              <h3>{{ document.title }}</h3>
+              <p class="secondary-line">
+                {{ document.latestVersion === null ? '暂无版本' : `最新 v${document.latestVersion}` }}
+                · 共 {{ document.versionCount }} 个版本
+              </p>
+            </div>
+            <ElTag :type="statusType(document.status)" effect="plain">
+              {{ statusLabel(document.status) }}
+            </ElTag>
+          </header>
+          <dl>
+            <div>
+              <dt>绑定知识库</dt>
+              <dd>
+                <span v-if="document.tags.length">
+                  {{ document.tags.map(tag => tag.name).join('、') }}
+                </span>
+                <span v-else class="muted">未绑定</span>
+              </dd>
+            </div>
+            <div>
+              <dt>来源</dt>
+              <dd>
+                {{ sourceLabel(document.sourceKind) }}
+                <span v-if="document.sourceActorDisplayName">
+                  · {{ document.sourceActorDisplayName }}
+                </span>
+              </dd>
+            </div>
+            <div v-if="document.latestFailureReason">
+              <dt>失败摘要</dt>
+              <dd class="failure-summary">{{ document.latestFailureReason }}</dd>
+            </div>
+            <div><dt>更新时间</dt><dd>{{ dateText(document.updatedAtUtc) }}</dd></div>
+          </dl>
+          <div class="row-actions">
+            <a
+              class="secondary-link action-link"
+              :href="`/knowledge/documents/${encodeURIComponent(document.id)}`"
+            >查看详情</a>
+            <ElButton
+              v-if="document.canRetryUpload"
+              :loading="busyId === document.id && busyOperation === 'retry'"
+              @click="retryUpload(document)"
+            >重试上传</ElButton>
+            <ElButton
+              v-if="canRequestPhysicalDelete"
+              type="danger"
+              plain
+              :loading="busyId === document.id && busyOperation === 'physical-delete'"
+              @click="requestPhysicalDelete(document)"
+            >提交物理删除</ElButton>
+          </div>
+        </article>
       </div>
 
       <footer class="pagination-bar">
@@ -488,6 +706,14 @@ onMounted(() => {
   color: var(--color-muted-text);
 }
 
+.header-actions,
+.filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
 .panel {
   min-width: 0;
   padding: var(--space-xl);
@@ -497,10 +723,26 @@ onMounted(() => {
   box-shadow: var(--shadow-sm);
 }
 
-.upload-panel,
 .management-panel {
   display: grid;
   gap: var(--space-lg);
+}
+
+.upload-dialog-content {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-lg);
+}
+
+.upload-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.upload-result p {
+  margin: 0;
 }
 
 .form-row {
@@ -530,7 +772,12 @@ onMounted(() => {
 
 .filter-bar {
   display: grid;
-  grid-template-columns: minmax(16rem, 1fr) minmax(11rem, auto) auto;
+  grid-template-columns:
+    minmax(14rem, 1.4fr)
+    minmax(11rem, 1fr)
+    minmax(11rem, 1fr)
+    minmax(11rem, 1fr)
+    auto;
   align-items: end;
   gap: var(--space-md);
 }
@@ -542,7 +789,8 @@ onMounted(() => {
 }
 
 .filter-bar input,
-.filter-bar select {
+.filter-bar .el-select {
+  width: 100%;
   min-height: 44px;
 }
 
@@ -569,9 +817,22 @@ th {
   font-weight: 600;
 }
 
-.failure-cell {
-  min-width: 16rem;
-  max-width: 28rem;
+.tag-cell {
+  min-width: 12rem;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.status-cell {
+  min-width: 12rem;
+}
+
+.failure-summary {
+  color: var(--el-color-danger);
 }
 
 .actions-column {
@@ -598,6 +859,51 @@ th {
   color: var(--color-muted-text);
 }
 
+.document-cards {
+  display: none;
+}
+
+.document-card {
+  min-width: 0;
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: .75rem;
+  background: var(--color-background);
+}
+
+.document-card header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.document-card h3,
+.document-card p {
+  margin: 0;
+}
+
+.document-card dl {
+  display: grid;
+  gap: var(--space-md);
+  margin: var(--space-lg) 0;
+}
+
+.document-card dl div {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.document-card dt {
+  color: var(--color-muted-text);
+  font-size: .85rem;
+  font-weight: 600;
+}
+
+.document-card dd {
+  margin: 0;
+}
+
 @media (max-width: 860px) {
   .page-header,
   .panel-heading,
@@ -608,6 +914,20 @@ th {
 
   .filter-bar {
     grid-template-columns: 1fr;
+  }
+
+  .table-scroll {
+    display: none;
+  }
+
+  .document-cards {
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .upload-result {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

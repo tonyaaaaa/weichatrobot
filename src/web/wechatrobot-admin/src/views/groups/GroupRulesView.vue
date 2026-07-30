@@ -1,32 +1,77 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
-import { groupApi, type AnswerFallbackSettings, type ContextOverrides, type EffectiveContext, type GroupApi, type GroupRule, type PatternKind } from '../../api/groups';
-import ContextPolicyForm from '../../components/groups/ContextPolicyForm.vue';
-import RuleEditor from '../../components/groups/RuleEditor.vue';
-import RulePreview from '../../components/groups/RulePreview.vue';
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { onBeforeRouteLeave } from 'vue-router';
+import {
+  ElAlert,
+  ElButton,
+  ElMessage,
+  ElSkeleton,
+  ElTabPane,
+  ElTabs,
+  ElTag
+} from 'element-plus';
+import {
+  groupApi,
+  type AnswerFallbackSettings,
+  type ContextOverrides,
+  type EffectiveContext,
+  type GroupApi,
+  type GroupConfiguration,
+  type GroupLifecycleStatus,
+  type GroupRule,
+  type PatternKind
+} from '../../api/groups';
+import GroupAdvancedSettingsPanel from '../../components/groups/GroupAdvancedSettingsPanel.vue';
+import GroupContextMemoryPanel from '../../components/groups/GroupContextMemoryPanel.vue';
+import GroupKnowledgeAnswerPanel from '../../components/groups/GroupKnowledgeAnswerPanel.vue';
+import GroupRunRecordsPanel from '../../components/groups/GroupRunRecordsPanel.vue';
+import { confirmAction } from '../../utils/dialogs';
+import {
+  createGroupConfigurationDraft,
+  groupConfigurationDraftSignature,
+  type GroupConfigurationDraft
+} from './groupConfigurationDraft';
 
 const props = withDefaults(
   defineProps<{
     id: string;
-    api?: Pick<GroupApi, 'getConfiguration' | 'updateConfiguration' | 'previewRules'>;
+    api?: Pick<GroupApi, 'getConfiguration' | 'updateConfiguration' | 'previewRules' | 'clearContext'>;
   }>(),
   { api: () => groupApi }
 );
+
 const includeRules = ref<GroupRule[]>([]);
 const excludeRules = ref<GroupRule[]>([]);
 const boundTagIds = ref<string[]>([]);
-const availableTags = ref<{ id: string; name: string; isGlobalPublic: boolean; isEnabled: boolean; isBound: boolean }[]>([]);
+const availableTags = ref<GroupConfiguration['availableTags']>([]);
 const previewGroupNames = ref('');
 const previewResults = ref<{ groupName: string; isMatch: boolean; isExcluded: boolean }[]>([]);
-const notice = ref('');
-const saveError = ref('');
 const groupName = ref('');
+const identity = reactive({
+  robotName: '',
+  workToolGroupRemark: null as string | null,
+  registrationSource: '',
+  state: 'enabled' as GroupLifecycleStatus,
+  isEnabled: true,
+  stateVersion: 0
+});
 const configurationVersion = ref(0);
 const loading = ref(true);
+const saving = ref(false);
 const loadError = ref('');
+const canRetryLoad = ref(false);
 const configurationLoaded = ref(false);
+const activeTab = ref('knowledge');
+const savedSignature = ref('');
 const configured = reactive<ContextOverrides>({});
-const effective = ref<EffectiveContext>({ senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true });
+const effective = ref<EffectiveContext>({
+  senderIsolated: false,
+  historyTurns: 6,
+  idleTimeoutMinutes: 30,
+  tokenCap: 3000,
+  summaryEnabled: true,
+  includeBotHistory: true
+});
 const answerFallback = reactive<AnswerFallbackSettings>({
   webSearchEnabled: false,
   modelKnowledgeFallbackEnabled: false,
@@ -37,356 +82,488 @@ const answerFallback = reactive<AnswerFallbackSettings>({
   webSearchContentSize: 'Medium',
   finalNoEvidencePolicy: 'InsufficientEvidence'
 });
-const canSave = computed(() => configurationLoaded.value && !loading.value);
+const defaultChatModel = ref<GroupConfiguration['defaultChatModel']>({
+  isConfigured: false,
+  configurationName: null,
+  connectionStatus: null,
+  webSearchMode: 'None',
+  canUseWebSearch: false,
+  unavailableReason: 'not_configured'
+});
+const memorySummary = ref<GroupConfiguration['memorySummary']>({
+  activeGroupMemoryCount: 0,
+  activeMemberMemoryCount: 0,
+  pendingCandidateCount: 0,
+  pendingOrRunningJobCount: 0
+});
+const agentRuntime = ref<NonNullable<GroupConfiguration['agentRuntime']>>({
+  intentRuntimeMode: 'Legacy',
+  answerRuntimeMode: 'Legacy',
+  templateRoutingRuntimeMode: 'AgentFramework',
+  editable: false
+});
 
-function addRule(direction: 'include' | 'exclude', patternKind: PatternKind) {
-  (direction === 'include' ? includeRules : excludeRules).value.push({ pattern: '', patternKind, ignoreCase: true });
+function currentDraft(): GroupConfigurationDraft {
+  return {
+    includeRules: includeRules.value.map(rule => ({ ...rule })),
+    excludeRules: excludeRules.value.map(rule => ({ ...rule })),
+    boundTagIds: [...boundTagIds.value],
+    context: { ...configured },
+    answerFallback: { ...answerFallback }
+  };
 }
-function removeRule(direction: 'include' | 'exclude', index: number) { (direction === 'include' ? includeRules : excludeRules).value.splice(index, 1); }
-function request(clearContext = false) { return {
-  includeRules: includeRules.value,
-  excludeRules: excludeRules.value,
-  boundTagIds: boundTagIds.value,
-  context: { ...configured },
-  clearContext,
-  answerFallback: { ...answerFallback },
-  expectedConfigurationVersion: configurationVersion.value
-}; }
-function toggleWebSearch(enabled: boolean) {
-  answerFallback.webSearchEnabled = enabled;
-  if (enabled && !answerFallback.modelKnowledgeFallbackEnabled)
-    answerFallback.modelKnowledgeFallbackEnabled = true;
+
+const isDirty = computed(() =>
+  configurationLoaded.value
+  && groupConfigurationDraftSignature(currentDraft()) !== savedSignature.value);
+const canSave = computed(() => isDirty.value && !loading.value && !saving.value);
+
+function replaceReactive<T extends object>(target: T, source: Partial<T>): void {
+  for (const key of Object.keys(target) as (keyof T)[]) delete target[key];
+  Object.assign(target, source);
 }
-async function load() {
+
+function applyConfiguration(configuration: GroupConfiguration): void {
+  groupName.value = configuration.name;
+  Object.assign(identity, {
+    robotName: configuration.identity?.robotName ?? '未找到机器人配置',
+    workToolGroupRemark: configuration.identity?.workToolGroupRemark ?? null,
+    registrationSource: configuration.identity?.registrationSource ?? 'Manual',
+    state: configuration.identity?.state ?? 'enabled',
+    isEnabled: configuration.identity?.isEnabled ?? true,
+    stateVersion: configuration.identity?.stateVersion ?? 0
+  });
+  const draft = createGroupConfigurationDraft({
+    ...configuration,
+    answerFallback: configuration.answerFallback ?? { ...answerFallback }
+  });
+  includeRules.value = draft.includeRules;
+  excludeRules.value = draft.excludeRules;
+  boundTagIds.value = draft.boundTagIds;
+  availableTags.value = configuration.availableTags ?? [];
+  replaceReactive(configured, draft.context);
+  Object.assign(answerFallback, draft.answerFallback);
+  defaultChatModel.value = configuration.defaultChatModel ?? {
+    isConfigured: false,
+    configurationName: null,
+    connectionStatus: null,
+    webSearchMode: 'None',
+    canUseWebSearch: false,
+    unavailableReason: 'not_configured'
+  };
+  memorySummary.value = configuration.memorySummary ?? {
+    activeGroupMemoryCount: 0,
+    activeMemberMemoryCount: 0,
+    pendingCandidateCount: 0,
+    pendingOrRunningJobCount: 0
+  };
+  agentRuntime.value = configuration.agentRuntime ?? {
+    intentRuntimeMode: 'Legacy',
+    answerRuntimeMode: 'Legacy',
+    templateRoutingRuntimeMode: 'AgentFramework',
+    editable: false
+  };
+  effective.value = configuration.context.effective;
+  configurationVersion.value = Number.isInteger(configuration.configurationVersion)
+    ? configuration.configurationVersion
+    : 0;
+  savedSignature.value = groupConfigurationDraftSignature(currentDraft());
+}
+
+function addRule(direction: 'include' | 'exclude', patternKind: PatternKind): void {
+  (direction === 'include' ? includeRules : excludeRules).value.push({
+    pattern: '',
+    patternKind,
+    ignoreCase: true
+  });
+}
+
+function removeRule(direction: 'include' | 'exclude', index: number): void {
+  (direction === 'include' ? includeRules : excludeRules).value.splice(index, 1);
+}
+
+async function load(): Promise<void> {
   loading.value = true;
   loadError.value = '';
+  canRetryLoad.value = false;
   configurationLoaded.value = false;
   try {
-    const configuration = await props.api.getConfiguration(props.id);
-    groupName.value = configuration.name;
-    includeRules.value = configuration.rules.include;
-    excludeRules.value = configuration.rules.exclude;
-    boundTagIds.value = configuration.boundTagIds;
-    availableTags.value = configuration.availableTags;
-    configurationVersion.value = Number.isInteger(configuration.configurationVersion)
-      ? configuration.configurationVersion
-      : 0;
-    Object.assign(configured, configuration.context.configured);
-    effective.value = configuration.context.effective;
-    if (configuration.answerFallback)
-      Object.assign(answerFallback, configuration.answerFallback);
+    applyConfiguration(await props.api.getConfiguration(props.id));
     configurationLoaded.value = true;
   } catch (error) {
     const status = (error as { response?: { status?: number } }).response?.status;
     groupName.value = '';
     loadError.value = status === 404 ? '群不存在或已删除。' : '群配置加载失败，请稍后重试。';
+    canRetryLoad.value = status !== 404;
   } finally {
     loading.value = false;
   }
 }
-async function preview() {
-  const groupNames = previewGroupNames.value.split('\n').map(name => name.trim()).filter(Boolean);
-  const result = await props.api.previewRules({ includeRules: includeRules.value, excludeRules: excludeRules.value, groupNames });
+
+async function preview(): Promise<void> {
+  const groupNames = previewGroupNames.value
+    .split('\n')
+    .map(name => name.trim())
+    .filter(Boolean);
+  const result = await props.api.previewRules({
+    includeRules: includeRules.value,
+    excludeRules: excludeRules.value,
+    groupNames
+  });
   previewResults.value = result.results;
 }
-async function save(clearContext = false) {
+
+async function save(): Promise<void> {
   if (!canSave.value) return;
-  saveError.value = '';
+  saving.value = true;
   try {
-    const saved = await props.api.updateConfiguration(props.id, request(clearContext));
-    Object.assign(configured, saved.context.configured);
-    effective.value = saved.context.effective;
-    if (Number.isInteger(saved.configurationVersion))
-      configurationVersion.value = saved.configurationVersion;
-    notice.value = clearContext ? `已清空 ${saved.clearedContextSessions} 个本群会话上下文，历史和审计记录已保留。` : '群配置已保存。';
+    const draft = currentDraft();
+    const saved = await props.api.updateConfiguration(props.id, {
+      ...draft,
+      clearContext: false,
+      expectedConfigurationVersion: configurationVersion.value
+    });
+    applyConfiguration(saved);
+    configurationLoaded.value = true;
+    ElMessage.success('群配置已保存');
   } catch (exception) {
     const data = (exception as { response?: { status?: number; data?: { error?: string } } }).response;
     if (data?.status === 409 && data.data?.error === 'group-configuration-conflict') {
       await load();
-      saveError.value = '群配置已被其他操作员修改，已加载最新版本，请复核后重新保存。';
-      return;
+      ElMessage.warning('群配置已被其他操作员修改，已加载最新版本，请复核后重新保存。');
+    } else {
+      ElMessage.error('群配置保存失败，请稍后重试。');
     }
-    saveError.value = '群配置保存失败，请稍后重试。';
+  } finally {
+    saving.value = false;
   }
 }
+
+async function clearContext(): Promise<void> {
+  const confirmed = await confirmAction(
+    '确认清空本群短期上下文吗？历史消息和审计记录会保留。',
+    { title: '清空短期上下文', danger: true }
+  );
+  if (!confirmed) return;
+  try {
+    const result = await props.api.clearContext(props.id, configurationVersion.value);
+    configurationVersion.value = result.configurationVersion;
+    ElMessage.success(`已清空 ${result.clearedSessions} 个本群会话上下文`);
+  } catch (exception) {
+    const status = (exception as { response?: { status?: number } }).response?.status;
+    if (status === 409) {
+      await load();
+      ElMessage.warning('群配置版本已变化，已加载最新设置。');
+    } else {
+      ElMessage.error('上下文清空失败，请稍后重试。');
+    }
+  }
+}
+
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (!isDirty.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+watch(isDirty, dirty => {
+  if (dirty) window.addEventListener('beforeunload', beforeUnload);
+  else window.removeEventListener('beforeunload', beforeUnload);
+});
+
+onBeforeRouteLeave(async () => {
+  if (!isDirty.value) return true;
+  return confirmAction(
+    '当前群配置尚未保存，离开后修改将丢失。确认离开吗？',
+    { title: '放弃未保存修改' }
+  );
+});
+
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 watch(() => props.id, load, { immediate: true });
+
+function stateLabel(state: GroupLifecycleStatus): string {
+  return { enabled: '已启用', disabled: '已停用', archived: '已归档' }[state];
+}
+
+function sourceLabel(source: string): string {
+  return source === 'WorkToolImport' ? 'WorkTool 导入' : '手工登记';
+}
 </script>
 
 <template>
-  <section class="group-rules-view" aria-labelledby="group-rules-title">
-    <header class="group-page-header">
+  <section class="group-detail-view" aria-labelledby="group-detail-title">
+    <header class="group-detail-header">
       <div>
-        <p class="eyebrow">群配置</p>
-        <h1 id="group-rules-title">{{ groupName || '群配置' }}</h1>
-        <p>维护群匹配、知识库标签和上下文策略。全局公开标签始终可用。</p>
+        <p class="eyebrow">群管理 / 业务配置</p>
+        <h1 id="group-detail-title">{{ groupName || '群配置' }}</h1>
+        <p>配置这个群使用哪些知识、如何回答，以及短期上下文策略。</p>
       </div>
-      <RouterLink class="group-operations-link" :to="{ name: 'group-list' }">返回群列表</RouterLink>
+      <RouterLink class="secondary-action" :to="{ name: 'group-list' }">返回群列表</RouterLink>
     </header>
 
-    <p v-if="loading" class="group-panel" aria-live="polite">正在加载群配置…</p>
-    <section v-else-if="loadError" class="group-panel group-load-error" aria-live="assertive">
-      <p>{{ loadError }}</p>
-      <RouterLink :to="{ name: 'group-list' }">返回群列表</RouterLink>
+    <ElSkeleton v-if="loading" :rows="8" animated />
+    <section v-else-if="loadError" class="load-error-state" role="alert">
+      <ElAlert :title="loadError" type="error" :closable="false" show-icon />
+      <ElButton
+        v-if="canRetryLoad"
+        data-testid="retry-group-configuration"
+        :loading="loading"
+        @click="load"
+      >
+        重新加载
+      </ElButton>
     </section>
 
     <template v-if="configurationLoaded">
-      <div class="group-panel group-identity-bar">
-        <RouterLink :to="{ name: 'group-list' }">返回群列表</RouterLink>
-        <strong>{{ groupName }}</strong>
-      </div>
+      <section class="group-identity-card" aria-label="群基本信息">
+        <div>
+          <span>机器人</span>
+          <strong>{{ identity.robotName }}</strong>
+        </div>
+        <div>
+          <span>群备注</span>
+          <strong>{{ identity.workToolGroupRemark || '未设置' }}</strong>
+        </div>
+        <div>
+          <span>登记来源</span>
+          <ElTag effect="plain">{{ sourceLabel(identity.registrationSource) }}</ElTag>
+        </div>
+        <div>
+          <span>状态</span>
+          <ElTag :type="identity.state === 'enabled' ? 'success' : identity.state === 'archived' ? 'info' : 'warning'">
+            {{ stateLabel(identity.state) }}
+          </ElTag>
+        </div>
+      </section>
 
-      <div class="group-layout">
-      <div class="group-primary-column">
-        <RuleEditor :include-rules="includeRules" :exclude-rules="excludeRules" @add="addRule" @remove="removeRule" />
-        <section class="group-panel preview-panel" aria-labelledby="preview-title">
-          <div class="panel-heading">
-            <div>
-              <h2 id="preview-title">保存前预览</h2>
-              <p>每行输入一个已知群名称，检查当前规则是否会匹配或排除。</p>
-            </div>
-          </div>
-          <div class="preview-editor">
-            <label for="preview-group-names">已知群名称</label>
-            <textarea id="preview-group-names" v-model="previewGroupNames" placeholder="例如：技术支持群&#10;售后服务群" />
-            <button type="button" data-testid="preview-rules" @click="preview">预览匹配结果</button>
-          </div>
-          <RulePreview :results="previewResults" />
-        </section>
-      </div>
+      <ElTabs v-model="activeTab" class="group-detail-tabs">
+        <ElTabPane label="知识与回答" name="knowledge">
+          <GroupKnowledgeAnswerPanel
+            :group-id="id"
+            :group-name="groupName"
+            :available-tags="availableTags"
+            :bound-tag-ids="boundTagIds"
+            :answer-fallback="{ ...answerFallback }"
+            :default-chat-model="defaultChatModel"
+            @update:bound-tag-ids="boundTagIds = $event"
+            @update:answer-fallback="Object.assign(answerFallback, $event)"
+          />
+        </ElTabPane>
 
-      <aside class="group-secondary-column">
-        <section class="group-panel tag-panel" aria-labelledby="tag-panel-title">
-          <h2 id="tag-panel-title">知识库标签</h2>
-          <p>多选标签按 OR 关系检索；“全局公开”标签无需绑定。</p>
-          <div v-if="availableTags.length" class="tag-choice-list">
-            <label v-for="tag in availableTags" :key="tag.id" :class="{ 'stale-tag': !tag.isEnabled }">
-              <input v-model="boundTagIds" type="checkbox" :data-testid="`tag-${tag.id}`" :value="tag.id" :disabled="!tag.isEnabled && !tag.isBound">
-              <span>{{ tag.name }}{{ !tag.isEnabled ? '（已禁用，移除后不可重新添加）' : tag.isGlobalPublic ? '（全局公开）' : '' }}</span>
-            </label>
-          </div>
-          <p v-else class="empty-tags">当前没有可绑定的知识库标签。</p>
-        </section>
-        <ContextPolicyForm :configured="configured" :effective="effective" @clear="save(true)" />
-        <section class="group-panel fallback-panel" aria-labelledby="fallback-title">
-          <h2 id="fallback-title">知识库未命中时</h2>
-          <p>按顺序尝试联网搜索、模型自身知识，最后执行无证据策略。知识库命中时不会调用这些降级能力。</p>
-          <label class="switch-row">
-            <input
-              :checked="answerFallback.webSearchEnabled"
-              data-testid="web-search-enabled"
-              type="checkbox"
-              @change="toggleWebSearch(($event.target as HTMLInputElement).checked)"
-            >
-            <span><strong>允许模型 Web Search</strong><small>仅默认对话模型明确支持 Z.AI Web Search 时有效。</small></span>
-          </label>
-          <label class="switch-row">
-            <input v-model="answerFallback.modelKnowledgeFallbackEnabled" data-testid="model-knowledge-enabled" type="checkbox">
-            <span><strong>允许模型自身知识回答</strong><small>搜索不可用或失败时继续回答，并在审计中标记来源。</small></span>
-          </label>
-          <template v-if="answerFallback.webSearchEnabled">
-            <label class="switch-row">
-              <input v-model="answerFallback.webSearchShowSources" type="checkbox">
-              <span><strong>在群消息中显示网页来源</strong><small>最多追加 3 条经过净化的链接。</small></span>
-            </label>
-            <div class="fallback-grid">
-              <label>结果数量
-                <input v-model.number="answerFallback.webSearchResultCount" type="number" min="1" max="20">
-              </label>
-              <label>时间范围
-                <select v-model="answerFallback.webSearchRecency">
-                  <option value="NoLimit">不限</option>
-                  <option value="OneDay">一天内</option>
-                  <option value="OneWeek">一周内</option>
-                  <option value="OneMonth">一月内</option>
-                  <option value="OneYear">一年内</option>
-                </select>
-              </label>
-              <label>摘要长度
-                <select v-model="answerFallback.webSearchContentSize">
-                  <option value="Medium">标准</option>
-                  <option value="High">详细</option>
-                </select>
-              </label>
-              <label>域名白名单（可选）
-                <input v-model="answerFallback.webSearchDomainFilter" placeholder="example.com,news.example.com">
-              </label>
-            </div>
-          </template>
-          <label>最终无证据策略
-            <select v-model="answerFallback.finalNoEvidencePolicy">
-              <option value="InsufficientEvidence">明确提示没有可靠答案</option>
-              <option value="Clarification">请用户补充问题</option>
-            </select>
-          </label>
-        </section>
-      </aside>
-      </div>
+        <ElTabPane label="上下文与记忆" name="context">
+          <GroupContextMemoryPanel
+            :configured="{ ...configured }"
+            :effective="effective"
+            :memory-summary="memorySummary"
+            :group-id="id"
+            @update:configured="replaceReactive(configured, $event)"
+            @clear-context="clearContext"
+          />
+        </ElTabPane>
 
-      <footer class="group-panel group-save-bar">
-        <p class="group-save-hint">保存后，新规则与策略将用于该群后续消息。</p>
-        <p v-if="saveError" class="group-save-error" role="alert">{{ saveError }}</p>
-        <p class="group-save-notice" aria-live="polite">{{ notice }}</p>
-        <button class="primary-action" type="button" data-testid="save-configuration" :disabled="!canSave" @click="() => save()">保存群配置</button>
+        <ElTabPane label="运行记录" name="records">
+          <GroupRunRecordsPanel :group-id="id" :group-name="groupName" />
+        </ElTabPane>
+
+        <ElTabPane label="高级设置" name="advanced">
+          <GroupAdvancedSettingsPanel
+            :registration-source="identity.registrationSource"
+            :include-rules="includeRules"
+            :exclude-rules="excludeRules"
+            :preview-results="previewResults"
+            :preview-group-names="previewGroupNames"
+            :agent-runtime="agentRuntime"
+            @add="addRule"
+            @remove="removeRule"
+            @update:preview-group-names="previewGroupNames = $event"
+            @preview="preview"
+          />
+        </ElTabPane>
+      </ElTabs>
+
+      <footer v-if="isDirty" class="group-save-bar">
+        <p>有未保存的群配置修改。</p>
+        <ElButton
+          type="primary"
+          data-testid="save-configuration"
+          :loading="saving"
+          :disabled="!canSave"
+          @click="save"
+        >
+          保存群配置
+        </ElButton>
       </footer>
     </template>
   </section>
 </template>
 
 <style scoped>
-.group-rules-view {
+.group-detail-view {
   display: grid;
   width: 100%;
-  max-width: 1440px;
+  max-width: 1280px;
   margin: 0 auto;
   gap: var(--space-xl);
 }
-.group-page-header {
+.load-error-state {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-md);
+}
+
+.group-detail-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-xl);
+  gap: var(--space-lg);
 }
-.group-page-header p { margin-bottom: 0; color: var(--color-muted-text); }
-.group-operations-link {
-  display: inline-flex;
-  min-height: 44px;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: .55rem .85rem;
-  border: 1px solid var(--color-border);
-  border-radius: .5rem;
-  color: var(--color-accent-strong);
-  background: var(--color-surface);
-  font-weight: 600;
-  text-decoration: none;
+
+.group-detail-header h1,
+.detail-panel h2 {
+  margin: 0;
 }
-.group-panel {
+
+.group-detail-header p:last-child,
+.detail-panel > p {
+  color: var(--color-muted-text);
+}
+
+.group-identity-card,
+.detail-panel {
   min-width: 0;
   padding: var(--space-xl);
   border: 1px solid var(--color-border);
-  border-radius: .75rem;
+  border-radius: .8rem;
   background: var(--color-surface);
   box-shadow: var(--shadow-sm);
 }
-.group-identity-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+
+.group-identity-card {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-lg);
+}
+
+.group-identity-card > div {
+  display: grid;
+  align-content: start;
+  gap: .35rem;
+}
+
+.group-identity-card span {
+  color: var(--color-muted-text);
+  font-size: .875rem;
+}
+
+.group-detail-tabs {
+  min-width: 0;
+  padding: 0 var(--space-xl) var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: .8rem;
+  background: var(--color-surface);
+}
+
+.tab-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xl);
+}
+
+.tag-choice-list,
+.link-list,
+.advanced-stack {
+  display: grid;
   gap: var(--space-md);
 }
-.group-load-error { color: var(--color-danger); }
-.group-load-error p { margin-top: 0; }
-.group-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(18rem, 1fr);
-  align-items: start;
-  gap: var(--space-xl);
-}
-.group-primary-column,
-.group-secondary-column {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-xl);
-}
-.panel-heading p,
-.tag-panel > p {
-  margin-bottom: var(--space-lg);
-  color: var(--color-muted-text);
-}
-.preview-editor {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: var(--space-sm) var(--space-md);
-}
-.preview-editor label {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-.preview-editor textarea { min-height: 6rem; }
-.preview-editor button { margin-bottom: 0; }
-.tag-choice-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
-  gap: var(--space-sm);
-}
+
 .tag-choice-list label {
   display: flex;
   align-items: flex-start;
-  min-height: 44px;
   gap: var(--space-sm);
-  margin: 0;
-  padding: var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: .5rem;
-  background: var(--color-background);
-  cursor: pointer;
+  white-space: normal;
 }
-.tag-choice-list input {
-  width: 1.25rem;
-  min-height: 1.25rem;
-  margin: .125rem 0 0;
-  flex: 0 0 auto;
-}
-.tag-choice-list span { overflow-wrap: anywhere; }
-.tag-choice-list .stale-tag { color: var(--color-muted-text); }
-.empty-tags {
-  margin-bottom: 0 !important;
-  padding: var(--space-lg);
-  border-radius: .5rem;
-  background: var(--color-background);
-}
-.fallback-panel { display: grid; gap: var(--space-md); }
-.fallback-panel > p { margin: 0; color: var(--color-muted-text); }
-.switch-row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  margin: 0;
-}
-.switch-row input { width: 1.25rem; min-height: 1.25rem; margin-top: .15rem; }
-.switch-row span { display: grid; gap: var(--space-xs); }
-.switch-row small { color: var(--color-muted-text); }
-.fallback-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); }
-.fallback-grid label,
-.fallback-panel > label:not(.switch-row) { display: grid; gap: var(--space-xs); }
-.group-save-bar {
+
+.form-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-lg);
+  margin: var(--space-lg) 0;
+}
+
+.form-grid label,
+.full-field {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-sm);
+}
+
+.form-grid :deep(.el-select),
+.full-field :deep(.el-select) {
+  width: 100%;
+}
+
+.record-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-lg);
+}
+
+.record-grid a {
+  display: grid;
+  gap: .35rem;
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: .65rem;
+  text-decoration: none;
+}
+
+.record-grid a span {
+  color: var(--color-muted-text);
+}
+
+.group-save-bar {
+  position: sticky;
+  z-index: 10;
+  bottom: var(--space-lg);
+  display: flex;
   align-items: center;
-  gap: var(--space-sm) var(--space-xl);
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+  border: 1px solid var(--color-primary);
+  border-radius: .8rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
 }
-.group-save-hint,
-.group-save-notice { margin: 0; }
-.group-save-hint { color: var(--color-muted-text); }
-.group-save-notice {
-  grid-column: 1;
-  color: var(--color-success);
-  font-weight: 600;
+
+.group-save-bar p {
+  margin: 0;
 }
-.group-save-notice:empty { display: none; }
-.group-save-bar button {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  min-width: 9rem;
+
+.empty-state {
+  padding: var(--space-lg);
+  border-radius: .6rem;
+  background: var(--color-muted-surface);
+  color: var(--color-muted-text);
 }
-@media (max-width: 900px) {
-  .group-layout { grid-template-columns: 1fr; }
-}
-@media (max-width: 700px) {
-  .group-page-header { flex-direction: column; }
-  .group-identity-bar { align-items: flex-start; flex-direction: column; }
-}
-@media (max-width: 600px) {
-  .group-panel { padding: var(--space-lg); }
-  .preview-editor,
-  .group-save-bar { grid-template-columns: 1fr; }
-  .preview-editor label,
-  .group-save-notice,
-  .group-save-bar button {
-    grid-column: 1;
+
+@media (max-width: 820px) {
+  .group-identity-card,
+  .tab-grid,
+  .record-grid,
+  .form-grid {
+    grid-template-columns: 1fr;
   }
-  .group-save-bar button { grid-row: auto; width: 100%; }
-  .fallback-grid { grid-template-columns: 1fr; }
+
+  .group-detail-header {
+    flex-direction: column;
+  }
+
+  .group-save-bar {
+    bottom: 0;
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 </style>

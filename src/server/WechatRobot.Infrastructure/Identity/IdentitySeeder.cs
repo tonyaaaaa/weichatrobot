@@ -39,6 +39,17 @@ public static class IdentitySeeder
                 throw new InvalidOperationException($"Bootstrap admin could not be created: {string.Join("; ", result.Errors.Select(error => error.Code))}");
             }
         }
+        else if (user.DisplayName.Contains('\uFFFD') && !displayName.Contains('\uFFFD'))
+        {
+            user.DisplayName = displayName;
+            cancellationToken.ThrowIfCancellationRequested();
+            var updateResult = await userManager.UpdateAsync(user).WaitAsync(cancellationToken);
+            if (!updateResult.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"Bootstrap admin display name could not be repaired: {string.Join("; ", updateResult.Errors.Select(error => error.Code))}");
+            }
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
         if (await userManager.IsInRoleAsync(user, SystemRoles.Admin).WaitAsync(cancellationToken))

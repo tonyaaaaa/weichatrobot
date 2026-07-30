@@ -55,7 +55,7 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
         }
 
         var document = new KnowledgeDocumentEntity { Title = Limit(candidate.Question, 256), Status = "draft", CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
-        var version = new KnowledgeDocumentVersionEntity { KnowledgeDocumentId = document.Id, Version = 1,
+        var version = new KnowledgeDocumentVersionEntity { KnowledgeDocumentId = document.Id, Version = 1, SourceKind = "ConversationReview",
             OriginalFileName = $"reviewed-{candidate.Id:N}.md", SafeFileName = $"reviewed-{candidate.Id:N}.md", ContentType = "text/markdown",
             Sha256 = Hash($"{candidate.Id:N}|{candidate.Question}|{answer}"), SizeBytes = Encoding.UTF8.GetByteCount(answer),
             ObjectKey = $"reviewed/{candidate.Id:N}.md", Status = "approved", IsPublished = false, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };

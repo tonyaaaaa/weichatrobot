@@ -1,5 +1,9 @@
 # 私聊机器人、直接知识入库与群固定回复 Agent 设计
 
+> 实施状态（2026-07-29）：核心合同、持久化、API、Worker、管理页面和灰度配置已实现；
+> 上线与回退以 `docs/runbooks/agent-framework-private-chat-fixed-replies-rollout.md`
+> 为准，生产启用仍需完成授权流量验收。
+
 ## 1. 背景
 
 WechatRobot 当前主要处理已登记的 WorkTool 外部群消息，使用群规则决定是否

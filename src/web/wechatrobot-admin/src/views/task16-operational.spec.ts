@@ -12,6 +12,18 @@ import SystemSettingsView from './settings/SystemSettingsView.vue';
 import { safeEvidence } from '../utils/evidenceRedaction';
 
 const primaryTagId = '11111111-1111-4111-8111-111111111111';
+const documentDialogStubs = {
+  teleport: true,
+  ElSelect: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<select :value="modelValue"><slot /></select>'
+  },
+  ElOption: {
+    props: ['label', 'value'],
+    template: '<option :value="value">{{ label }}</option>'
+  }
+};
 
 function createTagOptionsApi(ids: string[]) {
   return {
@@ -32,6 +44,7 @@ function createDocumentAdministrationApiStubs() {
       contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       sizeBytes: 1, status: 'preview', failureReason: null, isPublished: false, hasPublicObject: true,
       previewRevision: 2, previewCount: 3, approvedChunkCount: 0, ocrPageCount: 0, ocrFailedPageCount: 0,
+      sourceKind: 'DocumentUpload', sourceActorDisplayName: '系统管理员', tags: [],
       uploadAndParseJobs: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
     }]),
     retryDocumentUpload: vi.fn(),
@@ -49,7 +62,12 @@ describe('Task 16 operational pages', () => {
         throw new Error('OSS unavailable');
       })
     };
-    const wrapper = mount(KnowledgeDocumentsView, { props: { api } });
+    const wrapper = mount(KnowledgeDocumentsView, {
+      props: { api },
+      global: { stubs: documentDialogStubs }
+    });
+    await wrapper.get('[data-testid="open-document-upload"]').trigger('click');
+    await flushPromises();
     const input = wrapper.get('input[type="file"]');
     Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['x'], 'legacy.doc')] });
     await input.trigger('change');
@@ -73,7 +91,12 @@ describe('Task 16 operational pages', () => {
         publicReadWarning: '公共读 OSS'
       })
     };
-    const wrapper = mount(KnowledgeDocumentsView, { props: { api } });
+    const wrapper = mount(KnowledgeDocumentsView, {
+      props: { api },
+      global: { stubs: documentDialogStubs }
+    });
+    await wrapper.get('[data-testid="open-document-upload"]').trigger('click');
+    await flushPromises();
     const input = wrapper.get('input[type="file"]');
     Object.defineProperty(input.element, 'files', { value: [new File(['x'], 'manual.pdf')] });
     await input.trigger('change');
@@ -486,6 +509,7 @@ describe('Task 16 operational pages', () => {
       create: vi.fn(),
       update: vi.fn(),
       testConnection: vi.fn().mockResolvedValue(configured),
+      testAgentCapabilities: vi.fn(),
       setEnabled: vi.fn(),
       setDefault: vi.fn(),
       clearApiKey: vi.fn(),

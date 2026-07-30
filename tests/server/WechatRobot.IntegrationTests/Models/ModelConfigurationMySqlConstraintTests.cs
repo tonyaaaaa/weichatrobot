@@ -14,6 +14,7 @@ public sealed class ModelConfigurationMySqlConstraintTests(MySqlFixture fixture)
     public async Task Normalized_name_is_unique()
     {
         await using var database = CreateDatabase();
+        await database.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
 
         database.ModelConfigs.AddRange(
@@ -28,6 +29,7 @@ public sealed class ModelConfigurationMySqlConstraintTests(MySqlFixture fixture)
     public async Task Default_configuration_type_is_unique()
     {
         await using var database = CreateDatabase();
+        await database.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
 
         database.ModelConfigs.AddRange(
@@ -42,6 +44,7 @@ public sealed class ModelConfigurationMySqlConstraintTests(MySqlFixture fixture)
     public async Task Different_configuration_types_can_each_have_a_default()
     {
         await using var database = CreateDatabase();
+        await database.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
 
         database.ModelConfigs.AddRange(
@@ -57,6 +60,7 @@ public sealed class ModelConfigurationMySqlConstraintTests(MySqlFixture fixture)
     public async Task Concurrent_default_attempts_leave_exactly_one_default()
     {
         await using var setup = CreateDatabase();
+        await setup.Database.EnsureDeletedAsync(TestContext.Current.CancellationToken);
         await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
         await setup.Database.ExecuteSqlRawAsync(
             "DELETE FROM `model_config`;",

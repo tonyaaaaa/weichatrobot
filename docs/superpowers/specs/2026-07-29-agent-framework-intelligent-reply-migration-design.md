@@ -1,5 +1,10 @@
 # Microsoft Agent Framework 智能回复与渐进迁移设计
 
+> 实施状态（2026-07-29）：能力探针、意图 Agent、固定模板路由、私聊 Agent、
+> AnswerAgent 接入点、诊断页面和运行模式已落地；Legacy 实现继续保留，生产接管
+> 必须遵循 `docs/runbooks/agent-framework-private-chat-fixed-replies-rollout.md`
+> 的 Shadow、灰度和 Paused 回退门槛。
+
 ## 1. 背景
 
 当前 WechatRobot 已具备完整的群消息接收、上下文维护、长期记忆、知识库检索、

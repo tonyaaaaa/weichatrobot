@@ -23,13 +23,14 @@ import type { WorkToolRobotOption } from '../../api/worktool';
 import { formatBeijingTime } from '../../utils/beijingTime';
 import { confirmAction } from '../../utils/dialogs';
 
-const props = withDefaults(defineProps<{ api?: SendCommandsApi }>(), {
-  api: () => sendCommandsApi
+const props = withDefaults(defineProps<{ api?: SendCommandsApi; initialGroup?: string }>(), {
+  api: () => sendCommandsApi,
+  initialGroup: ''
 });
 
 const filters = reactive({
   robotConfigId: '',
-  group: '',
+  group: props.initialGroup,
   status: '',
   fromLocal: '',
   toLocal: ''

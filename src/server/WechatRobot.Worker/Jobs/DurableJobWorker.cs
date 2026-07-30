@@ -1,5 +1,6 @@
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Messaging;
+using WechatRobot.Application.PrivateChat;
 
 namespace WechatRobot.Worker.Jobs;
 
@@ -14,6 +15,8 @@ public sealed class DurableJobWorker(IServiceScopeFactory scopeFactory, TimeProv
         var repository = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var job = await repository.LeaseNextJobAsync("ProcessInboundMessage", _leaseOwner, now, LeaseDuration, cancellationToken);
+        job ??= await repository.LeaseNextJobAsync("ProcessPrivateMessage", _leaseOwner, now, LeaseDuration, cancellationToken);
+        job ??= await repository.LeaseNextJobAsync("ProcessPrivateKnowledgeIngest", _leaseOwner, now, LeaseDuration, cancellationToken);
         if (job is null)
         {
             return false;
@@ -21,8 +24,12 @@ public sealed class DurableJobWorker(IServiceScopeFactory scopeFactory, TimeProv
 
         try
         {
-            var processor = scope.ServiceProvider.GetRequiredService<InboundMessageProcessor>();
-            await processor.ProcessAsync(job, cancellationToken);
+            if (job.JobType == "ProcessPrivateKnowledgeIngest")
+                await scope.ServiceProvider.GetRequiredService<IPrivateKnowledgeIngestProcessor>().ProcessAsync(job, cancellationToken);
+            else if (job.JobType == "ProcessPrivateMessage")
+                await scope.ServiceProvider.GetRequiredService<IPrivateChatProcessor>().ProcessAsync(job, cancellationToken);
+            else
+                await scope.ServiceProvider.GetRequiredService<InboundMessageProcessor>().ProcessAsync(job, cancellationToken);
             await repository.CompleteJobAsync(job.Id, job.LeaseOwner, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)

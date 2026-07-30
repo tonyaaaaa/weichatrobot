@@ -29,7 +29,11 @@ public sealed record InboundMessageIngestRequest(
     string Text,
     DateTime ReceivedAtUtc,
     string? StableSenderId = null,
-    bool WasMentioned = false);
+    bool WasMentioned = false,
+    string ChannelType = "Group",
+    int? RoomType = 1,
+    string? PeerDisplayName = null,
+    string? ScopeHash = null);
 
 public enum InboundMessageIngestResult
 {

@@ -39,6 +39,8 @@ describe('knowledgeApi document administration', () => {
     await expect(knowledgeApi.listDocuments({
       query: '产品',
       status: 'failed',
+      sourceKind: 'PrivateChatDirect',
+      tagId: 'tag-id',
       page: 2,
       pageSize: 25
     })).resolves.toEqual(page);
@@ -46,6 +48,8 @@ describe('knowledgeApi document administration', () => {
       params: {
         query: '产品',
         status: 'failed',
+        sourceKind: 'PrivateChatDirect',
+        tagId: 'tag-id',
         page: 2,
         pageSize: 25
       }
@@ -112,6 +116,9 @@ describe('knowledgeApi document administration', () => {
         latestVersionStatus: 'failed',
         latestFailureReason: 'Object storage upload failed; retry is available.',
         canRetryUpload: true,
+        sourceKind: 'DocumentUpload',
+        sourceActorDisplayName: '系统管理员',
+        tags: [],
         createdAtUtc: '2026-07-25T00:00:00Z',
         updatedAtUtc: '2026-07-25T00:01:00Z'
       },

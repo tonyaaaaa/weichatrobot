@@ -50,10 +50,10 @@ public sealed class ConversationAuditQueryTests(MySqlFixture fixture) : IClassFi
         counter.Reset();
 
         var query = new ConversationAuditQuery(db);
-        var firstPage = await query.ListAsync(new(group.Id, null, null, 1, 1), TestContext.Current.CancellationToken);
+        var firstPage = await query.ListAsync(new(group.Id, null, null, null, 1, 1), TestContext.Current.CancellationToken);
         var oneItemQueries = counter.Count;
         counter.Reset();
-        var fullPage = await query.ListAsync(new(group.Id, null, null, 1, 20), TestContext.Current.CancellationToken);
+        var fullPage = await query.ListAsync(new(group.Id, null, null, null, 1, 20), TestContext.Current.CancellationToken);
 
         Assert.Equal(5, oneItemQueries);
         Assert.Equal(oneItemQueries, counter.Count);

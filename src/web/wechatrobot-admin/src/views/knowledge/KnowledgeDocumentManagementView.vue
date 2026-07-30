@@ -43,8 +43,18 @@ const selectedFile = ref<File>();
 const uploadProgress = ref(0);
 const canRequestPhysicalDelete = computed(() =>
   auth.user?.roles.includes('Admin') === true);
+const isAutomaticSource = computed(() =>
+  detail.value?.document.sourceKind === 'ConversationReview' ||
+  detail.value?.document.sourceKind === 'PrivateChatDirect');
+const documentSourceLabel = computed(() => ({
+  DocumentUpload: '文档上传',
+  ConversationReview: '消息审核入库',
+  PrivateChatDirect: '私聊直接入库',
+  LegacyUnknown: '历史数据'
+} as Record<string, string>)[detail.value?.document.sourceKind ?? 'LegacyUnknown']
+  ?? '其他来源');
 const canUploadNewVersion = computed(() =>
-  detail.value?.document.status !== 'disabled');
+  detail.value?.document.status !== 'disabled' && !isAutomaticSource.value);
 const isLegacyDoc = computed(() =>
   selectedFile.value?.name.toLowerCase().endsWith('.doc') ?? false);
 const versions = computed(() =>
@@ -191,6 +201,25 @@ function evidenceText(version: KnowledgeDocumentVersionSummary): string {
   ].join(' · ');
 }
 
+function sourceLabel(version: KnowledgeDocumentVersionSummary): string {
+  return ({
+    DocumentUpload: '文档上传',
+    ConversationReview: '消息审核入库',
+    PrivateChatDirect: '私聊直接入库',
+    LegacyUnknown: '历史数据'
+  } as Record<string, string>)[version.sourceKind ?? 'LegacyUnknown']
+    ?? '其他来源';
+}
+
+function changeKindLabel(changeKind: string | undefined): string {
+  return ({
+    New: '新增',
+    Duplicate: '重复',
+    Supplement: '补充',
+    Correction: '纠正'
+  } as Record<string, string>)[changeKind ?? 'New'] ?? '其他变更';
+}
+
 onMounted(load);
 </script>
 
@@ -239,6 +268,18 @@ onMounted(load);
             {{ detail.document.latestFailureReason }}
           </p>
           <p class="helper">更新时间 {{ dateText(detail.document.updatedAtUtc) }}</p>
+          <div class="source-summary">
+            <span>来源：{{ documentSourceLabel }}</span>
+            <span v-if="detail.document.sourceActorDisplayName">
+              来源成员：{{ detail.document.sourceActorDisplayName }}
+            </span>
+            <span>
+              绑定知识库：
+              {{ detail.document.tags.length
+                ? detail.document.tags.map(tag => tag.name).join('、')
+                : '未绑定' }}
+            </span>
+          </div>
         </div>
         <div class="summary-actions">
           <ElButton
@@ -264,7 +305,11 @@ onMounted(load);
         </div>
       </section>
 
-      <section class="panel upload-version-panel" aria-labelledby="upload-version-title">
+      <section
+        v-if="!isAutomaticSource"
+        class="panel upload-version-panel"
+        aria-labelledby="upload-version-title"
+      >
         <header class="section-heading">
           <div>
             <h2 id="upload-version-title">上传新版本</h2>
@@ -338,6 +383,32 @@ onMounted(load);
               <div><dt>文件</dt><dd>{{ version.contentType }} · {{ sizeText(version.sizeBytes) }}</dd></div>
               <div><dt>处理证据</dt><dd>{{ evidenceText(version) }}</dd></div>
               <div><dt>发布</dt><dd>{{ version.isPublished ? '已发布' : '未发布' }}</dd></div>
+              <div>
+                <dt>知识来源</dt>
+                <dd>
+                  {{ sourceLabel(version) }}
+                  <span v-if="version.sourceActorDisplayName">
+                    · {{ version.sourceActorDisplayName }}
+                  </span>
+                  <span v-if="version.changeKind && version.changeKind !== 'New'">
+                    · {{ changeKindLabel(version.changeKind) }}
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt>绑定知识库</dt>
+                <dd>
+                  <div v-if="version.tags.length" class="tag-list">
+                    <ElTag
+                      v-for="tag in version.tags"
+                      :key="tag.id"
+                      type="success"
+                      effect="plain"
+                    >{{ tag.name }}</ElTag>
+                  </div>
+                  <span v-else class="helper">未绑定</span>
+                </dd>
+              </div>
               <div><dt>更新时间</dt><dd>{{ dateText(version.updatedAtUtc) }}</dd></div>
             </dl>
 
@@ -443,6 +514,14 @@ onMounted(load);
   color: var(--color-muted-text);
 }
 
+.source-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+  margin-top: var(--space-md);
+  color: var(--color-muted-text);
+}
+
 .upload-version-panel,
 .version-panel {
   display: grid;
@@ -499,6 +578,12 @@ onMounted(load);
 
 .version-facts dd {
   margin: 0;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
 }
 
 .job-list ul {

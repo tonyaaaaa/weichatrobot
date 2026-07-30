@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import {
-  ElAlert, ElButton, ElEmpty, ElInput, ElMessage, ElPagination, ElSelect, ElOption,
+  ElAlert, ElButton, ElEmpty, ElMessage, ElPagination, ElSelect, ElOption,
   ElSkeleton, ElTable, ElTableColumn, ElTag
 } from 'element-plus';
 import {
@@ -9,15 +9,23 @@ import {
 } from '../../api/memory';
 import { confirmAction, promptAction } from '../../utils/dialogs';
 import { formatBeijingTime } from '../../utils/beijingTime';
+import GroupProfileSelect from '../../components/groups/GroupProfileSelect.vue';
+import { groupOptionApi, type GroupOptionApi } from '../../api/groupOptions';
 
-const props = withDefaults(defineProps<{ initialGroupId?: string; api?: MemoryApi }>(), {
+const props = withDefaults(defineProps<{
+  initialGroupId?: string;
+  api?: MemoryApi;
+  groupOptionApi?: GroupOptionApi;
+}>(), {
   initialGroupId: '',
-  api: () => memoryApi
+  api: () => memoryApi,
+  groupOptionApi: () => groupOptionApi
 });
 type Tab = 'candidates' | 'entries' | 'jobs';
 const tab = ref<Tab>('candidates');
 const loading = ref(true);
 const error = ref('');
+const groupOptionError = ref('');
 const groupProfileId = ref(props.initialGroupId);
 const status = ref('');
 const page = ref(1);
@@ -45,6 +53,9 @@ async function load() {
 }
 function selectTab(value: Tab) { tab.value = value; status.value = ''; page.value = 1; void load(); }
 function filter() { page.value = 1; void load(); }
+function onGroupLoadError() {
+  groupOptionError.value = '群选择项加载失败，请刷新页面重试。';
+}
 function changePage(value: number) { page.value = value; void load(); }
 async function promote(value: unknown) {
   const row = value as MemoryCandidate;
@@ -110,7 +121,14 @@ onMounted(load);
     </div>
     <section class="panel">
       <div class="toolbar memory-filters">
-        <label>群 ID<ElInput v-model="groupProfileId" clearable placeholder="留空查看全部群" @change="filter" /></label>
+        <label>群
+          <GroupProfileSelect
+            v-model="groupProfileId"
+            :api="props.groupOptionApi"
+            @change="filter"
+            @load-error="onGroupLoadError"
+          />
+        </label>
         <label>状态<ElSelect v-model="status" clearable placeholder="全部状态" @change="filter">
           <ElOption value="pending" label="待处理" /><ElOption value="accumulating" label="积累中" />
           <ElOption value="promoted" label="已晋升" /><ElOption value="routed_to_knowledge" label="待知识审核" />
@@ -118,6 +136,7 @@ onMounted(load);
           <ElOption value="retrying" label="重试中" /><ElOption value="deadLetter" label="失败" />
         </ElSelect></label>
       </div>
+      <ElAlert v-if="groupOptionError" :title="groupOptionError" type="warning" :closable="false" />
       <ElSkeleton v-if="loading" :rows="5" animated />
       <ElAlert v-else-if="error && !currentItems.length" :title="error" type="error" :closable="false"><ElButton @click="load">重试</ElButton></ElAlert>
       <ElEmpty v-else-if="!currentItems.length" :description="tab === 'candidates' ? '暂无待整理记忆。' : tab === 'entries' ? '暂无长期记忆。' : '暂无整理任务。'" />

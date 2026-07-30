@@ -31,6 +31,70 @@ public sealed class KnowledgeSearchFanoutTests
     }
 
     [Fact]
+    public async Task Unavailable_collection_does_not_discard_hits_from_successful_collection()
+    {
+        await using var database = Database();
+        var tag = Tag("签证");
+        database.Add(tag);
+        var expected = AddActiveDocument(database, tag.Id, "kb_cosine_3_available");
+        AddActiveDocument(database, tag.Id, "kb_cosine_3_unavailable");
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new SelectiveVectorStore(
+            "kb_cosine_3_unavailable",
+            new Dictionary<string, IReadOnlyList<VectorSearchHit>>
+            {
+                ["kb_cosine_3_available"] = [expected]
+            });
+        var service = Service(
+            database,
+            new KnowledgeIndexOptions(
+                3,
+                VectorDistance.Cosine,
+                MaximumCollectionsPerSearch: 2));
+
+        var hits = await service.SearchVisibleAsync(
+            [1, 0, 0],
+            [tag.Id],
+            vectors,
+            10,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(expected, Assert.Single(hits));
+        Assert.Equal(2, vectors.CallCount);
+    }
+
+    [Fact]
+    public async Task All_unavailable_collections_still_fail_the_search()
+    {
+        await using var database = Database();
+        var tag = Tag("签证");
+        database.Add(tag);
+        AddActiveDocument(database, tag.Id, "kb_cosine_3_a");
+        AddActiveDocument(database, tag.Id, "kb_cosine_3_b");
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new SelectiveVectorStore(
+            "kb_cosine_3_a",
+            new Dictionary<string, IReadOnlyList<VectorSearchHit>>(),
+            failAll: true);
+        var service = Service(
+            database,
+            new KnowledgeIndexOptions(
+                3,
+                VectorDistance.Cosine,
+                MaximumCollectionsPerSearch: 2));
+
+        await Assert.ThrowsAsync<VectorStoreUnavailableException>(() =>
+            service.SearchVisibleAsync(
+                [1, 0, 0],
+                [tag.Id],
+                vectors,
+                10,
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(2, vectors.CallCount);
+    }
+
+    [Fact]
     public async Task Capacity_overflow_fails_explicitly_before_any_vector_call()
     {
         await using var database = Database();
@@ -91,7 +155,10 @@ public sealed class KnowledgeSearchFanoutTests
 
     private static KnowledgeTagEntity Tag(string name) => new() { Name = name, NormalizedName = name };
 
-    private static void AddActiveDocument(WechatRobotDbContext database, Guid tagId, string collection)
+    private static VectorSearchHit AddActiveDocument(
+        WechatRobotDbContext database,
+        Guid tagId,
+        string collection)
     {
         var document = new KnowledgeDocumentEntity
         {
@@ -106,6 +173,7 @@ public sealed class KnowledgeSearchFanoutTests
         document.ActiveVersionId = version.Id;
         var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "text", Status = "approved" };
         database.AddRange(document, version, chunk, new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tagId });
+        return new VectorSearchHit(chunk.Id, document.Id, version.Id, 0.9);
     }
 
     private static QdrantKnowledgeService Service(WechatRobotDbContext database, KnowledgeIndexOptions options) =>
@@ -129,6 +197,65 @@ public sealed class KnowledgeSearchFanoutTests
         public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => Task.FromResult<VectorCollection?>(null);
         public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
+    }
+
+    private sealed class SelectiveVectorStore(
+        string unavailableCollection,
+        IReadOnlyDictionary<string, IReadOnlyList<VectorSearchHit>> hits,
+        bool failAll = false) : IVectorStore
+    {
+        private int _callCount;
+        public int CallCount => _callCount;
+
+        public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(
+            VectorSearchRequest request,
+            CancellationToken token)
+        {
+            Interlocked.Increment(ref _callCount);
+            if (failAll ||
+                string.Equals(
+                    request.Collection.Name,
+                    unavailableCollection,
+                    StringComparison.Ordinal))
+            {
+                throw new VectorStoreUnavailableException(
+                    "Simulated unavailable collection.");
+            }
+
+            return Task.FromResult(
+                hits.TryGetValue(request.Collection.Name, out var result)
+                    ? result
+                    : (IReadOnlyList<VectorSearchHit>)[]);
+        }
+
+        public Task EnsureCollectionAsync(
+            VectorCollection collection,
+            CancellationToken token) => Task.CompletedTask;
+        public Task UpsertAsync(
+            VectorCollection collection,
+            IReadOnlyList<VectorPoint> points,
+            CancellationToken token) => Task.CompletedTask;
+        public Task SetVersionActiveAsync(
+            VectorCollection collection,
+            Guid versionId,
+            bool active,
+            CancellationToken token) => Task.CompletedTask;
+        public Task DeleteCollectionAsync(
+            VectorCollection collection,
+            CancellationToken token) => Task.CompletedTask;
+        public Task<VectorCollection?> InspectCollectionAsync(
+            string collectionName,
+            CancellationToken token) =>
+            Task.FromResult<VectorCollection?>(null);
+        public Task DeleteVersionAsync(
+            VectorCollection collection,
+            Guid versionId,
+            CancellationToken token) => Task.CompletedTask;
+        public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(
+            VectorCollection collection,
+            Guid versionId,
+            CancellationToken token) =>
             Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
     }
 

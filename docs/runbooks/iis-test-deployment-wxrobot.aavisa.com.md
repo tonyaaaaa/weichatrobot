@@ -1,5 +1,8 @@
 # wxrobot.aavisa.com IIS Test Deployment
 
+智能回复、固定模板、私聊问答和私聊知识入库的灰度模式、验收与回退步骤见
+[Agent Framework、私聊知识入库与固定回复上线手册](./agent-framework-private-chat-fixed-replies-rollout.md)。
+
 ## Topology
 
 ```text

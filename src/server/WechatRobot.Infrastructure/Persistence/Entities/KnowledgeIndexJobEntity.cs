@@ -8,6 +8,7 @@ public sealed class KnowledgeIndexJobEntity
     public Guid? ModelConfigurationId { get; set; }
     public int? ModelConfigurationVersion { get; set; }
     public Guid? SourceIndexJobId { get; set; }
+    public Guid? PrivateKnowledgeIngestBatchId { get; set; }
     public Guid? PreviousActiveVersionId { get; set; }
     public string? PreviousActiveCollectionName { get; set; }
     public int? PreviousActiveEmbeddingDimension { get; set; }

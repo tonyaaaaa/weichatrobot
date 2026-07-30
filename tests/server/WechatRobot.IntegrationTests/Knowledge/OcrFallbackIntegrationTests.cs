@@ -63,7 +63,19 @@ public sealed class OcrFallbackIntegrationTests
         return versionId;
     }
 
-    private static string Fixture(string name) => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "tests", "fixtures", "documents", name));
+    private static string Fixture(string name)
+    {
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            for (var directory = new DirectoryInfo(start); directory is not null; directory = directory.Parent)
+            {
+                var candidate = Path.Combine(directory.FullName, "tests", "fixtures", "documents", name);
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+
+        throw new FileNotFoundException($"Test fixture '{name}' was not found under tests/fixtures/documents.");
+    }
 
     private sealed class MemoryReader(byte[] bytes) : IDocumentSourceReader
     {

@@ -7,7 +7,8 @@ public sealed record MemoryExtractionMessage(
     Guid Id,
     string Role,
     string Content,
-    DateTime CreatedAtUtc);
+    DateTime CreatedAtUtc,
+    string? SenderDisplayName = null);
 
 public sealed record MemoryExtractionContext(
     MemoryScope Scope,

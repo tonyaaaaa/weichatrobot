@@ -186,7 +186,19 @@ public sealed class DocumentParserTests
     private static DocumentParsingLimits Limits() => new(1024 * 1024, 20, 2 * 1024 * 1024, TimeSpan.FromSeconds(5));
     private static DocumentProcessingContext Context(DocumentParsingLimits? limits = null, TimeProvider? timeProvider = null, Action<string>? observer = null) =>
         new(limits ?? Limits(), TestContext.Current.CancellationToken, timeProvider ?? TimeProvider.System, observer);
-    private static string FixturePath(string name) => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "fixtures", "documents", name));
+    private static string FixturePath(string name)
+    {
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            for (var directory = new DirectoryInfo(start); directory is not null; directory = directory.Parent)
+            {
+                var candidate = Path.Combine(directory.FullName, "tests", "fixtures", "documents", name);
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+
+        throw new FileNotFoundException($"Test fixture '{name}' was not found under tests/fixtures/documents.");
+    }
     private static string BlockSignature(ParsedBlock block) => $"{block.Text}|{block.PageNumber}|{string.Join('/', block.Headings)}|{block.IsTable}|{block.TableRows}|{block.TableColumns}";
 
     private sealed class ManualTimeProvider : TimeProvider

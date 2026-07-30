@@ -12,6 +12,36 @@ describe('global button styles', () => {
     );
   });
 
+  it('loads the Element Plus collapse layout used by group advanced settings', () => {
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/collapse/style/css';"
+    );
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/collapse-item/style/css';"
+    );
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/collapse-transition/style/css';"
+    );
+  });
+
+  it('loads the Element Plus tabs layout used by group configuration sections', () => {
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/tabs/style/css';"
+    );
+  });
+
+  it('loads the Element Plus dialog and select styles used by document management', () => {
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/dialog/style/css';"
+    );
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/select/style/css';"
+    );
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/option/style/css';"
+    );
+  });
+
   it('does not override Element Plus button hover colors', () => {
     expect(styles).toContain(
       'button:not([class^="el-"]):not([class*=" el-"]):hover:not(:disabled)'

@@ -16,9 +16,37 @@ export interface AnswerFallbackSettings {
 }
 export interface GroupConfiguration {
   id: string; name: string; rules: { include: GroupRule[]; exclude: GroupRule[] }; boundTagIds: string[]; allowedTagIds: string[];
+  identity: {
+    robotName: string;
+    workToolGroupRemark?: string | null;
+    registrationSource: string;
+    state: GroupLifecycleStatus;
+    isEnabled: boolean;
+    stateVersion: number;
+  };
   availableTags: { id: string; name: string; isGlobalPublic: boolean; isEnabled: boolean; isBound: boolean }[]; tagVisibility: 'any-bound-tag-or-global-public';
   context: { configured: ContextOverrides; effective: EffectiveContext }; clearedContextSessions: number;
   answerFallback: AnswerFallbackSettings;
+  defaultChatModel: {
+    isConfigured: boolean;
+    configurationName?: string | null;
+    connectionStatus?: string | null;
+    webSearchMode: string;
+    canUseWebSearch: boolean;
+    unavailableReason: 'none' | 'not_configured' | 'disabled' | 'connection_not_succeeded' | 'not_enabled' | 'unsupported';
+  };
+  memorySummary: {
+    activeGroupMemoryCount: number;
+    activeMemberMemoryCount: number;
+    pendingCandidateCount: number;
+    pendingOrRunningJobCount: number;
+  };
+  agentRuntime?: {
+    intentRuntimeMode: 'Legacy' | 'Shadow' | 'AgentFramework' | 'Paused';
+    answerRuntimeMode: 'Legacy' | 'Shadow' | 'AgentFramework';
+    templateRoutingRuntimeMode: 'Disabled' | 'Shadow' | 'AgentFramework';
+    editable: boolean;
+  };
   configurationVersion: number;
 }
 export interface UpdateGroupConfiguration {
@@ -39,7 +67,12 @@ export interface GroupLifecycleState {
   archivedAtUtc?: string | null;
   stateVersion: number;
 }
-export interface ConversationContextMessagePreview { role: string; content: string; createdAtUtc: string; }
+export interface ConversationContextMessagePreview {
+  role: string;
+  senderDisplayName: string;
+  content: string;
+  createdAtUtc: string;
+}
 export interface ConversationContextSession {
   sessionId: string;
   senderDisplayName: string;

@@ -129,7 +129,7 @@ onMounted(() => load(1));
               :key="`${session.sessionId}-${index}`"
               :class="['message-preview', message.role === 'assistant' ? 'assistant' : 'user']"
             >
-              <strong>{{ message.role === 'assistant' ? '机器人' : '成员' }}</strong>
+              <strong>{{ message.role === 'assistant' ? '机器人' : (message.senderDisplayName || session.senderDisplayName || '未知成员') }}</strong>
               <p>{{ message.content }}</p>
               <time>{{ formatBeijingTime(message.createdAtUtc) }}</time>
             </article>

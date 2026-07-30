@@ -1,236 +1,274 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
+import GroupAdvancedSettingsPanel from '../../components/groups/GroupAdvancedSettingsPanel.vue';
+import GroupContextMemoryPanel from '../../components/groups/GroupContextMemoryPanel.vue';
+import GroupKnowledgeAnswerPanel from '../../components/groups/GroupKnowledgeAnswerPanel.vue';
 import GroupRulesView from './GroupRulesView.vue';
 
-const api = {
-  getConfiguration: vi.fn(),
-  updateConfiguration: vi.fn(),
-  previewRules: vi.fn()
+vi.mock('../../utils/dialogs', () => ({
+  confirmAction: vi.fn().mockResolvedValue(true)
+}));
+
+const groupId = '00000000-0000-0000-0000-000000000801';
+const effective = {
+  senderIsolated: false,
+  historyTurns: 6,
+  idleTimeoutMinutes: 30,
+  tokenCap: 3000,
+  summaryEnabled: true,
+  includeBotHistory: true
 };
+const answerFallback = {
+  webSearchEnabled: false,
+  modelKnowledgeFallbackEnabled: false,
+  webSearchShowSources: false,
+  webSearchResultCount: 5,
+  webSearchRecency: 'NoLimit',
+  webSearchDomainFilter: null,
+  webSearchContentSize: 'Medium',
+  finalNoEvidencePolicy: 'InsufficientEvidence'
+};
+
+function configuration(overrides: Record<string, unknown> = {}) {
+  return {
+    id: groupId,
+    name: '技术支持群',
+    identity: {
+      robotName: '默认机器人',
+      workToolGroupRemark: '售后支持',
+      registrationSource: 'WorkToolImport',
+      state: 'enabled',
+      isEnabled: true,
+      stateVersion: 2
+    },
+    rules: { include: [], exclude: [] },
+    boundTagIds: [],
+    allowedTagIds: [],
+    availableTags: [],
+    tagVisibility: 'any-bound-tag-or-global-public',
+    context: { configured: {}, effective },
+    answerFallback,
+    defaultChatModel: {
+      isConfigured: true,
+      configurationName: 'glm',
+      connectionStatus: 'Succeeded',
+      webSearchMode: 'ZaiChatCompletions',
+      canUseWebSearch: true,
+      unavailableReason: 'none'
+    },
+    memorySummary: {
+      activeGroupMemoryCount: 2,
+      activeMemberMemoryCount: 5,
+      pendingCandidateCount: 3,
+      pendingOrRunningJobCount: 1
+    },
+    clearedContextSessions: 0,
+    configurationVersion: 4,
+    ...overrides
+  };
+}
+
+function api(initial = configuration()) {
+  return {
+    getConfiguration: vi.fn().mockResolvedValue(initial),
+    updateConfiguration: vi.fn().mockImplementation(async (_id, request) =>
+      configuration({
+        rules: { include: request.includeRules, exclude: request.excludeRules },
+        boundTagIds: request.boundTagIds,
+        context: { configured: request.context, effective },
+        answerFallback: request.answerFallback,
+        configurationVersion: request.expectedConfigurationVersion + 1
+      })),
+    previewRules: vi.fn().mockResolvedValue({
+      results: [{ groupName: '技术测试群', isMatch: false, isExcluded: true }]
+    }),
+    clearContext: vi.fn().mockResolvedValue({
+      clearedSessions: 2,
+      configurationVersion: 5
+    })
+  };
+}
+
 const routerLinkStub = {
   props: ['to'],
   template: '<a><slot /></a>'
 };
 
+function mountView(service = api()) {
+  return mount(GroupRulesView, {
+    props: { id: groupId, api: service },
+    global: { stubs: { RouterLink: routerLinkStub } }
+  });
+}
+
+async function openTab(wrapper: ReturnType<typeof mount>, label: string) {
+  const tab = wrapper.findAll('[role="tab"]').find(item => item.text() === label);
+  if (!tab) throw new Error(`Tab not found: ${label}`);
+  await tab.trigger('click');
+  await flushPromises();
+}
+
+async function addRule(
+  wrapper: ReturnType<typeof mount>,
+  direction: 'include' | 'exclude',
+  kind: 'exact' | 'contains' | 'regex'
+) {
+  wrapper.getComponent(GroupAdvancedSettingsPanel).vm.$emit('add', direction, kind);
+  await wrapper.vm.$nextTick();
+}
+
 describe('GroupRulesView', () => {
-  it('organizes the whole page into compact primary and secondary configuration regions', async () => {
-    api.getConfiguration.mockResolvedValue({
-      rules: { include: [], exclude: [] },
-      boundTagIds: [],
-      availableTags: [],
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
-    await Promise.resolve();
-    await wrapper.vm.$nextTick();
+  beforeEach(() => vi.clearAllMocks());
 
-    expect(wrapper.find('.group-page-header').exists()).toBe(true);
-    expect(wrapper.find('.group-identity-bar').exists()).toBe(true);
-    expect(wrapper.find('.group-layout').exists()).toBe(true);
-    expect(wrapper.find('.group-primary-column').find('[aria-label="群匹配规则"]').exists()).toBe(true);
-    expect(wrapper.find('.group-secondary-column').find('[aria-label="上下文策略"]').exists()).toBe(true);
-    expect(wrapper.find('.group-save-bar [data-testid="save-configuration"]').exists()).toBe(true);
-  });
-
-  it('renders each matching rule as one compact and accessible editing row', async () => {
-    api.getConfiguration.mockResolvedValue({
-      rules: { include: [], exclude: [] },
-      boundTagIds: [],
-      availableTags: [],
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
-    await Promise.resolve();
-    await wrapper.vm.$nextTick();
-    await wrapper.get('[data-testid="add-exact-include"]').trigger('click');
-
-    const row = wrapper.get('.rule-row');
-    expect(row.find('select').exists()).toBe(true);
-    expect(row.find('input[type="text"]').exists()).toBe(true);
-    expect(row.find('.rule-case-toggle').exists()).toBe(true);
-    expect(row.find('.rule-remove').attributes('aria-label')).toContain('删除包含规则');
-    expect(wrapper.find('.rule-section-heading [data-testid="add-exact-include"]').exists()).toBe(true);
-    expect(wrapper.find('.context-policy-grid').exists()).toBe(true);
-  });
-
-  it('edits exact, contains and regex include/exclude rules, previews hits, and clears context through the API', async () => {
-    api.getConfiguration.mockResolvedValue({
-      rules: { include: [], exclude: [] },
-      boundTagIds: [],
-      availableTags: [],
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    api.previewRules.mockResolvedValue({ results: [{ groupName: '技术测试群', isMatch: false, isExcluded: true }] });
-    api.updateConfiguration.mockResolvedValue({
-      clearedContextSessions: 1,
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
+  it('renders the approved business-first group detail layout without a raw id', async () => {
+    const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.get('[data-testid="add-exact-include"]').trigger('click');
-    await wrapper.get('[data-testid="add-contains-exclude"]').trigger('click');
-    await wrapper.get('[data-testid="add-regex-include"]').trigger('click');
-    await wrapper.get('[data-testid="preview-rules"]').trigger('click');
-    await wrapper.get('[data-testid="clear-context"]').trigger('click');
-
-    expect(api.previewRules).toHaveBeenCalledOnce();
-    expect(api.updateConfiguration).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ clearContext: true }));
-    expect(wrapper.text()).toContain('技术测试群');
-    expect(wrapper.text()).toContain('已排除');
-    expect(wrapper.text()).toContain('按成员隔离');
+    expect(wrapper.text()).toContain('技术支持群');
+    expect(wrapper.text()).toContain('默认机器人');
+    expect(wrapper.text()).toContain('售后支持');
+    expect(wrapper.text()).toContain('WorkTool 导入');
+    expect(wrapper.findAll('[role="tab"]').map(tab => tab.text())).toEqual([
+      '知识与回答',
+      '上下文与记忆',
+      '运行记录',
+      '高级设置'
+    ]);
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toBe('知识与回答');
+    expect(wrapper.find('[aria-label="群配置 ID"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="save-configuration"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('群人工客服');
   });
 
-  it('shows a disabled existing binding so an administrator can remove it and save other changes', async () => {
-    const disabledTagId = '00000000-0000-0000-0000-000000000802';
-    api.getConfiguration.mockResolvedValue({
-      rules: { include: [], exclude: [] }, boundTagIds: [disabledTagId],
-      availableTags: [{ id: disabledTagId, name: '已停用技术', isGlobalPublic: false, isEnabled: false, isBound: true }],
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    api.updateConfiguration.mockResolvedValue({
-      clearedContextSessions: 0,
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    const wrapper = mount(GroupRulesView, { props: { id: '00000000-0000-0000-0000-000000000801', api } });
-    await Promise.resolve();
-    await wrapper.vm.$nextTick();
-    await wrapper.get(`[data-testid="tag-${disabledTagId}"]`).setValue(false);
+  it('keeps one dirty draft across tabs and shows the save bar only after editing', async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openTab(wrapper, '高级设置');
+    await addRule(wrapper, 'include', 'exact');
+
+    expect(wrapper.find('[data-testid="save-configuration"]').exists()).toBe(true);
+    expect(wrapper.getComponent(GroupAdvancedSettingsPanel).props('includeRules')).toHaveLength(1);
+
+    await openTab(wrapper, '知识与回答');
+    await openTab(wrapper, '高级设置');
+    expect(wrapper.getComponent(GroupAdvancedSettingsPanel).props('includeRules')).toHaveLength(1);
+  });
+
+  it('saves the complete draft with the loaded version and becomes clean', async () => {
+    const service = api();
+    const wrapper = mountView(service);
+    await flushPromises();
+    await openTab(wrapper, '高级设置');
+    await addRule(wrapper, 'exclude', 'contains');
     await wrapper.get('[data-testid="save-configuration"]').trigger('click');
+    await flushPromises();
 
-    expect(wrapper.text()).toContain('已禁用，移除后不可重新添加');
-    expect(api.updateConfiguration).toHaveBeenCalledWith(
-      '00000000-0000-0000-0000-000000000801',
-      expect.objectContaining({ boundTagIds: [], clearContext: false })
+    expect(service.updateConfiguration).toHaveBeenCalledWith(
+      groupId,
+      expect.objectContaining({
+        expectedConfigurationVersion: 4,
+        clearContext: false,
+        excludeRules: [expect.objectContaining({ patternKind: 'contains' })]
+      })
     );
-    expect(wrapper.find('[aria-label="群配置 ID"]').exists()).toBe(false);
-  });
-
-  it('keeps a disabled bound tag removable but prevents selecting a disabled unbound tag', async () => {
-    api.getConfiguration.mockResolvedValue({
-      rules: { include: [], exclude: [] },
-      boundTagIds: ['disabled-bound'],
-      availableTags: [
-        { id: 'disabled-bound', name: '历史标签', isGlobalPublic: false, isEnabled: false, isBound: true },
-        { id: 'disabled-unbound', name: '停用标签', isGlobalPublic: false, isEnabled: false, isBound: false }
-      ],
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    const wrapper = mount(GroupRulesView, {
-      props: { id: '00000000-0000-0000-0000-000000000801', api }
-    });
-    await Promise.resolve();
-    await wrapper.vm.$nextTick();
-
-    expect(wrapper.get('[data-testid="tag-disabled-bound"]').attributes('disabled')).toBeUndefined();
-    expect(wrapper.get('[data-testid="tag-disabled-unbound"]').attributes('disabled')).toBeDefined();
-  });
-
-  it('shows the loaded group name without exposing an editable internal id', async () => {
-    api.getConfiguration.mockResolvedValue({
-      name: '技术群',
-      rules: { include: [], exclude: [] },
-      boundTagIds: [],
-      availableTags: [],
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    });
-    const wrapper = mount(GroupRulesView, {
-      props: { id: '00000000-0000-0000-0000-000000000801', api },
-      global: { stubs: { RouterLink: routerLinkStub } }
-    });
-    await flushPromises();
-
-    expect(wrapper.text()).toContain('技术群');
-    expect(wrapper.text()).toContain('返回群列表');
-    expect(wrapper.find('[aria-label="群配置 ID"]').exists()).toBe(false);
-    expect(api.getConfiguration).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000801');
-  });
-
-  it('does not render an editable form when the route group is unavailable', async () => {
-    const unavailableApi = {
-      getConfiguration: vi.fn().mockRejectedValue({ response: { status: 404 } }),
-      updateConfiguration: vi.fn(),
-      previewRules: vi.fn()
-    };
-    const wrapper = mount(GroupRulesView, {
-      props: { id: '00000000-0000-0000-0000-000000000801', api: unavailableApi },
-      global: { stubs: { RouterLink: true } }
-    });
-    await flushPromises();
-
-    expect(wrapper.text()).toContain('群不存在或已删除');
     expect(wrapper.find('[data-testid="save-configuration"]').exists()).toBe(false);
   });
 
-  it('sends and advances the loaded configuration version and reloads a conflict', async () => {
-    const configuration = {
-      name: '并发测试群',
-      rules: { include: [], exclude: [] },
-      boundTagIds: [],
-      availableTags: [],
-      configurationVersion: 4,
-      context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-    };
-    const concurrentApi = {
-      getConfiguration: vi.fn()
-        .mockResolvedValueOnce(configuration)
-        .mockResolvedValueOnce({ ...configuration, configurationVersion: 6 }),
-      updateConfiguration: vi.fn()
-        .mockResolvedValueOnce({ ...configuration, configurationVersion: 5, clearedContextSessions: 0 })
-        .mockRejectedValueOnce({ response: { status: 409, data: { error: 'group-configuration-conflict', currentVersion: 6 } } }),
-      previewRules: vi.fn()
-    };
-    const wrapper = mount(GroupRulesView, {
-      props: { id: 'group-1', api: concurrentApi },
-      global: { stubs: { RouterLink: routerLinkStub } }
+  it('reloads authoritative configuration after a version conflict', async () => {
+    const latest = configuration({ name: '并发更新后的群', configurationVersion: 8 });
+    const service = api();
+    service.updateConfiguration.mockRejectedValueOnce({
+      response: { status: 409, data: { error: 'group-configuration-conflict' } }
     });
+    service.getConfiguration
+      .mockResolvedValueOnce(configuration())
+      .mockResolvedValueOnce(latest);
+    const wrapper = mountView(service);
     await flushPromises();
-
+    await openTab(wrapper, '高级设置');
+    await addRule(wrapper, 'include', 'exact');
     await wrapper.get('[data-testid="save-configuration"]').trigger('click');
     await flushPromises();
-    expect(concurrentApi.updateConfiguration).toHaveBeenNthCalledWith(
-      1, 'group-1', expect.objectContaining({ expectedConfigurationVersion: 4 }));
 
-    await wrapper.get('[data-testid="save-configuration"]').trigger('click');
-    await flushPromises();
-    expect(concurrentApi.updateConfiguration).toHaveBeenNthCalledWith(
-      2, 'group-1', expect.objectContaining({ expectedConfigurationVersion: 5 }));
-    expect(concurrentApi.getConfiguration).toHaveBeenCalledTimes(2);
-    expect(wrapper.text()).toContain('群配置已被其他操作员修改，已加载最新版本');
+    expect(service.getConfiguration).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).toContain('并发更新后的群');
+    expect(wrapper.find('[data-testid="save-configuration"]').exists()).toBe(false);
   });
 
-  it('does not expose retired group human-agent configuration', async () => {
-    const gatedApi = {
-      ...api,
-      getConfiguration: vi.fn().mockResolvedValue({
-        name: '客服群',
-        rules: { include: [], exclude: [] },
-        boundTagIds: [],
-        availableTags: [],
-        configurationVersion: 1,
-        context: { configured: {}, effective: { senderIsolated: false, historyTurns: 6, idleTimeoutMinutes: 30, tokenCap: 3000, summaryEnabled: true, includeBotHistory: true } }
-      }),
-      getEligibleHumanAgents: vi.fn().mockResolvedValue({
-        candidates: [{
-          userId: 'agent-1',
-          displayName: '客服甲',
-          workToolDisplayName: '企微客服甲',
-          verificationStatus: 'Stale',
-          isEnabled: false,
-          isDefault: false
-        }],
-        canConfigure: false,
-        gateMessage: '需要先完成 WorkTool 群成员昵称结果验证，当前不能启用群客服。'
-      })
-    };
-    const wrapper = mount(GroupRulesView, {
-      props: { id: 'group-1', api: gatedApi },
-      global: { stubs: { RouterLink: routerLinkStub } }
-    });
+  it('clears context through the dedicated endpoint without saving the draft', async () => {
+    const service = api();
+    const wrapper = mountView(service);
+    await flushPromises();
+    await openTab(wrapper, '高级设置');
+    await addRule(wrapper, 'include', 'regex');
+    await openTab(wrapper, '上下文与记忆');
+    wrapper.getComponent(GroupContextMemoryPanel).vm.$emit('clear-context');
     await flushPromises();
 
-    expect(gatedApi.getEligibleHumanAgents).not.toHaveBeenCalled();
-    expect(wrapper.text()).not.toContain('群人工客服');
-    expect(wrapper.find('[data-testid="save-human-agents"]').exists()).toBe(false);
+    expect(service.clearContext).toHaveBeenCalledWith(groupId, 4);
+    expect(service.updateConfiguration).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="save-configuration"]').exists()).toBe(true);
+  });
+
+  it('keeps disabled bound tags removable and disables unavailable tags', async () => {
+    const wrapper = mountView(api(configuration({
+      boundTagIds: ['bound'],
+      availableTags: [
+        { id: 'bound', name: '历史标签', isGlobalPublic: false, isEnabled: false, isBound: true },
+        { id: 'unbound', name: '停用标签', isGlobalPublic: false, isEnabled: false, isBound: false }
+      ]
+    })));
+    await flushPromises();
+
+    const tags = wrapper.getComponent(GroupKnowledgeAnswerPanel).props('availableTags') as Array<{
+      id: string;
+      isEnabled: boolean;
+      isBound: boolean;
+    }>;
+    expect(tags.find(tag => tag.id === 'bound')).toMatchObject({ isEnabled: false, isBound: true });
+    expect(tags.find(tag => tag.id === 'unbound')).toMatchObject({ isEnabled: false, isBound: false });
+  });
+
+  it('keeps advanced matching and preview separate from the default business tab', async () => {
+    const service = api();
+    const wrapper = mountView(service);
+    await flushPromises();
+
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toBe('知识与回答');
+    await openTab(wrapper, '高级设置');
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toBe('高级设置');
+    expect(wrapper.getComponent(GroupAdvancedSettingsPanel).props('includeRules')).toEqual([]);
+    wrapper.getComponent(GroupAdvancedSettingsPanel).vm.$emit('preview');
+    await flushPromises();
+    expect(service.previewRules).toHaveBeenCalledOnce();
+    expect(wrapper.getComponent(GroupAdvancedSettingsPanel).props('previewResults')).toEqual([
+      { groupName: '技术测试群', isMatch: false, isExcluded: true }
+    ]);
+  });
+
+  it('does not render editable configuration when the group is unavailable', async () => {
+    const service = api();
+    service.getConfiguration.mockRejectedValueOnce({ response: { status: 404 } });
+    const wrapper = mountView(service);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('群不存在或已删除');
+    expect(wrapper.find('.group-detail-tabs').exists()).toBe(false);
+  });
+
+  it('offers a retry action after a transient load failure', async () => {
+    const service = api();
+    service.getConfiguration
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce(configuration());
+    const wrapper = mountView(service);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('群配置加载失败');
+    await wrapper.get('[data-testid="retry-group-configuration"]').trigger('click');
+    await flushPromises();
+
+    expect(service.getConfiguration).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).toContain('技术支持群');
   });
 });

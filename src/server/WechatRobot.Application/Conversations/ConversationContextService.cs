@@ -3,7 +3,18 @@ using WechatRobot.Application.Groups;
 namespace WechatRobot.Application.Conversations;
 
 public sealed record ConversationHistoryMessage(string Role, string SessionScopeKey, string Content, DateTime CreatedAtUtc, Guid? MessageId = null,
-    long? SessionSequence = null);
+    long? SessionSequence = null, string? SenderDisplayName = null);
+
+public static class ConversationMessageFormatting
+{
+    public static string ParticipantLabel(ConversationHistoryMessage message) =>
+        string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase)
+            ? "机器人"
+            : string.IsNullOrWhiteSpace(message.SenderDisplayName)
+                ? "未知成员"
+                : message.SenderDisplayName.Trim();
+}
+
 public sealed record ConversationContextResult
 {
     public ConversationContextResult(IReadOnlyList<ConversationHistoryMessage> messages, string? summary, bool wasIdleReset, bool wasTokenLimited,
@@ -88,7 +99,10 @@ public sealed class ConversationContextService
 
     private const int SummaryLabelTokens = 3;
     private static int ContextWrapperBaseTokens(bool hasContent) => hasContent ? 4 : 0;
-    private static int MessageTokens(ConversationHistoryMessage message) => 3 + EstimateTokens(message.Content);
+    private static int MessageTokens(ConversationHistoryMessage message) =>
+        3
+        + EstimateTokens(ConversationMessageFormatting.ParticipantLabel(message))
+        + EstimateTokens(message.Content);
     private static int EstimateTokens(string content) => Math.Max(1, (content.Length + 3) / 4);
     private static string? TruncateToTokens(string content, int maximumTokens)
     {

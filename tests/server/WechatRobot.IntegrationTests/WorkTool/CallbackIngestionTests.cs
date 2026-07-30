@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
@@ -9,6 +10,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
 using WechatRobot.Application.Security;
@@ -175,9 +177,7 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
     }
 
     [Theory]
-    [InlineData("roomType", 2)]
     [InlineData("roomType", 3)]
-    [InlineData("roomType", 4)]
     [InlineData("textType", 2)]
     [InlineData("textType", 3)]
     [InlineData("textType", 9)]
@@ -198,6 +198,41 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         await AssertNoInboundDataAsync(factory, robot.Id);
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public async Task Private_text_callback_is_acknowledged_and_queued_for_private_processing(int roomType)
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var robot = await SeedRobotAsync(
+            factory,
+            $"callback-private-{roomType}-{Guid.NewGuid():N}",
+            "callback-secret");
+        var payload = ValidPayload($"message-private-{roomType}-{Guid.NewGuid():N}");
+        payload["roomType"] = roomType;
+        payload.Remove("groupName");
+        payload.Remove("groupRemark");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret",
+            payload,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var message = await database.ConversationMessages.AsNoTracking().SingleAsync(
+            item => item.RobotConfigId == robot.Id,
+            TestContext.Current.CancellationToken);
+        var job = await database.DurableJobs.AsNoTracking().SingleAsync(
+            item => item.RelatedConversationMessageId == message.Id,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("Private", message.ChannelType);
+        Assert.Equal(roomType, message.RoomType);
+        Assert.Equal("ProcessPrivateMessage", job.JobType);
+    }
+
     [Fact]
     public async Task Repeated_valid_callback_is_accepted_but_creates_one_durable_job()
     {
@@ -215,6 +250,35 @@ public sealed class CallbackIngestionTests : IClassFixture<MySqlFixture>
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         Assert.Equal(1, await database.ConversationMessages.CountAsync(message => message.RobotConfigId == robot.Id, TestContext.Current.CancellationToken));
         Assert.Equal(1, await CountJobsForRobotAsync(database, robot.Id));
+    }
+
+    [Fact]
+    public async Task Repeated_fallback_callback_is_deduplicated_without_database_update_error()
+    {
+        await using var factory = new CallbackApiFactory(_fixture.ConnectionString);
+        var logger = new EventCaptureLoggerProvider();
+        factory.Services.GetRequiredService<ILoggerFactory>().AddProvider(logger);
+        var robot = await SeedRobotAsync(factory, $"callback-fallback-duplicate-{Guid.NewGuid():N}", "callback-secret");
+        using var client = factory.CreateClient();
+        var payload = ValidPayload(string.Empty);
+
+        var first = await client.PostAsJsonAsync(
+            $"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret",
+            payload,
+            TestContext.Current.CancellationToken);
+        logger.Clear();
+        var second = await client.PostAsJsonAsync(
+            $"/api/worktool/callback/{robot.CallbackRouteCode}?token=callback-secret",
+            payload,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.DoesNotContain(
+            logger.Events,
+            entry => entry.Category == "Microsoft.EntityFrameworkCore.Update"
+                     && entry.EventId == 10000
+                     && entry.Level == LogLevel.Error);
     }
 
     [Fact]
@@ -462,3 +526,42 @@ public sealed class DelayingSaveChangesInterceptor(TimeSpan delay) : SaveChanges
         return result;
     }
 }
+
+public sealed class EventCaptureLoggerProvider : ILoggerProvider
+{
+    private readonly ConcurrentQueue<CapturedLogEvent> events = new();
+
+    public IReadOnlyCollection<CapturedLogEvent> Events => events.ToArray();
+
+    public ILogger CreateLogger(string categoryName) => new EventCaptureLogger(categoryName, events);
+
+    public void Clear()
+    {
+        while (events.TryDequeue(out _))
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class EventCaptureLogger(
+        string category,
+        ConcurrentQueue<CapturedLogEvent> events) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            events.Enqueue(new CapturedLogEvent(category, eventId.Id, logLevel));
+    }
+}
+
+public sealed record CapturedLogEvent(string Category, int EventId, LogLevel Level);

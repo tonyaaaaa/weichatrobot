@@ -9,6 +9,16 @@ vi.mock('../../utils/dialogs', () => ({
 
 describe('MemoryCenterView', () => {
   it('loads group-scoped candidates and exposes all three workflows', async () => {
+    const groupOptionApi = {
+      list: vi.fn().mockResolvedValue([{
+        id: 'group-1',
+        name: '机器人测试群1',
+        workToolGroupRemark: null,
+        robotName: '默认机器人',
+        state: 'enabled',
+        isEnabled: true
+      }])
+    };
     const api = {
       listCandidates: vi.fn().mockResolvedValue({
         items: [{
@@ -27,10 +37,13 @@ describe('MemoryCenterView', () => {
     };
 
     const wrapper = mount(MemoryCenterView, {
-      props: { initialGroupId: 'group-1', api }
+      props: { initialGroupId: 'group-1', api, groupOptionApi }
     });
     await flushPromises();
 
+    expect(wrapper.text()).not.toContain('群 ID');
+    expect(wrapper.find('[data-testid="group-profile-select"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain('机器人测试群1 · 默认机器人');
     expect(api.listCandidates).toHaveBeenCalledWith(expect.objectContaining({ groupProfileId: 'group-1' }));
     expect(wrapper.text()).toContain('偏好结论优先');
     expect(wrapper.text()).toContain('2 次 / 2 会话 / 1 天');

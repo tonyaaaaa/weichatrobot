@@ -43,6 +43,11 @@ describe('modelApi', () => {
     await modelApi.testConnection(id);
     expect(apiClient.post).toHaveBeenCalledWith(`/api/admin/model-configurations/${id}/test-connection`);
 
+    await modelApi.testAgentCapabilities(id);
+    expect(apiClient.post).toHaveBeenCalledWith(
+      `/api/admin/model-configurations/${id}/test-agent-capabilities`
+    );
+
     await modelApi.setEnabled(id, true, 3);
     expect(apiClient.post).toHaveBeenCalledWith(
       `/api/admin/model-configurations/${id}/enabled`,

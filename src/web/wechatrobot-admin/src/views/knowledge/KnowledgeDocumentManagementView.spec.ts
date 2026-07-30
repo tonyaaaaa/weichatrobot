@@ -22,6 +22,9 @@ function detail(): KnowledgeDocumentDetail {
       latestVersionStatus: 'failed',
       latestFailureReason: 'Object storage upload failed; retry is available.',
       canRetryUpload: true,
+      sourceKind: 'DocumentUpload',
+      sourceActorDisplayName: '系统管理员',
+      tags: [],
       createdAtUtc: '2026-07-24T00:00:00Z',
       updatedAtUtc: '2026-07-25T00:00:00Z'
     },
@@ -42,6 +45,9 @@ function detail(): KnowledgeDocumentDetail {
         approvedChunkCount: 0,
         ocrPageCount: 0,
         ocrFailedPageCount: 0,
+        sourceKind: 'DocumentUpload',
+        sourceActorDisplayName: '系统管理员',
+        tags: [],
         uploadAndParseJobs: [
           {
             id: 'job-1',
@@ -72,6 +78,9 @@ function detail(): KnowledgeDocumentDetail {
         approvedChunkCount: 3,
         ocrPageCount: 2,
         ocrFailedPageCount: 1,
+        sourceKind: 'DocumentUpload',
+        sourceActorDisplayName: '系统管理员',
+        tags: [],
         uploadAndParseJobs: [],
         indexJobs: [
           {
@@ -206,6 +215,46 @@ describe('KnowledgeDocumentManagementView', () => {
     expect(wrapper.find('[data-testid="upload-new-version"]').exists()).toBe(false);
     expect(wrapper.text()).toContain('当前文档状态不允许上传新版本');
   });
+
+  it.each([
+    ['PrivateChatDirect', '私聊直接入库'],
+    ['ConversationReview', '消息审核入库']
+  ])(
+    'shows %s source evidence without offering file-version upload',
+    async (sourceKind, sourceText) => {
+      const api = createApi();
+      const automatic = detail();
+      automatic.document = {
+        ...automatic.document,
+        status: 'active',
+        sourceKind,
+        sourceActorDisplayName: '张伟',
+        tags: [{ id: 'tag-1', name: '加拿大签证' }]
+      };
+      automatic.versions = [{
+        ...automatic.versions[0],
+        status: 'active',
+        sourceKind,
+        sourceActorDisplayName: '张伟',
+        changeKind: 'Correction',
+        tags: [{ id: 'tag-1', name: '加拿大签证' }]
+      }];
+      api.getDocument.mockResolvedValue(automatic);
+
+      const wrapper = mount(KnowledgeDocumentManagementView, {
+        props: { documentId, api },
+        global: { plugins: [authenticate('KnowledgeOperator')] }
+      });
+      await flushPromises();
+
+      expect(wrapper.text()).toContain(sourceText);
+      expect(wrapper.text()).toContain('张伟');
+      expect(wrapper.text()).toContain('纠正');
+      expect(wrapper.text()).toContain('加拿大签证');
+      expect(wrapper.find('[data-testid="upload-new-version"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="new-version-file"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="disable-document"]').exists()).toBe(true);
+    });
 
   it('shows the exact asynchronous physical-delete confirmation only to Admin', async () => {
     const api = createApi();

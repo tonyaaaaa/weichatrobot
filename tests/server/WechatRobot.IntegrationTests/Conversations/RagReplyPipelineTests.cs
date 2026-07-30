@@ -64,6 +64,8 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         Assert.Equal(2, messages.Length);
         Assert.Equal("inbound", messages[0].Direction);
         Assert.Equal("outbound", messages[1].Direction);
+        Assert.Equal("机器人", messages[1].SenderDisplayName);
+        Assert.Null(messages[1].StableSenderId);
         Assert.Equal(messages[0].Id, messages[1].InReplyToMessageId);
         Assert.DoesNotContain("manual.pdf", messages[1].Text, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, await database.RetrievalAudits.CountAsync(item => item.GroupProfileId == groupId && item.EvidenceJson.Contains("manual.pdf"), TestContext.Current.CancellationToken));

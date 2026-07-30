@@ -46,11 +46,24 @@ export interface ModelConfigurationApiError {
   errors?: Record<string, string[]>;
 }
 
+export interface AgentCapabilityTestResult {
+  modelConfigurationId: string;
+  modelConfigurationVersion: number;
+  chat: boolean;
+  functionTools: boolean;
+  toolResultLoop: boolean;
+  jsonObject: boolean;
+  jsonSchema: boolean;
+  failureCode?: string | null;
+  testedAtUtc: string;
+}
+
 export interface ModelApi {
   list(): Promise<ModelConfiguration[]>;
   create(value: ModelConfigurationDraft): Promise<ModelConfiguration>;
   update(id: string, value: ModelConfigurationDraft): Promise<ModelConfiguration>;
   testConnection(id: string): Promise<ModelConfiguration>;
+  testAgentCapabilities(id: string): Promise<AgentCapabilityTestResult>;
   testWebSearch?(id: string): Promise<{ succeeded: boolean; sourceCount: number }>;
   setEnabled(id: string, enabled: boolean, version: number): Promise<ModelConfiguration>;
   setDefault(id: string, isDefault: boolean, version: number): Promise<ModelConfiguration>;
@@ -74,6 +87,11 @@ export const modelApi: ModelApi = {
   async testConnection(id) {
     return (await apiClient.post<ModelConfiguration>(
       `/api/admin/model-configurations/${encodeURIComponent(id)}/test-connection`
+    )).data;
+  },
+  async testAgentCapabilities(id) {
+    return (await apiClient.post<AgentCapabilityTestResult>(
+      `/api/admin/model-configurations/${encodeURIComponent(id)}/test-agent-capabilities`
     )).data;
   },
   async testWebSearch(id) {

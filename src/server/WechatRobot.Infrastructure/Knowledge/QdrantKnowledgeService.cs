@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using MySql.Data.MySqlClient;
 using WechatRobot.Application.Knowledge;
 using WechatRobot.Application.Models;
@@ -23,17 +24,34 @@ public sealed class QdrantKnowledgeService(
     WechatRobotDbContext database,
     ModelConfigurationService modelConfigurations,
     KnowledgeIndexOptions options,
-    TimeProvider timeProvider) : IKnowledgeService
+    TimeProvider timeProvider,
+    ILogger<QdrantKnowledgeService>? logger = null) : IKnowledgeService
 {
     public async Task<Guid> QueueIndexAsync(Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds, bool explicitReindex, CancellationToken token)
-        => await QueueIndexCoreAsync(documentId, versionId, tagIds, explicitReindex, null, null, token);
+        => await QueueIndexCoreAsync(documentId, versionId, tagIds, explicitReindex, null, null, null, token);
 
     public async Task<Guid> QueueCandidateIndexAsync(Guid candidateId, Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds,
         string publishLeaseOwner, CancellationToken token)
-        => await QueueIndexCoreAsync(documentId, versionId, tagIds, false, candidateId, publishLeaseOwner, token);
+        => await QueueIndexCoreAsync(documentId, versionId, tagIds, false, candidateId, publishLeaseOwner, null, token);
+
+    public async Task<Guid> QueuePrivateBatchIndexAsync(
+        Guid batchId,
+        Guid documentId,
+        Guid versionId,
+        IReadOnlyList<Guid> tagIds,
+        CancellationToken token) =>
+        await QueueIndexCoreAsync(
+            documentId,
+            versionId,
+            tagIds,
+            false,
+            null,
+            null,
+            batchId,
+            token);
 
     private async Task<Guid> QueueIndexCoreAsync(Guid documentId, Guid versionId, IReadOnlyList<Guid> tagIds, bool explicitReindex,
-        Guid? candidateId, string? publishLeaseOwner, CancellationToken token)
+        Guid? candidateId, string? publishLeaseOwner, Guid? privateBatchId, CancellationToken token)
     {
         if (tagIds.Count == 0) throw new ArgumentException("At least one knowledge tag is required.", nameof(tagIds));
         var distinctTags = tagIds.Distinct().Order().ToArray();
@@ -110,6 +128,7 @@ public sealed class QdrantKnowledgeService(
             database.KnowledgeIndexJobs.Add(existing);
         }
         existing.PreviousActiveVersionId = document.ActiveVersionId;
+        existing.PrivateKnowledgeIngestBatchId = privateBatchId;
         existing.PreviousActiveCollectionName = document.ActiveCollectionName;
         existing.PreviousActiveEmbeddingDimension = document.ActiveEmbeddingDimension;
         existing.PreviousActiveDistance = document.ActiveDistance;
@@ -192,7 +211,203 @@ public sealed class QdrantKnowledgeService(
                 job.KnowledgeDocumentVersionId, chunk.Text, tags)).ToArray(), job.LeaseOwner, job.Generation,
             job.PreviousActiveCollectionName, job.PreviousActiveEmbeddingDimension,
             job.PreviousActiveDistance is null ? null : ParseDistance(job.PreviousActiveDistance), job.IsCollectionExclusive,
-            job.PreviousActiveCollectionExclusive, job.ModelConfigurationId, job.ModelConfigurationVersion);
+            job.PreviousActiveCollectionExclusive, job.ModelConfigurationId, job.ModelConfigurationVersion,
+            job.PrivateKnowledgeIngestBatchId);
+    }
+
+    public Task<bool> CompleteIndexAsync(
+        KnowledgeIndexWork work,
+        CancellationToken token) =>
+        work.PrivateKnowledgeIngestBatchId is null
+            ? ActivateVersionAsync(work, token)
+            : StageAndTryActivatePrivateBatchAsync(work, token);
+
+    private async Task<bool> StageAndTryActivatePrivateBatchAsync(
+        KnowledgeIndexWork work,
+        CancellationToken token)
+    {
+        if (work.LeaseOwner is null
+            || work.PrivateKnowledgeIngestBatchId is not { } batchId)
+        {
+            return false;
+        }
+
+        await using var transaction = await BeginTransactionAsync(token);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var job = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(
+            x => x.Id == work.JobId
+                 && x.Status == "leased"
+                 && x.LeaseOwner == work.LeaseOwner
+                 && x.PrivateKnowledgeIngestBatchId == batchId,
+            token);
+        if (job is null)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(token);
+            return false;
+        }
+        var version = await database.KnowledgeDocumentVersions.SingleAsync(
+            x => x.Id == work.VersionId,
+            token);
+        version.Status = "indexed";
+        version.IsPublished = false;
+        version.IndexCollectionName = work.CollectionName;
+        version.EmbeddingDimension = work.Dimension;
+        version.VectorDistance = DistanceValue(work.Distance);
+        version.IndexGeneration = work.Generation;
+        version.IndexCollectionExclusive = work.IsCollectionExclusive;
+        version.UpdatedAtUtc = now;
+        await ReplaceChunkTagsAsync(work, token);
+        job.Status = "staged";
+        job.LeaseOwner = null;
+        job.LeaseExpiresAtUtc = null;
+        job.FailureReason = null;
+        job.Version++;
+        job.UpdatedAtUtc = now;
+        await database.SaveChangesAsync(token);
+
+        var expectedVersionIds = await database.PrivateKnowledgeIngestItems
+            .Where(x => x.BatchId == batchId
+                        && x.ChangeKind != "Duplicate"
+                        && x.StagedVersionId != null)
+            .Select(x => x.StagedVersionId!.Value)
+            .ToArrayAsync(token);
+        var batchJobs = await database.KnowledgeIndexJobs
+            .Where(x => x.PrivateKnowledgeIngestBatchId == batchId
+                        && expectedVersionIds.Contains(x.KnowledgeDocumentVersionId))
+            .ToArrayAsync(token);
+        if (expectedVersionIds.Length == 0
+            || batchJobs.Length != expectedVersionIds.Length
+            || batchJobs.Any(x => x.Status != "staged"))
+        {
+            if (transaction is not null) await transaction.CommitAsync(token);
+            return true;
+        }
+
+        var documentIds = batchJobs.Select(x => x.KnowledgeDocumentId).Distinct().ToArray();
+        var documents = await database.KnowledgeDocuments
+            .Where(x => documentIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, token);
+        var newVersionIds = batchJobs.Select(x => x.KnowledgeDocumentVersionId).ToArray();
+        var newVersions = await database.KnowledgeDocumentVersions
+            .Where(x => newVersionIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, token);
+        foreach (var batchJob in batchJobs.OrderBy(x => x.Id))
+        {
+            var document = documents[batchJob.KnowledgeDocumentId];
+            if (document.IsDeleteRequested
+                || document.Status == "disabled"
+                || document.ActiveVersionId != batchJob.PreviousActiveVersionId
+                || document.ActiveCollectionName != batchJob.PreviousActiveCollectionName)
+            {
+                if (transaction is not null) await transaction.RollbackAsync(token);
+                return false;
+            }
+            var next = newVersions[batchJob.KnowledgeDocumentVersionId];
+            document.ActiveVersionId = next.Id;
+            document.ActiveCollectionName = batchJob.CollectionName;
+            document.ActiveEmbeddingDimension = batchJob.Dimension;
+            document.ActiveDistance = batchJob.Distance;
+            document.ActiveIndexGeneration = batchJob.Generation;
+            document.ActiveCollectionExclusive = batchJob.IsCollectionExclusive;
+            document.Status = "active";
+            document.StateVersion++;
+            document.UpdatedAtUtc = now;
+            next.Status = "active";
+            next.IsPublished = true;
+            next.UpdatedAtUtc = now;
+            if (batchJob.PreviousActiveVersionId is { } previousId
+                && previousId != next.Id)
+            {
+                var previous = await database.KnowledgeDocumentVersions.SingleAsync(
+                    x => x.Id == previousId,
+                    token);
+                previous.Status = "indexed";
+                previous.IsPublished = false;
+                previous.UpdatedAtUtc = now;
+                if (batchJob.PreviousActiveCollectionName is { } oldCollection
+                    && oldCollection != batchJob.CollectionName)
+                {
+                    await AddCleanupJobAsync(
+                        batchJob.KnowledgeDocumentId,
+                        previousId,
+                        oldCollection,
+                        batchJob.PreviousActiveEmbeddingDimension ?? batchJob.Dimension,
+                        ParseDistance(batchJob.PreviousActiveDistance ?? batchJob.Distance),
+                        0,
+                        now,
+                        batchJob.Id,
+                        null,
+                        batchJob.PreviousActiveCollectionExclusive,
+                        token);
+                }
+            }
+            batchJob.Status = "completed";
+            batchJob.Version++;
+            batchJob.UpdatedAtUtc = now;
+        }
+
+        var ingestBatch = await database.PrivateKnowledgeIngestBatches.SingleAsync(
+            x => x.Id == batchId,
+            token);
+        ingestBatch.Status = "Activated";
+        ingestBatch.FailureCode = null;
+        ingestBatch.FinalNotificationState = "Queued";
+        ingestBatch.Version++;
+        ingestBatch.UpdatedAtUtc = now;
+        var source = await database.ConversationMessages.AsNoTracking()
+            .SingleAsync(x => x.Id == ingestBatch.SourceConversationMessageId, token);
+        var notificationKey = $"private-ingest-final:{ingestBatch.Id:D}";
+        if (!await database.SendCommands.AnyAsync(
+                x => x.IdempotencyKey == notificationKey,
+                token))
+        {
+            var sendStatus = await MySqlRobotSendCoordinator.InitialStatusAsync(
+                database,
+                ingestBatch.RobotConfigId,
+                token);
+            database.SendCommands.Add(new SendCommandEntity
+            {
+                RobotConfigId = ingestBatch.RobotConfigId,
+                IdempotencyKey = notificationKey,
+                PayloadJson = JsonSerializer.Serialize(new
+                {
+                    GroupName = source.PeerDisplayName ?? source.SenderDisplayName,
+                    Text = $"知识整理完成：新增 {ingestBatch.NewCount}，重复 {ingestBatch.DuplicateCount}，补充 {ingestBatch.SupplementCount}，纠正 {ingestBatch.CorrectionCount}。"
+                }),
+                Status = sendStatus,
+                NextAttemptAtUtc = now,
+                CreatedAtUtc = now
+            });
+        }
+        await database.SaveChangesAsync(token);
+        if (transaction is not null) await transaction.CommitAsync(token);
+        return true;
+    }
+
+    private async Task ReplaceChunkTagsAsync(
+        KnowledgeIndexWork work,
+        CancellationToken token)
+    {
+        var chunkIds = work.Chunks.Select(x => x.Id).ToArray();
+        foreach (var chunkBatch in GuidBatchQuery.CreateBatches(chunkIds))
+        {
+            var predicate = GuidBatchQuery.BuildPredicate<KnowledgeChunkTagEntity>(
+                chunkBatch,
+                binding => binding.KnowledgeChunkId);
+            database.KnowledgeChunkTags.RemoveRange(
+                await database.KnowledgeChunkTags.Where(predicate).ToArrayAsync(token));
+            await database.SaveChangesAsync(token);
+            var ids = chunkBatch.ToHashSet();
+            database.KnowledgeChunkTags.AddRange(
+                work.Chunks.Where(x => ids.Contains(x.Id))
+                    .SelectMany(x => x.TagIds.Select(tagId =>
+                        new KnowledgeChunkTagEntity
+                        {
+                            KnowledgeChunkId = x.Id,
+                            KnowledgeTagId = tagId
+                        })));
+            await database.SaveChangesAsync(token);
+        }
     }
 
     public async Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(
@@ -296,6 +511,18 @@ public sealed class QdrantKnowledgeService(
         job.Status = retryable && job.AttemptCount < 4 ? "retrying" : "failed";
         job.NextAttemptAtUtc = timeProvider.GetUtcNow().UtcDateTime.AddSeconds(job.AttemptCount switch { 1 => 5, 2 => 15, _ => 45 });
         job.LeaseOwner = null; job.LeaseExpiresAtUtc = null; job.Version++; job.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        if (job.PrivateKnowledgeIngestBatchId is { } batchId)
+        {
+            var batch = await database.PrivateKnowledgeIngestBatches.SingleAsync(
+                x => x.Id == batchId,
+                token);
+            batch.Status = job.Status == "retrying" ? "Retryable" : "Failed";
+            batch.FailureCode = retryable
+                ? "private_knowledge_index_unavailable"
+                : "private_knowledge_index_failed";
+            batch.Version++;
+            batch.UpdatedAtUtc = job.UpdatedAtUtc;
+        }
         await database.SaveChangesAsync(token);
     }
 
@@ -544,6 +771,9 @@ public sealed class QdrantKnowledgeService(
 
         const int maximumConcurrentSearches = 4;
         var candidatePages = Enumerable.Repeat<IReadOnlyList<VectorSearchHit>>([], contracts.Length).ToArray();
+        var successfulCollectionCount = 0;
+        var unavailableCollectionCount = 0;
+        VectorStoreUnavailableException? firstUnavailable = null;
         using (var concurrency = new SemaphoreSlim(maximumConcurrentSearches, maximumConcurrentSearches))
         {
             await Task.WhenAll(contracts.Select(async (contract, index) =>
@@ -556,10 +786,25 @@ public sealed class QdrantKnowledgeService(
                     var request = new VectorSearchRequest(new VectorCollection(contract.CollectionName, contract.Dimension, ParseDistance(contract.Distance)),
                         vector, visibleTagIds, contract.ActiveVersionIds, requestLimit);
                     candidatePages[index] = (await vectors.SearchAsync(request, token)).Take(requestLimit).ToArray();
+                    Interlocked.Increment(ref successfulCollectionCount);
+                }
+                catch (VectorStoreUnavailableException exception)
+                {
+                    Interlocked.Increment(ref unavailableCollectionCount);
+                    Interlocked.CompareExchange(ref firstUnavailable, exception, null);
                 }
                 finally { concurrency.Release(); }
             }));
         }
+        if (successfulCollectionCount == 0 && firstUnavailable is not null)
+            throw new VectorStoreUnavailableException(
+                "All eligible knowledge vector collections are unavailable.",
+                firstUnavailable);
+        if (unavailableCollectionCount > 0)
+            logger?.LogWarning(
+                "Knowledge vector search used partial results because {UnavailableCollectionCount} of {EligibleCollectionCount} eligible collections were unavailable.",
+                unavailableCollectionCount,
+                contracts.Length);
 
         var candidates = candidatePages.SelectMany(page => page).ToArray();
         if (candidates.Length == 0) return [];

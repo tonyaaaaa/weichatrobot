@@ -27,6 +27,27 @@ public sealed class ConversationSummarizerTests
             [new("user", "scope", "old", DateTime.UtcNow)], TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Summary_prompt_preserves_role_authoritative_participant_attribution()
+    {
+        var chat = new FakeChat("summary");
+        var service = new ChatConversationSummarizer(chat, new ConversationSummaryOptions());
+
+        await service.SummarizeAsync(Config(), null, [
+            new("user", "scope", "我偏好结论优先", DateTime.UtcNow, SenderDisplayName: "张伟"),
+            new("assistant", "scope", "已经记录", DateTime.UtcNow, SenderDisplayName: "错误成员")
+        ], TestContext.Current.CancellationToken);
+
+        var system = Assert.Single(chat.Request!.Messages, message => message.Role == "system");
+        var data = Assert.Single(chat.Request.Messages, message => message.Role == "user");
+        Assert.DoesNotContain("张伟", system.Content, StringComparison.Ordinal);
+        Assert.Contains("UNTRUSTED_CONVERSATION_DATA_BEGIN", data.Content, StringComparison.Ordinal);
+        Assert.Contains("张伟: 我偏好结论优先", data.Content, StringComparison.Ordinal);
+        Assert.Contains("机器人: 已经记录", data.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("错误成员", data.Content, StringComparison.Ordinal);
+        Assert.Contains("observed labels", system.Content, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static ModelProviderConfiguration Config() => new("https://fake.test", "fake", "encrypted", TimeSpan.FromSeconds(1), 0);
 
     private sealed class FakeChat : IChatCompletionClient

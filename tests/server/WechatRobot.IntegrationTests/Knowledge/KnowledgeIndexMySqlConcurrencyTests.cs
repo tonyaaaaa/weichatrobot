@@ -502,6 +502,18 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             };
             var version = Version(document.Id, 1, "active", true);
             var tag = new KnowledgeTagEntity { Name = Guid.NewGuid().ToString("N"), NormalizedName = Guid.NewGuid().ToString("N") };
+            var embedding = new ModelConfigEntity
+            {
+                Name = Guid.NewGuid().ToString("N"),
+                NormalizedName = Guid.NewGuid().ToString("N"),
+                Provider = "openai-compatible",
+                ConfigurationType = "embedding",
+                BaseUrl = "https://fake/",
+                Model = "embedding-test",
+                EmbeddingDimension = 3,
+                IsEnabled = true,
+                IsDefault = true
+            };
             var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "disable", Status = "approved" };
             document.ActiveVersionId = version.Id;
             version.IndexCollectionName = document.ActiveCollectionName;
@@ -517,7 +529,7 @@ public sealed class KnowledgeIndexMySqlConcurrencyTests : IClassFixture<MySqlFix
             versionId = version.Id;
             jobId = job.Id;
             tagId = tag.Id;
-            setup.AddRange(document, version, tag, chunk, job,
+            setup.AddRange(document, version, tag, embedding, chunk, job,
                 new KnowledgeChunkTagEntity { KnowledgeChunkId = chunk.Id, KnowledgeTagId = tag.Id });
             await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
         }

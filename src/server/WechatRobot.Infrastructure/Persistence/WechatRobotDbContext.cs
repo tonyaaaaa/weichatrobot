@@ -50,6 +50,18 @@ public sealed class WechatRobotDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<MemoryObservationEntity> MemoryObservations => Set<MemoryObservationEntity>();
     public DbSet<MemoryEntryEntity> MemoryEntries => Set<MemoryEntryEntity>();
     public DbSet<MemoryAuditEntity> MemoryAudits => Set<MemoryAuditEntity>();
+    public DbSet<FixedReplyTemplateEntity> FixedReplyTemplates =>
+        Set<FixedReplyTemplateEntity>();
+    public DbSet<FixedReplyTemplateExampleEntity> FixedReplyTemplateExamples =>
+        Set<FixedReplyTemplateExampleEntity>();
+    public DbSet<FixedReplyTemplateGroupRuleEntity> FixedReplyTemplateGroupRules =>
+        Set<FixedReplyTemplateGroupRuleEntity>();
+    public DbSet<PrivateKnowledgeIngestBatchEntity> PrivateKnowledgeIngestBatches =>
+        Set<PrivateKnowledgeIngestBatchEntity>();
+    public DbSet<PrivateKnowledgeIngestItemEntity> PrivateKnowledgeIngestItems =>
+        Set<PrivateKnowledgeIngestItemEntity>();
+    public DbSet<MessageIntentAuditEntity> MessageIntentAudits =>
+        Set<MessageIntentAuditEntity>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {

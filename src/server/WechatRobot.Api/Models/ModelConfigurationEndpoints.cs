@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using WechatRobot.Application.Agents;
 using WechatRobot.Application.Models;
 using WechatRobot.Infrastructure.Identity;
 using WechatRobot.Infrastructure.Models;
@@ -17,6 +18,7 @@ public static class ModelConfigurationEndpoints
         group.MapPut("{id:guid}", UpdateByIdAsync);
         group.MapPost("{id:guid}/test-connection", TestConnectionByIdAsync);
         group.MapPost("{id:guid}/test-web-search", TestWebSearchAsync);
+        group.MapPost("{id:guid}/test-agent-capabilities", TestAgentCapabilitiesAsync);
         group.MapPost("{id:guid}/enabled", SetEnabledAsync);
         group.MapPost("{id:guid}/default", SetDefaultAsync);
         group.MapDelete("{id:guid}/api-key", ClearApiKeyAsync);
@@ -24,6 +26,31 @@ public static class ModelConfigurationEndpoints
         group.MapPut("{name}", UpsertAsync);
         group.MapPost("{name}/test-connection", TestConnectionAsync);
         return group;
+    }
+
+    private static async Task<IResult> TestAgentCapabilitiesAsync(
+        Guid id,
+        IAgentCapabilityProbe probe,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await probe.ProbeAsync(id, cancellationToken);
+            return Results.Ok(new AgentCapabilityTestResponse(
+                result.ModelConfigurationId,
+                result.ModelConfigurationVersion,
+                result.Supported.Contains(AgentCapability.Chat),
+                result.Supported.Contains(AgentCapability.FunctionTools),
+                result.Supported.Contains(AgentCapability.ToolResultLoop),
+                result.Supported.Contains(AgentCapability.JsonObject),
+                result.Supported.Contains(AgentCapability.JsonSchema),
+                result.FailureCode,
+                result.TestedAtUtc));
+        }
+        catch (KeyNotFoundException)
+        {
+            return Results.NotFound();
+        }
     }
 
     private static async Task<IResult> CreateAsync(
@@ -339,4 +366,14 @@ public static class ModelConfigurationEndpoints
         string ConnectionStatus, DateTime? LastTestedAtUtc, string? LastTestFailureSummary, int Version);
     public sealed record ConnectionTestResponse(bool Succeeded);
     public sealed record WebSearchTestResponse(bool Succeeded, int SourceCount);
+    public sealed record AgentCapabilityTestResponse(
+        Guid ModelConfigurationId,
+        int ModelConfigurationVersion,
+        bool Chat,
+        bool FunctionTools,
+        bool ToolResultLoop,
+        bool JsonObject,
+        bool JsonSchema,
+        string? FailureCode,
+        DateTime TestedAtUtc);
 }

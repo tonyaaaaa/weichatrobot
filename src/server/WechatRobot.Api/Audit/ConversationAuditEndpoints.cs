@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using WechatRobot.Application.Audit;
 using WechatRobot.Infrastructure.Identity;
+using WechatRobot.Infrastructure.Groups;
 using WechatRobot.Infrastructure.Logging;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
@@ -75,28 +76,13 @@ public static class ConversationAuditEndpoints
     }
 
     private static async Task<IResult> GroupOptionsAsync(
-        WechatRobotDbContext database,
+        GroupOptionQuery query,
         CancellationToken token)
-    {
-        var options = await (
-            from profile in database.GroupProfiles.AsNoTracking()
-            join robot in database.RobotConfigs.AsNoTracking()
-                on profile.RobotConfigId equals robot.Id
-            orderby profile.Name, profile.Id
-            select new
-            {
-                profile.Id,
-                profile.Name,
-                profile.WorkToolGroupRemark,
-                RobotName = robot.Name,
-                profile.IsEnabled
-            })
-            .ToArrayAsync(token);
-        return TypedResults.Ok(options);
-    }
+        => TypedResults.Ok(await query.ListAsync(token));
 
     private static async Task<IResult> ListAsync(
         Guid? groupId,
+        string? channelType,
         DateTime? fromUtc,
         DateTime? toUtc,
         int? page,
@@ -108,8 +94,10 @@ public static class ConversationAuditEndpoints
             return TypedResults.BadRequest(new { error = "Page must not exceed 1000000." });
         if (fromUtc is not null && toUtc is not null && fromUtc >= toUtc)
             return TypedResults.BadRequest(new { error = "Audit UTC window is invalid." });
+        if (channelType is not null && channelType is not ("Group" or "Private"))
+            return TypedResults.BadRequest(new { error = "Audit channel type is invalid." });
 
-        var result = await query.ListAsync(new(groupId, fromUtc, toUtc, normalizedPage, normalizedPageSize), token);
+        var result = await query.ListAsync(new(groupId, channelType, fromUtc, toUtc, normalizedPage, normalizedPageSize), token);
         var items = result.Items.Select(item =>
         {
             var evidence = SafeJson(item.EvidenceJson);
@@ -117,6 +105,7 @@ public static class ConversationAuditEndpoints
             {
                 item.Id,
                 item.GroupProfileId,
+                item.ChannelType,
                 item.ModelConfigurationId,
                 item.WorkToolMessageId,
                 item.Question,

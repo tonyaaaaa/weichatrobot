@@ -14,6 +14,7 @@ function createApi(): KnowledgeApi {
         contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', sizeBytes: 1,
         status: 'preview', failureReason: null, isPublished: false, hasPublicObject: true,
         previewRevision: 3, previewCount: 1, approvedChunkCount: 0, ocrPageCount: 0, ocrFailedPageCount: 0,
+        sourceKind: 'DocumentUpload', sourceActorDisplayName: '系统管理员', tags: [],
         uploadAndParseJobs: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
       }
     ]),
@@ -109,6 +110,7 @@ describe('DocumentDetailView advanced chunk controls', () => {
         contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', sizeBytes: 1,
         status: 'indexing', failureReason: null, isPublished: false, hasPublicObject: true,
         previewRevision: 3, previewCount: 1, approvedChunkCount: 1, ocrPageCount: 0, ocrFailedPageCount: 0,
+        sourceKind: 'DocumentUpload', sourceActorDisplayName: '系统管理员', tags: [],
         uploadAndParseJobs: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
       }
     ]);
@@ -124,5 +126,63 @@ describe('DocumentDetailView advanced chunk controls', () => {
     expect(wrapper.get('[data-testid="generate-previews"]').attributes('disabled')).toBeDefined();
     expect(wrapper.get('[data-testid="edit-preview-1"]').attributes('disabled')).toBeDefined();
     expect(wrapper.get('[data-testid="delete-preview-1"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('preselects persisted tags and keeps automatic-source content read-only while allowing reindex', async () => {
+    const api = createApi();
+    vi.mocked(api.getDocumentVersions).mockResolvedValue([
+      {
+        id: 'version-1', version: 1, originalFileName: '私聊入库', safeFileName: 'private-chat.txt',
+        contentType: 'text/plain', sizeBytes: 12, status: 'active', failureReason: null,
+        isPublished: true, hasPublicObject: false, previewRevision: 3, previewCount: 1,
+        approvedChunkCount: 1, ocrPageCount: 0, ocrFailedPageCount: 0,
+        sourceKind: 'PrivateChatDirect', sourceActorDisplayName: '张伟',
+        changeKind: 'New', tags: [{ id: 'tag-bound', name: '加拿大签证' }],
+        uploadAndParseJobs: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
+      }
+    ]);
+    vi.mocked(api.getIndexStatus).mockResolvedValue({
+      documentId: 'document-1',
+      activeVersionId: 'version-1',
+      documentStatus: 'active',
+      approvedChunkCount: 1,
+      consistency: 'consistent',
+      driftDetails: [],
+      jobs: []
+    });
+    vi.mocked(api.queueIndex).mockResolvedValue({ jobId: 'job-1' });
+    const wrapper = mount(DocumentDetailView, {
+      props: {
+        documentId: 'document-1',
+        versionId: 'version-1',
+        api,
+        tagApi: {
+          options: vi.fn().mockResolvedValue([
+            { id: 'tag-bound', name: '加拿大签证', isGlobalPublic: false },
+            { id: 'tag-other', name: '澳洲签证', isGlobalPublic: false }
+          ])
+        }
+      }
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('入库内容与索引');
+    expect(wrapper.text()).toContain('私聊直接入库');
+    expect(wrapper.text()).toContain('张伟');
+    expect(wrapper.get('[data-testid="knowledge-tag-tag-bound"]')
+      .attributes('checked')).toBeDefined();
+    expect(wrapper.get('[data-testid="text-preview-1"]').attributes('readonly')).toBeDefined();
+    expect(wrapper.find('[data-testid="generate-previews"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="edit-preview-1"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="delete-preview-1"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="queue-index"]').trigger('click');
+    await flushPromises();
+    expect(api.queueIndex).toHaveBeenCalledWith(
+      'document-1',
+      'version-1',
+      ['tag-bound'],
+      true
+    );
   });
 });
