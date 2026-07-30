@@ -77,6 +77,15 @@ public sealed class KnowledgeTagManager(WechatRobotDbContext database)
             return InvalidName();
         }
 
+        if (GlobalKnowledgeTag.IsReservedDisplayName(name))
+        {
+            var canonical = await FindGlobalSystemTagAsync(cancellationToken);
+            if (canonical is not null)
+            {
+                return NameConflict(canonical);
+            }
+        }
+
         var normalizedName = NormalizeName(name);
         var conflict = await FindByNormalizedNameAsync(normalizedName, null, cancellationToken);
         if (conflict is not null)
@@ -139,6 +148,16 @@ public sealed class KnowledgeTagManager(WechatRobotDbContext database)
         if (entity.Version != update.ExpectedVersion)
         {
             return ConcurrencyConflict(entity);
+        }
+
+        if (GlobalKnowledgeTag.IsReservedDisplayName(name)
+            && entity.SystemKind != GlobalKnowledgeTag.SystemKind)
+        {
+            var canonical = await FindGlobalSystemTagAsync(cancellationToken);
+            if (canonical is not null)
+            {
+                return NameConflict(canonical);
+            }
         }
 
         var normalizedName = NormalizeName(name);
@@ -244,6 +263,14 @@ public sealed class KnowledgeTagManager(WechatRobotDbContext database)
             return ConcurrencyConflict(entity);
         }
 
+        if (entity.SystemKind == GlobalKnowledgeTag.SystemKind)
+        {
+            return new(
+                KnowledgeTagMutationStatus.InvalidInput,
+                ToRecord(entity),
+                Error: "knowledge-tag-system-managed");
+        }
+
         var references = await ReferencesAsync(id, cancellationToken);
         if (references.IsReferenced)
         {
@@ -343,6 +370,12 @@ public sealed class KnowledgeTagManager(WechatRobotDbContext database)
         await database.KnowledgeTags.AsNoTracking().SingleOrDefaultAsync(
             tag => tag.NormalizedName == normalizedName &&
                    (excludedId == null || tag.Id != excludedId),
+            cancellationToken);
+
+    private Task<KnowledgeTagEntity?> FindGlobalSystemTagAsync(
+        CancellationToken cancellationToken) =>
+        database.KnowledgeTags.AsNoTracking().SingleOrDefaultAsync(
+            tag => tag.SystemKind == GlobalKnowledgeTag.SystemKind,
             cancellationToken);
 
     private async Task<KnowledgeTagMutationResult> ReloadConcurrencyConflictAsync(

@@ -18,9 +18,6 @@ public sealed class PrivateKnowledgeIngestProcessor(
     IDurableJobRepository jobs,
     TimeProvider timeProvider) : IPrivateKnowledgeIngestProcessor
 {
-    private static readonly Guid GlobalKnowledgeTagId =
-        Guid.Parse("f5b8e5c1-5f2d-4d61-9ae0-126dca90a0e1");
-
     public async Task ProcessAsync(
         LeasedDurableJob job,
         CancellationToken cancellationToken)
@@ -110,7 +107,7 @@ public sealed class PrivateKnowledgeIngestProcessor(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        await EnsureGlobalTagAsync(now, cancellationToken);
+        var globalTagId = await EnsureGlobalTagAsync(now, cancellationToken);
         var items = await database.PrivateKnowledgeIngestItems
             .Where(x => x.BatchId == batch.Id)
             .OrderBy(x => x.Sequence)
@@ -146,6 +143,7 @@ public sealed class PrivateKnowledgeIngestProcessor(
             var tagIds = await ResolveTagsAsync(
                 proposal,
                 target?.VersionId,
+                globalTagId,
                 now,
                 cancellationToken);
             var staged = await CreateStagedVersionAsync(
@@ -300,13 +298,20 @@ public sealed class PrivateKnowledgeIngestProcessor(
     private async Task<Guid[]> ResolveTagsAsync(
         ProposedKnowledgeItem proposal,
         Guid? targetVersionId,
+        Guid globalTagId,
         DateTime now,
         CancellationToken cancellationToken)
     {
         var resolved = new HashSet<Guid>();
         foreach (var value in proposal.ExplicitTags)
         {
-            var normalized = value.ToUpperInvariant();
+            if (GlobalKnowledgeTag.IsReservedDisplayName(value))
+            {
+                resolved.Add(globalTagId);
+                continue;
+            }
+
+            var normalized = KnowledgeTagManager.NormalizeName(value);
             var tag = await database.KnowledgeTags.SingleOrDefaultAsync(
                 x => x.NormalizedName == normalized,
                 cancellationToken);
@@ -324,7 +329,8 @@ public sealed class PrivateKnowledgeIngestProcessor(
             }
             if (tag.IsEnabled) resolved.Add(tag.Id);
         }
-        if (proposal.SuggestedTagId is { } suggested
+        if (proposal.ExplicitTags.Count == 0
+            && proposal.SuggestedTagId is { } suggested
             && await database.KnowledgeTags.AnyAsync(
                 x => x.Id == suggested && x.IsEnabled,
                 cancellationToken))
@@ -342,7 +348,7 @@ public sealed class PrivateKnowledgeIngestProcessor(
                 .ToArrayAsync(cancellationToken);
             resolved.UnionWith(inherited);
         }
-        if (resolved.Count == 0) resolved.Add(GlobalKnowledgeTagId);
+        if (resolved.Count == 0) resolved.Add(globalTagId);
         return resolved.Order().ToArray();
     }
 
@@ -434,27 +440,22 @@ public sealed class PrivateKnowledgeIngestProcessor(
         return (document.Id, version.Id);
     }
 
-    private async Task EnsureGlobalTagAsync(
+    private async Task<Guid> EnsureGlobalTagAsync(
         DateTime now,
         CancellationToken cancellationToken)
     {
-        if (await database.KnowledgeTags.AnyAsync(
-                x => x.SystemKind == "GlobalKnowledge",
-                cancellationToken))
+        var existing = await database.KnowledgeTags.SingleOrDefaultAsync(
+            x => x.SystemKind == GlobalKnowledgeTag.SystemKind,
+            cancellationToken);
+        if (existing is not null)
         {
-            return;
+            return existing.Id;
         }
-        database.KnowledgeTags.Add(new KnowledgeTagEntity
-        {
-            Id = GlobalKnowledgeTagId,
-            Name = "全局知识",
-            NormalizedName = "SYSTEM:GLOBAL_KNOWLEDGE",
-            SystemKind = "GlobalKnowledge",
-            IsEnabled = true,
-            IsGlobalPublic = true,
-            CreatedAtUtc = now
-        });
+
+        var global = GlobalKnowledgeTag.Create(now);
+        database.KnowledgeTags.Add(global);
         await database.SaveChangesAsync(cancellationToken);
+        return global.Id;
     }
 
     private async Task NotifyAsync(

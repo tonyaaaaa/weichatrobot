@@ -241,6 +241,45 @@ public sealed class KnowledgeTagManagerTests
     }
 
     [Fact]
+    public async Task Create_rejects_reserved_global_display_name_as_canonical_conflict()
+    {
+        await using var database = NewDatabase();
+        var canonical = GlobalKnowledgeTag.Create(DateTime.UtcNow);
+        database.KnowledgeTags.Add(canonical);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var result = await new KnowledgeTagManager(database).CreateAsync(
+            "knowledge-operator",
+            new KnowledgeTagDraft(" 全局知识 ", false),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.NameConflict, result.Status);
+        Assert.Equal(canonical.Id, result.Tag!.Id);
+        Assert.Single(database.KnowledgeTags);
+        Assert.Empty(database.AdministrationAudits);
+    }
+
+    [Fact]
+    public async Task Delete_rejects_system_global_tag_even_when_it_has_no_references()
+    {
+        await using var database = NewDatabase();
+        var canonical = GlobalKnowledgeTag.Create(DateTime.UtcNow);
+        database.KnowledgeTags.Add(canonical);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var result = await new KnowledgeTagManager(database).DeleteAsync(
+            canonical.Id,
+            "administrator",
+            canonical.Version,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(KnowledgeTagMutationStatus.InvalidInput, result.Status);
+        Assert.Equal("knowledge-tag-system-managed", result.Error);
+        Assert.Single(database.KnowledgeTags);
+        Assert.Empty(database.AdministrationAudits);
+    }
+
+    [Fact]
     public async Task Update_requires_current_version_and_audits_before_and_after()
     {
         await using var database = NewDatabase();

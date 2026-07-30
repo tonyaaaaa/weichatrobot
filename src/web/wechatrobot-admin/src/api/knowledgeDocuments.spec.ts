@@ -86,6 +86,21 @@ describe('knowledgeApi document administration', () => {
     );
   });
 
+  it('uses encoded workbench and revision routes', async () => {
+    const versionId = 'version/unsafe';
+
+    await knowledgeApi.getWorkbench(documentId, versionId);
+    expect(apiClient.get).toHaveBeenCalledWith(
+      `/api/knowledge/documents/${encodedDocumentId}/versions/version%2Funsafe/workbench`
+    );
+
+    await knowledgeApi.createRevision(documentId, versionId, 9);
+    expect(apiClient.post).toHaveBeenCalledWith(
+      `/api/knowledge/documents/${encodedDocumentId}/versions/version%2Funsafe/revisions`,
+      { expectedDocumentStateVersion: 9 }
+    );
+  });
+
   it('adds documentId only when uploading a new version', async () => {
     const file = new File(['version content'], '产品手册-v2.pdf', {
       type: 'application/pdf'

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using WechatRobot.Application.Agents;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
@@ -54,11 +55,7 @@ public sealed class PrivateChatProcessorTests
 
         var processor = new PrivateChatProcessor(
             database,
-            new GroundedAnswerService(
-                new EmptyRetrieval(),
-                new UnusedChatClient(),
-                new GroundedAnswerOptions(),
-                new AnswerOutputFirewall()),
+            new UnusedAnswerAgent(),
             new ModelConfigurationService(new PassThroughProtector()),
             new DurableJobRepository(database),
             new PrivateKnowledgeIngestStore(database),
@@ -81,12 +78,17 @@ public sealed class PrivateChatProcessorTests
         Assert.Null(batchJob.RelatedConversationMessageId);
     }
 
-    [Fact]
-    public async Task Ordinary_private_answer_is_session_bound_audited_and_enqueued_once()
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public async Task Ordinary_private_answer_uses_all_enabled_tags_and_unconfigured_fallbacks(
+        int roomType)
     {
         await using var database = Database();
         var robotId = Guid.NewGuid();
         var messageId = Guid.NewGuid();
+        var enabledTagIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var disabledTagId = Guid.NewGuid();
         database.RobotConfigs.Add(new RobotConfigEntity
         {
             Id = robotId,
@@ -102,39 +104,59 @@ public sealed class PrivateChatProcessorTests
             BaseUrl = "https://example.test",
             Model = "chat",
             IsEnabled = true,
-            IsDefault = true
+            IsDefault = true,
+            WebSearchMode = "ZaiChatCompletions"
         });
-        database.KnowledgeTags.Add(new KnowledgeTagEntity
-        {
-            Name = "全局",
-            NormalizedName = "全局",
-            IsEnabled = true
-        });
+        database.KnowledgeTags.AddRange(
+            new KnowledgeTagEntity
+            {
+                Id = enabledTagIds[0],
+                Name = "产品",
+                NormalizedName = "产品",
+                IsEnabled = true
+            },
+            new KnowledgeTagEntity
+            {
+                Id = enabledTagIds[1],
+                Name = "流程",
+                NormalizedName = "流程",
+                IsEnabled = true
+            },
+            new KnowledgeTagEntity
+            {
+                Id = disabledTagId,
+                Name = "停用",
+                NormalizedName = "停用",
+                IsEnabled = false
+            });
         database.ConversationMessages.Add(new ConversationMessageEntity
         {
             Id = messageId,
             RobotConfigId = robotId,
-            WorkToolMessageId = "private-answer-1",
-            FallbackHash = "private-answer-1",
+            WorkToolMessageId = $"private-answer-{roomType}",
+            FallbackHash = $"private-answer-{roomType}",
             FallbackWindowStartUtc = DateTime.UnixEpoch,
             ProcessingState = "pending",
             ChannelType = "Private",
-            RoomType = 4,
-            PeerDisplayName = "内部同事",
-            ScopeHash = "stable-scope",
-            SenderDisplayName = "内部同事",
+            RoomType = roomType,
+            PeerDisplayName = roomType == 2 ? "外部联系人" : "内部同事",
+            ScopeHash = $"stable-scope-{roomType}",
+            SenderDisplayName = roomType == 2 ? "外部联系人" : "内部同事",
             Text = "签证要多久？",
             ReceivedAtUtc = DateTime.UtcNow
         });
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
 
+        var retrieval = new EmptyRetrieval();
+        var chat = new FallbackChatClient();
+        var answerAgent = new RecordingAnswerAgent(new GroundedAnswerService(
+            retrieval,
+            chat,
+            new GroundedAnswerOptions(),
+            new AnswerOutputFirewall()));
         var processor = new PrivateChatProcessor(
             database,
-            new GroundedAnswerService(
-                new EmptyRetrieval(),
-                new UnusedChatClient(),
-                new GroundedAnswerOptions(),
-                new AnswerOutputFirewall()),
+            answerAgent,
             new ModelConfigurationService(new PassThroughProtector()),
             new DurableJobRepository(database),
             new PrivateKnowledgeIngestStore(database),
@@ -148,6 +170,9 @@ public sealed class PrivateChatProcessorTests
             "test");
 
         await processor.ProcessAsync(job, TestContext.Current.CancellationToken);
+        Assert.Equal(2, chat.Requests.Count);
+        Assert.NotNull(chat.Requests[0].WebSearch);
+        Assert.Null(chat.Requests[1].WebSearch);
         await processor.ProcessAsync(job, TestContext.Current.CancellationToken);
 
         database.ChangeTracker.Clear();
@@ -160,8 +185,19 @@ public sealed class PrivateChatProcessorTests
 
         Assert.NotNull(inbound.ConversationSessionId);
         Assert.Equal(inbound.ConversationSessionId, outbound.ConversationSessionId);
+        Assert.Equal("大模型回答", outbound.Text);
         Assert.Null(audit.GroupProfileId);
         Assert.Equal("Private", audit.ChannelType);
+        Assert.Equal("model_knowledge", audit.AnswerSource);
+        Assert.Equal("web_search_no_sources", audit.WebSearchFailureCode);
+        Assert.Equal(2, answerAgent.CallCount);
+        Assert.Equal(4, chat.Requests.Count);
+        Assert.NotNull(chat.Requests[2].WebSearch);
+        Assert.Null(chat.Requests[3].WebSearch);
+        Assert.Equal(
+            enabledTagIds.OrderBy(id => id).ToArray(),
+            retrieval.RequestedTagIds.OrderBy(id => id).ToArray());
+        Assert.DoesNotContain(disabledTagId, retrieval.RequestedTagIds);
         Assert.Single(await database.SendCommands.AsNoTracking()
             .Where(x => x.IdempotencyKey == $"private-reply:{messageId:D}")
             .ToArrayAsync(TestContext.Current.CancellationToken));
@@ -174,10 +210,18 @@ public sealed class PrivateChatProcessorTests
 
     private sealed class EmptyRetrieval : IRetrievalEvidenceProvider
     {
+        public IReadOnlyList<Guid> RequestedTagIds { get; private set; } = [];
+
         public Task<KnowledgeTagScope> ResolveScopeAsync(
             IReadOnlyList<Guid> requestedTagIds,
-            CancellationToken token) =>
-            Task.FromResult(new KnowledgeTagScope(requestedTagIds, [], "all-active-tags"));
+            CancellationToken token)
+        {
+            RequestedTagIds = requestedTagIds;
+            return Task.FromResult(new KnowledgeTagScope(
+                requestedTagIds,
+                requestedTagIds,
+                "all-active-tags"));
+        }
 
         public Task<IReadOnlyList<RetrievalEvidence>> RetrieveAsync(
             string question,
@@ -187,13 +231,42 @@ public sealed class PrivateChatProcessorTests
             Task.FromResult<IReadOnlyList<RetrievalEvidence>>([]);
     }
 
-    private sealed class UnusedChatClient : IChatCompletionClient
+    private sealed class FallbackChatClient : IChatCompletionClient
     {
+        public List<ChatCompletionRequest> Requests { get; } = [];
+
         public Task<ChatCompletionResponse> CompleteAsync(
             ModelProviderConfiguration configuration,
             ChatCompletionRequest request,
-            CancellationToken token = default) =>
-            throw new InvalidOperationException("No-evidence private answer must not call the chat model.");
+            CancellationToken token = default)
+        {
+            Requests.Add(request);
+            return Task.FromResult(
+                Requests.Count == 1
+                    ? new ChatCompletionResponse("搜索回答", [])
+                    : new ChatCompletionResponse("大模型回答"));
+        }
+    }
+
+    private sealed class RecordingAnswerAgent(GroundedAnswerService inner) : IAnswerAgent
+    {
+        public int CallCount { get; private set; }
+
+        public Task<GroundedAnswerResult> AnswerAsync(
+            GroundedAnswerRequest request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return inner.AnswerAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class UnusedAnswerAgent : IAnswerAgent
+    {
+        public Task<GroundedAnswerResult> AnswerAsync(
+            GroundedAnswerRequest request,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Direct ingest must not call the answer agent.");
     }
 
     private sealed class PassThroughProtector : ISecretProtector

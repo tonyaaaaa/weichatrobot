@@ -572,11 +572,14 @@ onMounted(() => {
               <td>{{ dateText(document.updatedAtUtc) }}</td>
               <td>
                 <div class="row-actions">
-                  <a
-                    class="secondary-link action-link"
+                  <ElButton
                     :data-testid="`open-document-${document.id}`"
+                    tag="a"
+                    type="primary"
+                    link
+                    size="small"
                     :href="`/knowledge/documents/${encodeURIComponent(document.id)}`"
-                  >查看详情</a>
+                  >查看详情</ElButton>
                   <ElButton
                     v-if="document.canRetryUpload"
                     :data-testid="`retry-document-${document.id}`"
@@ -587,7 +590,8 @@ onMounted(() => {
                     v-if="canRequestPhysicalDelete"
                     :data-testid="`delete-document-${document.id}`"
                     type="danger"
-                    plain
+                    link
+                    size="small"
                     :loading="busyId === document.id && busyOperation === 'physical-delete'"
                     @click="requestPhysicalDelete(document)"
                   >提交物理删除</ElButton>
@@ -643,10 +647,13 @@ onMounted(() => {
             <div><dt>更新时间</dt><dd>{{ dateText(document.updatedAtUtc) }}</dd></div>
           </dl>
           <div class="row-actions">
-            <a
-              class="secondary-link action-link"
+            <ElButton
+              tag="a"
+              type="primary"
+              link
+              size="small"
               :href="`/knowledge/documents/${encodeURIComponent(document.id)}`"
-            >查看详情</a>
+            >查看详情</ElButton>
             <ElButton
               v-if="document.canRetryUpload"
               :loading="busyId === document.id && busyOperation === 'retry'"
@@ -655,7 +662,8 @@ onMounted(() => {
             <ElButton
               v-if="canRequestPhysicalDelete"
               type="danger"
-              plain
+              link
+              size="small"
               :loading="busyId === document.id && busyOperation === 'physical-delete'"
               @click="requestPhysicalDelete(document)"
             >提交物理删除</ElButton>
@@ -845,13 +853,6 @@ th {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-sm);
-}
-
-.action-link {
-  display: inline-flex;
-  min-height: 44px;
-  align-items: center;
-  padding: 0 var(--space-sm);
 }
 
 .pagination-bar {

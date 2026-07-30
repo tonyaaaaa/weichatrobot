@@ -47,6 +47,25 @@ function createDocumentAdministrationApiStubs() {
       sourceKind: 'DocumentUpload', sourceActorDisplayName: '系统管理员', tags: [],
       uploadAndParseJobs: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
     }]),
+    getWorkbench: vi.fn().mockResolvedValue({
+      documentId: 'doc-1',
+      documentTitle: '测试文档',
+      documentStatus: 'preview',
+      documentStateVersion: 1,
+      activeVersionId: null,
+      version: {
+        id: 'ver-1', version: 1, status: 'preview', isPublished: false,
+        sourceKind: 'DocumentUpload', sourceActorDisplayName: '系统管理员',
+        sourceBatchId: null, changeKind: 'New', supersedesVersionId: null,
+        tags: [], indexJobs: [], createdAtUtc: '', updatedAtUtc: ''
+      },
+      chunks: [],
+      sourceEvidence: null,
+      sourceEvidenceUnavailableReason: null,
+      editableRevision: null,
+      canCreateRevision: false
+    }),
+    createRevision: vi.fn(),
     retryDocumentUpload: vi.fn(),
     disableDocument: vi.fn(),
     requestPhysicalDelete: vi.fn(),
@@ -147,7 +166,8 @@ describe('Task 16 operational pages', () => {
       }
     });
     await flushPromises();
-    expect(wrapper.get('[data-testid="queue-index"]').text()).toBe('重新索引');
+    expect(wrapper.get('[data-testid="queue-index"]').text())
+      .toBe('重新索引当前版本');
     expect(wrapper.text()).toContain('active');
     expect((wrapper.get('[data-testid="text-p1"]').element as HTMLTextAreaElement).value).toBe('first chunk');
     await wrapper.get('[data-testid="text-p1"]').setValue('edited chunk');

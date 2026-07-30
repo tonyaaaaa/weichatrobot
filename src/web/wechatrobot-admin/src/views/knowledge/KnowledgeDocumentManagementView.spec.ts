@@ -218,7 +218,8 @@ describe('KnowledgeDocumentManagementView', () => {
 
   it.each([
     ['PrivateChatDirect', '私聊直接入库'],
-    ['ConversationReview', '消息审核入库']
+    ['ConversationReview', '消息审核入库'],
+    ['AdministrationRevision', '管理员修订']
   ])(
     'shows %s source evidence without offering file-version upload',
     async (sourceKind, sourceText) => {

@@ -4,7 +4,7 @@ using WechatRobot.Application.Models;
 namespace WechatRobot.Application.Conversations;
 
 public sealed record ConversationProcessingRequest(Guid MessageId, Guid RobotConfigId, string WorkToolRobotId, Guid GroupProfileId,
-    string GroupName, string SenderDisplayName, string? StableSenderId, ConversationScope Scope, string Question, DateTime ReceivedAtUtc, IReadOnlyList<Guid> AllowedTagIds,
+    string ReplyGroupName, string SenderDisplayName, string? StableSenderId, ConversationScope Scope, string Question, DateTime ReceivedAtUtc, IReadOnlyList<Guid> AllowedTagIds,
     IReadOnlyList<ConversationHistoryMessage> History, string? Summary, GroupContextSettings ContextPolicy,
     ModelProviderConfiguration ChatConfiguration, Guid ModelConfigurationId = default, Guid ConversationSessionId = default,
     string? SessionLeaseOwner = null, int SessionVersion = 0,

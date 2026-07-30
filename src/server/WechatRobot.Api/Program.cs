@@ -101,7 +101,10 @@ builder.Services.AddScoped<IMemoryRecallService, MemoryRecallService>();
 builder.Services.AddScoped<MemoryAdministrationService>();
 builder.Services.AddScoped<ModelConfigurationManager>();
 builder.Services.AddScoped<KnowledgeTagManager>();
+builder.Services.AddScoped<GlobalKnowledgeTagRepairService>();
 builder.Services.AddScoped<KnowledgeDocumentAdministrationQuery>();
+builder.Services.AddScoped<KnowledgeDocumentWorkbenchQuery>();
+builder.Services.AddScoped<KnowledgeDocumentRevisionService>();
 builder.Services.AddScoped<DashboardSummaryService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<GroupConfigurationService>();
@@ -294,6 +297,9 @@ if (builder.Configuration.GetValue<bool>("Database:ApplyMigrationsOnStartup"))
     {
         await db.Database.MigrateAsync();
         await scope.ServiceProvider.GetRequiredService<RobotCredentialBackfillService>().BackfillAsync();
+        await scope.ServiceProvider
+            .GetRequiredService<GlobalKnowledgeTagRepairService>()
+            .RepairAsync(CancellationToken.None);
     }
     else
     {

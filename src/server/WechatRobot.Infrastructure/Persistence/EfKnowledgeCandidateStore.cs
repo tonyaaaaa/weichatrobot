@@ -54,13 +54,22 @@ public sealed class EfKnowledgeCandidateStore(WechatRobotDbContext db) : IKnowle
             return await ResultAsync(candidate.Id, token);
         }
 
+        var sourceMessageId = candidate.SourceConversationMessageId ?? candidate.QuestionMessageId;
+        var sourceActorDisplayName = await db.ConversationMessages.AsNoTracking()
+            .Where(x => x.Id == sourceMessageId)
+            .Select(x => x.SenderDisplayName)
+            .SingleOrDefaultAsync(token);
+        var approvedText = $"问题：{candidate.Question}\n答案：{answer}";
+        var approvedBytes = Encoding.UTF8.GetBytes(approvedText);
         var document = new KnowledgeDocumentEntity { Title = Limit(candidate.Question, 256), Status = "draft", CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
         var version = new KnowledgeDocumentVersionEntity { KnowledgeDocumentId = document.Id, Version = 1, SourceKind = "ConversationReview",
             OriginalFileName = $"reviewed-{candidate.Id:N}.md", SafeFileName = $"reviewed-{candidate.Id:N}.md", ContentType = "text/markdown",
-            Sha256 = Hash($"{candidate.Id:N}|{candidate.Question}|{answer}"), SizeBytes = Encoding.UTF8.GetByteCount(answer),
-            ObjectKey = $"reviewed/{candidate.Id:N}.md", Status = "approved", IsPublished = false, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
+            Sha256 = Hash($"{candidate.Id:N}|{candidate.Question}|{answer}"), SizeBytes = approvedBytes.Length,
+            ObjectKey = $"reviewed/{candidate.Id:N}.md", Status = "approved", IsPublished = false,
+            StagedContent = approvedBytes, SourceConversationMessageId = sourceMessageId,
+            SourceActorDisplayName = sourceActorDisplayName, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
         var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Sequence = 0,
-            Text = $"问题：{candidate.Question}\n答案：{answer}", Question = candidate.Question, Answer = answer, Status = "approved", CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
+            Text = approvedText, Question = candidate.Question, Answer = answer, Status = "approved", CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc };
         db.AddRange(document, version, chunk);
         candidate.Answer = answer; candidate.Status = "approved_pending_index"; candidate.KnowledgeDocumentVersionId = version.Id;
         candidate.Version++; candidate.UpdatedAtUtc = nowUtc;

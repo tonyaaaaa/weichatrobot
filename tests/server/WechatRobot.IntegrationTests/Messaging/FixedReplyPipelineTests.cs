@@ -169,7 +169,7 @@ public sealed class FixedReplyPipelineTests : IClassFixture<MySqlFixture>
         public Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token) => Task.CompletedTask;
 
         public async Task PersistAnswerAndEnqueueAsync(ConversationProcessingRequest request, GroundedAnswerResult result, CancellationToken token) =>
-            _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.GroupName, result.Decision.GroupText,
+            _ = await jobs.EnqueueSendCommandAsync(new(request.RobotConfigId, request.WorkToolRobotId, request.ReplyGroupName, result.Decision.GroupText,
                 $"grounded-reply:{request.MessageId:D}"), token);
         public Task<int> ClearGroupContextAsync(Guid groupProfileId, DateTime clearedAtUtc, CancellationToken token) => Task.FromResult(0);
         public Task<GroupConversationContextSourcePage?> GetGroupContextAsync(Guid groupProfileId, int page, int pageSize, CancellationToken token) =>

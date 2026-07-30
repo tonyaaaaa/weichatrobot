@@ -335,7 +335,7 @@ public sealed class GroundedConversationRepository(
         var provider = modelConfigurations.ToProviderConfiguration(new(config.Id, config.Name, config.Provider, config.BaseUrl, config.Model,
             config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault,
             config.EmbeddingDimension, config.WebSearchMode));
-        return new(message.Id, message.RobotConfigId, robot.WorkToolRobotId, group.Id, group.Name, message.SenderDisplayName, message.StableSenderId, scope,
+        return new(message.Id, message.RobotConfigId, robot.WorkToolRobotId, group.Id, groupName, message.SenderDisplayName, message.StableSenderId, scope,
             message.Text, message.ReceivedAtUtc, allowedTags, history, summary, policy, provider, config.Id,
             AnswerFallback: new GroupAnswerFallbackSettings(
                 group.WebSearchEnabled,
@@ -403,7 +403,7 @@ public sealed class GroundedConversationRepository(
             GroupProfileId = request.GroupProfileId,
             ConversationSessionId = request.ConversationSessionId,
             SessionSequence = sequenceState.NextSequence + 2,
-            GroupName = request.GroupName,
+            GroupName = request.ReplyGroupName,
             Direction = "outbound",
             Role = "assistant",
             InReplyToMessageId = request.MessageId,
@@ -468,7 +468,7 @@ public sealed class GroundedConversationRepository(
             IdempotencyKey = $"grounded-reply:{request.MessageId:D}",
             PayloadJson = JsonSerializer.Serialize(new
             {
-                request.GroupName,
+                GroupName = request.ReplyGroupName,
                 Text = result.Decision.GroupText,
                 MemoryRecallIds = (result.Audit.MemoryRecall?.Memories ?? []).Select(memory => memory.Id).ToArray()
             }),

@@ -144,6 +144,97 @@ public sealed class PrivateKnowledgeIngestPipelineTests
     }
 
     [Fact]
+    public async Task Processor_maps_explicit_global_label_to_system_tag_without_creating_duplicate()
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var canonical = GlobalKnowledgeTag.Create(DateTime.UtcNow);
+        database.KnowledgeTags.Add(canonical);
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Name = "embedding",
+            NormalizedName = "EMBEDDING",
+            Provider = "OpenAI",
+            ConfigurationType = "embedding",
+            BaseUrl = "https://example.test",
+            Model = "embedding",
+            EmbeddingDimension = 3,
+            IsEnabled = true,
+            IsDefault = true
+        });
+        database.ConversationMessages.Add(new ConversationMessageEntity
+        {
+            Id = messageId,
+            RobotConfigId = robotId,
+            WorkToolMessageId = "private-ingest-global-label",
+            FallbackHash = "private-ingest-global-label",
+            FallbackWindowStartUtc = DateTime.UnixEpoch,
+            ChannelType = "Private",
+            RoomType = 4,
+            PeerDisplayName = "内部同事",
+            ScopeHash = "scope-global-label",
+            SenderDisplayName = "内部同事",
+            Text = "#知识入库\n加拿大签证由签证机关审核。",
+            ReceivedAtUtc = DateTime.UtcNow
+        });
+        database.PrivateKnowledgeIngestBatches.Add(new PrivateKnowledgeIngestBatchEntity
+        {
+            Id = batchId,
+            RobotConfigId = robotId,
+            SourceConversationMessageId = messageId,
+            RoomType = 4,
+            SourceActorDisplayName = "内部同事",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var knowledge = new QdrantKnowledgeService(
+            database,
+            new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine),
+            TimeProvider.System);
+        var processor = new PrivateKnowledgeIngestProcessor(
+            database,
+            new StubProposalAgent(GlobalKnowledgeTag.DisplayName),
+            new PrivateKnowledgeIngestStore(database),
+            knowledge,
+            new DurableJobRepository(database),
+            TimeProvider.System);
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                batchId,
+                "ProcessPrivateKnowledgeIngest",
+                $$"""{"batchId":"{{batchId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        var tags = await database.KnowledgeTags.AsNoTracking().ToArrayAsync(
+            TestContext.Current.CancellationToken);
+        var global = Assert.Single(tags);
+        Assert.Equal(canonical.Id, global.Id);
+        var item = await database.PrivateKnowledgeIngestItems.AsNoTracking().SingleAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Equal(
+            [canonical.Id],
+            JsonSerializer.Deserialize<Guid[]>(item.ResolvedTagIdsJson) ?? []);
+        var indexJob = await database.KnowledgeIndexJobs.AsNoTracking().SingleAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Equal(
+            [canonical.Id],
+            JsonSerializer.Deserialize<Guid[]>(indexJob.PendingTagIdsJson) ?? []);
+    }
+
+    [Fact]
     public async Task Batch_does_not_activate_first_version_when_another_index_job_fails()
     {
         await using var database = Database();
@@ -317,7 +408,8 @@ public sealed class PrivateKnowledgeIngestPipelineTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
 
-    private sealed class StubProposalAgent : IPrivateKnowledgeProposalAgent
+    private sealed class StubProposalAgent(params string[] explicitTags)
+        : IPrivateKnowledgeProposalAgent
     {
         public Task<IReadOnlyList<ProposedKnowledgeItem>> ProposeAsync(
             string sourceText,
@@ -326,7 +418,7 @@ public sealed class PrivateKnowledgeIngestPipelineTests
                 new(
                     "加拿大签证由谁审核？",
                     "加拿大签证由签证机关审核。",
-                    [],
+                    explicitTags,
                     null,
                     null,
                     KnowledgeChangeKind.New)

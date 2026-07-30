@@ -14,7 +14,7 @@ namespace WechatRobot.Infrastructure.Agents;
 
 public sealed class PrivateChatProcessor(
     WechatRobotDbContext database,
-    GroundedAnswerService answers,
+    IAnswerAgent answerAgent,
     ModelConfigurationService modelConfigurations,
     IDurableJobRepository jobs,
     IPrivateKnowledgeIngestStore ingests,
@@ -22,6 +22,16 @@ public sealed class PrivateChatProcessor(
     TimeProvider timeProvider,
     AgentRuntimeOptions? runtimeOptions = null) : IPrivateChatProcessor
 {
+    private static readonly GroupAnswerFallbackSettings PrivateAnswerFallback = new(
+        WebSearchEnabled: true,
+        ModelKnowledgeFallbackEnabled: true,
+        WebSearchShowSources: true,
+        WebSearchResultCount: 5,
+        WebSearchRecency: "NoLimit",
+        WebSearchDomainFilter: null,
+        WebSearchContentSize: "Medium",
+        FinalNoEvidencePolicy: "InsufficientEvidence");
+
     public async Task ProcessAsync(LeasedDurableJob job, CancellationToken cancellationToken)
     {
         if (job.JobType != "ProcessPrivateMessage") throw new InvalidOperationException("Unsupported private job.");
@@ -98,7 +108,7 @@ public sealed class PrivateChatProcessor(
             message.ScopeHash ?? "*",
             timeProvider.GetUtcNow().UtcDateTime,
             session.Summary);
-        var result = await answers.AnswerAsync(new GroundedAnswerRequest(
+        var result = await answerAgent.AnswerAsync(new GroundedAnswerRequest(
             message.Id, Guid.Empty, message.ScopeHash ?? message.Id.ToString("N"), command.Body, tagIds,
             context,
             contextPolicy,
@@ -109,7 +119,8 @@ public sealed class PrivateChatProcessor(
             ModelConfigurationId: model.Id,
             RobotConfigId: message.RobotConfigId,
             SubjectKey: message.PeerDisplayName,
-            SenderDisplayName: message.PeerDisplayName), cancellationToken);
+            SenderDisplayName: message.PeerDisplayName,
+            AnswerFallback: PrivateAnswerFallback), cancellationToken);
         await ReplyAsync(message, result.Decision.GroupText, cancellationToken, result, model.Id);
     }
 

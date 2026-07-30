@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Conversations;
@@ -175,7 +176,13 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
         {
             Assert.Equal(retrievalBefore + 1, services.GetRequiredService<CountingEvidence>().CallCount);
             Assert.Equal(modelBefore + 1, services.GetRequiredService<CountingChat>().CallCount);
-            Assert.Equal(1, await database.SendCommands.CountAsync(item => item.GroupProfileId == groupId, TestContext.Current.CancellationToken));
+            var send = await database.SendCommands.SingleAsync(
+                item => item.GroupProfileId == groupId,
+                TestContext.Current.CancellationToken);
+            using var payload = JsonDocument.Parse(send.PayloadJson);
+            Assert.Equal(
+                inboundGroupName,
+                payload.RootElement.GetProperty("GroupName").GetString());
         }
         else
         {

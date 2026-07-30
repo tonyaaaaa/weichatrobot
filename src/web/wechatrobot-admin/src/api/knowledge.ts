@@ -81,6 +81,62 @@ export interface KnowledgeDocumentDetail {
   document: KnowledgeDocumentSummary;
   versions: KnowledgeDocumentVersionSummary[];
 }
+export interface KnowledgeWorkbenchChunk {
+  id: string;
+  sequence: number;
+  text: string;
+  pageNumber: number | null;
+  question: string | null;
+  synonyms: string[];
+  answer: string | null;
+  status: string;
+}
+export interface KnowledgeWorkbenchSourceEvidence {
+  channelType: string;
+  roomType: number | null;
+  actorDisplayName: string;
+  text: string;
+  receivedAtUtc: string;
+}
+export interface KnowledgeWorkbenchRevisionLink {
+  versionId: string;
+  version: number;
+  previewRevision: number;
+}
+export interface KnowledgeWorkbenchVersion {
+  id: string;
+  version: number;
+  status: string;
+  isPublished: boolean;
+  sourceKind: string;
+  sourceActorDisplayName: string | null;
+  sourceBatchId: string | null;
+  changeKind: string;
+  supersedesVersionId: string | null;
+  tags: KnowledgeDocumentTagSummary[];
+  indexJobs: KnowledgeDocumentIndexJobSummary[];
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+export interface KnowledgeDocumentWorkbench {
+  documentId: string;
+  documentTitle: string;
+  documentStatus: string;
+  documentStateVersion: number;
+  activeVersionId: string | null;
+  version: KnowledgeWorkbenchVersion;
+  chunks: KnowledgeWorkbenchChunk[];
+  sourceEvidence: KnowledgeWorkbenchSourceEvidence | null;
+  sourceEvidenceUnavailableReason: string | null;
+  editableRevision: KnowledgeWorkbenchRevisionLink | null;
+  canCreateRevision: boolean;
+}
+export interface KnowledgeRevisionResult {
+  documentId: string;
+  versionId: string;
+  version: number;
+  previewRevision: number;
+}
 export interface KnowledgeDocumentListRequest {
   query?: string;
   status?: string;
@@ -128,6 +184,12 @@ export interface KnowledgeApi {
   listDocuments(request: KnowledgeDocumentListRequest): Promise<KnowledgeDocumentPage>;
   getDocument(documentId: string): Promise<KnowledgeDocumentDetail>;
   getDocumentVersions(documentId: string): Promise<KnowledgeDocumentVersionSummary[]>;
+  getWorkbench(documentId: string, versionId: string): Promise<KnowledgeDocumentWorkbench>;
+  createRevision(
+    documentId: string,
+    versionId: string,
+    expectedDocumentStateVersion: number
+  ): Promise<KnowledgeRevisionResult>;
   retryDocumentUpload(documentId: string, expectedStateVersion: number): Promise<UploadResult>;
   disableDocument(documentId: string, expectedStateVersion: number): Promise<void>;
   requestPhysicalDelete(documentId: string, expectedStateVersion: number): Promise<void>;
@@ -173,6 +235,19 @@ export const knowledgeApi: KnowledgeApi = {
   async getDocumentVersions(documentId) {
     return (await apiClient.get<KnowledgeDocumentVersionSummary[]>(
       `/api/knowledge/documents/${encodeURIComponent(documentId)}/versions`
+    )).data;
+  },
+  async getWorkbench(documentId, versionId) {
+    return (await apiClient.get<KnowledgeDocumentWorkbench>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}` +
+      `/versions/${encodeURIComponent(versionId)}/workbench`
+    )).data;
+  },
+  async createRevision(documentId, versionId, expectedDocumentStateVersion) {
+    return (await apiClient.post<KnowledgeRevisionResult>(
+      `/api/knowledge/documents/${encodeURIComponent(documentId)}` +
+      `/versions/${encodeURIComponent(versionId)}/revisions`,
+      { expectedDocumentStateVersion }
     )).data;
   },
   async retryDocumentUpload(documentId, expectedStateVersion) {

@@ -50,11 +50,16 @@ const documentSourceLabel = computed(() => ({
   DocumentUpload: '文档上传',
   ConversationReview: '消息审核入库',
   PrivateChatDirect: '私聊直接入库',
+  AdministrationRevision: '管理员修订',
   LegacyUnknown: '历史数据'
 } as Record<string, string>)[detail.value?.document.sourceKind ?? 'LegacyUnknown']
   ?? '其他来源');
+const hasDocumentUploadLineage = computed(() =>
+  detail.value?.versions.some(version =>
+    version.sourceKind === 'DocumentUpload') === true);
 const canUploadNewVersion = computed(() =>
-  detail.value?.document.status !== 'disabled' && !isAutomaticSource.value);
+  detail.value?.document.status !== 'disabled' &&
+  hasDocumentUploadLineage.value);
 const isLegacyDoc = computed(() =>
   selectedFile.value?.name.toLowerCase().endsWith('.doc') ?? false);
 const versions = computed(() =>
@@ -206,6 +211,7 @@ function sourceLabel(version: KnowledgeDocumentVersionSummary): string {
     DocumentUpload: '文档上传',
     ConversationReview: '消息审核入库',
     PrivateChatDirect: '私聊直接入库',
+    AdministrationRevision: '管理员修订',
     LegacyUnknown: '历史数据'
   } as Record<string, string>)[version.sourceKind ?? 'LegacyUnknown']
     ?? '其他来源';
@@ -306,7 +312,7 @@ onMounted(load);
       </section>
 
       <section
-        v-if="!isAutomaticSource"
+        v-if="hasDocumentUploadLineage"
         class="panel upload-version-panel"
         aria-labelledby="upload-version-title"
       >
@@ -565,7 +571,7 @@ onMounted(load);
   margin: 0;
 }
 
-.version-facts div {
+.version-facts > div {
   display: grid;
   gap: var(--space-xs);
 }

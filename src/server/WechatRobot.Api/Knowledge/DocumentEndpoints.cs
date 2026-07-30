@@ -14,6 +14,12 @@ public static class DocumentEndpoints
         documents.MapGet("", ListAsync);
         documents.MapGet("/{documentId:guid}", DetailAsync);
         documents.MapGet("/{documentId:guid}/versions", VersionsAsync);
+        documents.MapGet(
+            "/{documentId:guid}/versions/{versionId:guid}/workbench",
+            WorkbenchAsync);
+        documents.MapPost(
+            "/{documentId:guid}/versions/{versionId:guid}/revisions",
+            CreateRevisionAsync);
         documents.MapPost("", UploadAsync).DisableAntiforgery().RequireRateLimiting(RateLimitPolicies.Upload);
         documents.MapPost("/{documentId:guid}/retry-upload", RetryAsync);
         documents.MapDelete("/{documentId:guid}/physical", RequestPhysicalDeleteAsync).RequireAuthorization(SystemRoles.Admin);
@@ -54,6 +60,68 @@ public static class DocumentEndpoints
     {
         var detail = await queryService.GetAsync(documentId, cancellationToken);
         return detail is null ? Results.NotFound() : Results.Ok(detail.Versions);
+    }
+
+    private static async Task<IResult> WorkbenchAsync(
+        Guid documentId,
+        Guid versionId,
+        KnowledgeDocumentWorkbenchQuery queryService,
+        CancellationToken cancellationToken)
+    {
+        var workbench = await queryService.GetAsync(
+            documentId,
+            versionId,
+            cancellationToken);
+        return workbench is null ? Results.NotFound() : Results.Ok(workbench);
+    }
+
+    private static async Task<IResult> CreateRevisionAsync(
+        Guid documentId,
+        Guid versionId,
+        CreateKnowledgeRevisionRequest request,
+        ClaimsPrincipal principal,
+        KnowledgeDocumentRevisionService service,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetActor(principal, out var actor))
+        {
+            return Results.Unauthorized();
+        }
+
+        try
+        {
+            var result = await service.CreateAsync(
+                new(
+                    documentId,
+                    versionId,
+                    request.ExpectedDocumentStateVersion,
+                    actor,
+                    principal.Identity?.Name ?? actor),
+                cancellationToken);
+            return Results.Created(
+                $"/api/knowledge/documents/{documentId}/versions/{result.VersionId}/workbench",
+                result);
+        }
+        catch (KeyNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (DocumentConcurrencyException exception)
+        {
+            return ConcurrencyConflict(exception);
+        }
+        catch (KnowledgeRevisionConflictException exception)
+        {
+            return Results.Conflict(new
+            {
+                error = exception.Error,
+                existingRevision = exception.ExistingRevision
+            });
+        }
+        catch (KnowledgeRevisionStateException exception)
+        {
+            return Results.Conflict(new { error = exception.Error });
+        }
     }
 
     private static async Task<IResult> UploadAsync(HttpRequest request, DocumentUploadService service, CancellationToken cancellationToken)
@@ -147,4 +215,7 @@ public static class DocumentEndpoints
         actor = actor.Trim();
         return actor.Length > 0;
     }
+
+    public sealed record CreateKnowledgeRevisionRequest(
+        int ExpectedDocumentStateVersion);
 }

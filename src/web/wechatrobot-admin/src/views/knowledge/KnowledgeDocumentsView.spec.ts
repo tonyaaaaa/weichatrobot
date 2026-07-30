@@ -53,6 +53,8 @@ function createApi() {
     listDocuments: vi.fn().mockResolvedValue(page()),
     getDocument: vi.fn(),
     getDocumentVersions: vi.fn(),
+    getWorkbench: vi.fn(),
+    createRevision: vi.fn(),
     retryDocumentUpload: vi.fn().mockResolvedValue({
       documentId: failedDocument.id,
       versionId: failedDocument.latestVersionId,
@@ -171,6 +173,36 @@ describe('KnowledgeDocumentsView', () => {
       .toBe(`/knowledge/documents/${failedDocument.id}`);
     expect(wrapper.find(`[data-testid="retry-document-${failedDocument.id}"]`).exists()).toBe(true);
     expect(wrapper.find(`[data-testid="retry-document-${activeDocument.id}"]`).exists()).toBe(false);
+  });
+
+  it('renders desktop and mobile row actions as consistent lightweight small buttons', async () => {
+    const wrapper = mountView(createApi(), 'Admin');
+    await flushPromises();
+
+    const desktopDetail = wrapper.get(
+      `[data-testid="open-document-${activeDocument.id}"]`);
+    const desktopDelete = wrapper.get(
+      `[data-testid="delete-document-${activeDocument.id}"]`);
+    const mobileDetail = wrapper.get(
+      `.document-card .row-actions a[href="/knowledge/documents/${activeDocument.id}"]`);
+    const mobileDelete = wrapper.findAll('.document-card .row-actions button')
+      .find(button => button.text() === '提交物理删除');
+
+    for (const detail of [desktopDetail, mobileDetail]) {
+      expect(detail.classes()).toContain('el-button');
+      expect(detail.classes()).toContain('el-button--primary');
+      expect(detail.classes()).toContain('el-button--small');
+      expect(detail.classes()).toContain('is-link');
+    }
+    expect(desktopDelete.classes()).toContain('el-button--danger');
+    expect(desktopDelete.classes()).toContain('el-button--small');
+    expect(desktopDelete.classes()).toContain('is-link');
+    expect(desktopDelete.classes()).not.toContain('is-plain');
+    expect(mobileDelete).toBeDefined();
+    expect(mobileDelete!.classes()).toContain('el-button--danger');
+    expect(mobileDelete!.classes()).toContain('el-button--small');
+    expect(mobileDelete!.classes()).toContain('is-link');
+    expect(mobileDelete!.classes()).not.toContain('is-plain');
   });
 
   it('applies name, tag, source, and status filters from page one', async () => {

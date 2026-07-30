@@ -42,6 +42,18 @@ describe('global button styles', () => {
     );
   });
 
+  it('loads the Element Plus dropdown styles used by document workbench actions', () => {
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/dropdown/style/css';"
+    );
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/dropdown-menu/style/css';"
+    );
+    expect(entrypoint).toContain(
+      "import 'element-plus/es/components/dropdown-item/style/css';"
+    );
+  });
+
   it('does not override Element Plus button hover colors', () => {
     expect(styles).toContain(
       'button:not([class^="el-"]):not([class*=" el-"]):hover:not(:disabled)'

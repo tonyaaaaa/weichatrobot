@@ -84,6 +84,14 @@ public sealed class HumanAnswerReviewTests : IClassFixture<MySqlFixture>, IAsync
         Assert.Equal("如何申请售后？", chunk.Question);
         Assert.Equal("请提交订单号。", chunk.Answer);
         Assert.Equal("approved", chunk.Status);
+        var reviewedVersion = await db.KnowledgeDocumentVersions.AsNoTracking()
+            .SingleAsync(x => x.Id == approved.KnowledgeDocumentVersionId, TestContext.Current.CancellationToken);
+        Assert.Equal("ConversationReview", reviewedVersion.SourceKind);
+        Assert.Equal(question.Id, reviewedVersion.SourceConversationMessageId);
+        Assert.Equal("客户", reviewedVersion.SourceActorDisplayName);
+        Assert.Equal(
+            "问题：如何申请售后？\n答案：请提交订单号。",
+            System.Text.Encoding.UTF8.GetString(reviewedVersion.StagedContent));
 
         var durable = new DurableJobRepository(db);
         var leasedPublish = await durable.LeaseNextJobAsync("PublishKnowledgeCandidate", "publisher", DateTime.UtcNow.AddMinutes(1), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
