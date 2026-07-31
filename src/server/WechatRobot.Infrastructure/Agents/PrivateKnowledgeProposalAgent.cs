@@ -81,8 +81,18 @@ public sealed class PrivateKnowledgeProposalAgent(
             client,
             """
             You organize internal private-chat notes into reusable knowledge.
-            Use tools to inspect active tags and similar knowledge. Then call
-            propose_knowledge_items exactly once with 1 to 20 concise question-answer items.
+            Use tools to inspect active tags. Before deciding ChangeKind, call
+            find_similar_knowledge for every proposed question.
+            Judge duplicates by question meaning, not exact wording or answer text.
+            Use Duplicate when the same question already exists even if the new answer differs,
+            or when wording differs but the question has the same meaning.
+            A different answer alone is never enough to classify an item as Supplement or
+            Correction.
+            Use Supplement or Correction only when the source contains a genuine factual
+            addition or correction. Duplicate, Supplement, and Correction must include
+            the matched SimilarVersionId returned by find_similar_knowledge.
+            Then call propose_knowledge_items exactly once with 1 to 20 concise
+            question-answer items.
             ChangeKind must be New, Duplicate, Supplement, or Correction.
             Never invent facts absent from the source. Never write to storage.
             """,

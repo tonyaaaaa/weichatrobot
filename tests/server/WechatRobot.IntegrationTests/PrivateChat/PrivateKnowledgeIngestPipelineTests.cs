@@ -144,6 +144,263 @@ public sealed class PrivateKnowledgeIngestPipelineTests
     }
 
     [Fact]
+    public async Task Processor_honors_agent_semantic_duplicate_without_publishing_new_knowledge()
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var tag = new KnowledgeTagEntity
+        {
+            Name = "加拿大签证",
+            NormalizedName = "加拿大签证",
+            IsEnabled = true
+        };
+        var document = new KnowledgeDocumentEntity
+        {
+            Title = "加拿大旅游签证补件怎么办？",
+            Status = "active"
+        };
+        var version = new KnowledgeDocumentVersionEntity
+        {
+            KnowledgeDocumentId = document.Id,
+            Version = 1,
+            OriginalFileName = "existing.txt",
+            SafeFileName = $"{Guid.NewGuid():N}.txt",
+            ContentType = "text/plain",
+            Sha256 = new string('A', 64),
+            ObjectKey = "knowledge/existing",
+            Status = "active",
+            IsPublished = true
+        };
+        document.ActiveVersionId = version.Id;
+        var chunk = new KnowledgeChunkEntity
+        {
+            KnowledgeDocumentVersionId = version.Id,
+            Sequence = 1,
+            Question = "加拿大旅游签证递交后需要补材料怎么办？",
+            Answer = "请根据补件通知准备并递交材料。",
+            Text = "加拿大旅游签证递交后需要补材料怎么办？\n请根据补件通知准备并递交材料。",
+            Status = "approved"
+        };
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Name = "embedding",
+            NormalizedName = "EMBEDDING",
+            Provider = "OpenAI",
+            ConfigurationType = "embedding",
+            BaseUrl = "https://example.test",
+            Model = "embedding",
+            EmbeddingDimension = 3,
+            IsEnabled = true,
+            IsDefault = true
+        });
+        database.ConversationMessages.Add(new ConversationMessageEntity
+        {
+            Id = messageId,
+            RobotConfigId = robotId,
+            WorkToolMessageId = "private-ingest-semantic-duplicate",
+            FallbackHash = "private-ingest-semantic-duplicate",
+            FallbackWindowStartUtc = DateTime.UnixEpoch,
+            ChannelType = "Private",
+            RoomType = 4,
+            PeerDisplayName = "内部同事",
+            ScopeHash = "scope-semantic-duplicate",
+            SenderDisplayName = "内部同事",
+            Text = "#知识入库\n加拿大旅游签证收到补件要求后如何处理？",
+            ReceivedAtUtc = DateTime.UtcNow
+        });
+        database.PrivateKnowledgeIngestBatches.Add(new PrivateKnowledgeIngestBatchEntity
+        {
+            Id = batchId,
+            RobotConfigId = robotId,
+            SourceConversationMessageId = messageId,
+            RoomType = 4,
+            SourceActorDisplayName = "内部同事",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        });
+        database.KnowledgeTags.Add(tag);
+        database.KnowledgeDocuments.Add(document);
+        database.KnowledgeDocumentVersions.Add(version);
+        database.KnowledgeChunks.Add(chunk);
+        database.KnowledgeChunkTags.Add(new KnowledgeChunkTagEntity
+        {
+            KnowledgeChunkId = chunk.Id,
+            KnowledgeTagId = tag.Id
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var knowledge = new QdrantKnowledgeService(
+            database,
+            new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine),
+            TimeProvider.System);
+        var proposal = new ProposedKnowledgeItem(
+            "加拿大旅游签证收到补件要求后如何处理？",
+            "应在通知规定的期限内按要求补交。",
+            [],
+            null,
+            version.Id,
+            KnowledgeChangeKind.Duplicate);
+        var processor = new PrivateKnowledgeIngestProcessor(
+            database,
+            new FixedProposalAgent(proposal),
+            new PrivateKnowledgeIngestStore(database),
+            knowledge,
+            new DurableJobRepository(database),
+            TimeProvider.System);
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                batchId,
+                "ProcessPrivateKnowledgeIngest",
+                $$"""{"batchId":"{{batchId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        database.ChangeTracker.Clear();
+        var batch = await database.PrivateKnowledgeIngestBatches
+            .AsNoTracking()
+            .SingleAsync(TestContext.Current.CancellationToken);
+        var item = await database.PrivateKnowledgeIngestItems
+            .AsNoTracking()
+            .SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal("Activated", batch.Status);
+        Assert.Equal(0, batch.NewCount);
+        Assert.Equal(1, batch.DuplicateCount);
+        Assert.Equal("Duplicate", item.ChangeKind);
+        Assert.Equal(document.Id, item.MatchedDocumentId);
+        Assert.Equal(version.Id, item.MatchedVersionId);
+        Assert.Null(item.StagedDocumentId);
+        Assert.Null(item.StagedVersionId);
+        Assert.Single(await database.KnowledgeDocuments
+            .AsNoTracking()
+            .ToArrayAsync(TestContext.Current.CancellationToken));
+        Assert.Single(await database.KnowledgeDocumentVersions
+            .AsNoTracking()
+            .ToArrayAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await database.KnowledgeIndexJobs
+            .AsNoTracking()
+            .ToArrayAsync(TestContext.Current.CancellationToken));
+        var notification = await database.SendCommands.AsNoTracking().SingleAsync(
+            command => command.IdempotencyKey == $"private-ingest-final:{batchId:D}",
+            TestContext.Current.CancellationToken);
+        using var payload = JsonDocument.Parse(notification.PayloadJson);
+        Assert.Contains(
+            "新增 0，重复 1",
+            payload.RootElement.GetProperty("Text").GetString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Processor_rejects_agent_duplicate_when_matched_version_is_not_active()
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Name = "embedding",
+            NormalizedName = "EMBEDDING",
+            Provider = "OpenAI",
+            ConfigurationType = "embedding",
+            BaseUrl = "https://example.test",
+            Model = "embedding",
+            EmbeddingDimension = 3,
+            IsEnabled = true,
+            IsDefault = true
+        });
+        database.ConversationMessages.Add(new ConversationMessageEntity
+        {
+            Id = messageId,
+            RobotConfigId = robotId,
+            WorkToolMessageId = "private-ingest-invalid-duplicate",
+            FallbackHash = "private-ingest-invalid-duplicate",
+            FallbackWindowStartUtc = DateTime.UnixEpoch,
+            ChannelType = "Private",
+            RoomType = 4,
+            PeerDisplayName = "内部同事",
+            ScopeHash = "scope-invalid-duplicate",
+            SenderDisplayName = "内部同事",
+            Text = "#知识入库\n全新的签证知识。",
+            ReceivedAtUtc = DateTime.UtcNow
+        });
+        database.PrivateKnowledgeIngestBatches.Add(new PrivateKnowledgeIngestBatchEntity
+        {
+            Id = batchId,
+            RobotConfigId = robotId,
+            SourceConversationMessageId = messageId,
+            RoomType = 4,
+            SourceActorDisplayName = "内部同事",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var knowledge = new QdrantKnowledgeService(
+            database,
+            new ModelConfigurationService(new PassThroughProtector()),
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine),
+            TimeProvider.System);
+        var processor = new PrivateKnowledgeIngestProcessor(
+            database,
+            new FixedProposalAgent(new ProposedKnowledgeItem(
+                "这条知识如何办理？",
+                "这是全新的知识内容。",
+                [],
+                null,
+                Guid.NewGuid(),
+                KnowledgeChangeKind.Duplicate)),
+            new PrivateKnowledgeIngestStore(database),
+            knowledge,
+            new DurableJobRepository(database),
+            TimeProvider.System);
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                batchId,
+                "ProcessPrivateKnowledgeIngest",
+                $$"""{"batchId":"{{batchId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        database.ChangeTracker.Clear();
+        var batch = await database.PrivateKnowledgeIngestBatches
+            .AsNoTracking()
+            .SingleAsync(TestContext.Current.CancellationToken);
+        var item = await database.PrivateKnowledgeIngestItems
+            .AsNoTracking()
+            .SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal("Indexing", batch.Status);
+        Assert.Equal(1, batch.NewCount);
+        Assert.Equal(0, batch.DuplicateCount);
+        Assert.Equal("New", item.ChangeKind);
+        Assert.Null(item.MatchedDocumentId);
+        Assert.Null(item.MatchedVersionId);
+        Assert.NotNull(item.StagedDocumentId);
+        Assert.NotNull(item.StagedVersionId);
+        Assert.Single(await database.KnowledgeIndexJobs
+            .AsNoTracking()
+            .ToArrayAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Processor_maps_explicit_global_label_to_system_tag_without_creating_duplicate()
     {
         await using var database = Database();
@@ -423,6 +680,15 @@ public sealed class PrivateKnowledgeIngestPipelineTests
                     null,
                     KnowledgeChangeKind.New)
             ]);
+    }
+
+    private sealed class FixedProposalAgent(ProposedKnowledgeItem proposal)
+        : IPrivateKnowledgeProposalAgent
+    {
+        public Task<IReadOnlyList<ProposedKnowledgeItem>> ProposeAsync(
+            string sourceText,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ProposedKnowledgeItem>>([proposal]);
     }
 
     private sealed class PassThroughProtector : ISecretProtector

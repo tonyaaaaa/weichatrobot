@@ -130,6 +130,21 @@ public sealed class PrivateKnowledgeIngestProcessor(
             }
 
             var target = await ResolveTargetAsync(proposal, cancellationToken);
+            if (proposal.ChangeKind == KnowledgeChangeKind.Duplicate
+                && target is not null)
+            {
+                item.ChangeKind = KnowledgeChangeKind.Duplicate.ToString();
+                item.MatchedDocumentId = target.DocumentId;
+                item.MatchedVersionId = target.VersionId;
+                item.ResolvedTagIdsJson = JsonSerializer.Serialize(
+                    await ResolveTagsAsync(
+                        proposal,
+                        target.VersionId,
+                        globalTagId,
+                        now,
+                        cancellationToken));
+                continue;
+            }
             var change = target is null ? KnowledgeChangeKind.New : proposal.ChangeKind;
             if (change == KnowledgeChangeKind.Correction
                 && target is not null
@@ -277,8 +292,7 @@ public sealed class PrivateKnowledgeIngestProcessor(
         ProposedKnowledgeItem proposal,
         CancellationToken cancellationToken)
     {
-        if (proposal.ChangeKind is not (
-                KnowledgeChangeKind.Supplement or KnowledgeChangeKind.Correction)
+        if (proposal.ChangeKind == KnowledgeChangeKind.New
             || proposal.SimilarVersionId is not { } versionId)
         {
             return null;

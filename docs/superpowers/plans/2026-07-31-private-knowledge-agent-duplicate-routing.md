@@ -55,7 +55,7 @@ The production mutation this test catches is restricting `ResolveTargetAsync` to
 Run:
 
 ```powershell
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~PrivateKnowledgeIngestPipelineTests.Processor_honors_agent_semantic_duplicate_without_publishing_new_knowledge"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-method "WechatRobot.IntegrationTests.PrivateChat.PrivateKnowledgeIngestPipelineTests.Processor_honors_agent_semantic_duplicate_without_publishing_new_knowledge"
 ```
 
 Expected: FAIL because the batch reports `NewCount = 1`, stages a second document/version, and creates an index job.
@@ -138,7 +138,7 @@ proposal conversion.
 Run:
 
 ```powershell
-dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --filter "FullyQualifiedName~PrivateKnowledgeProposalAgentTests.Agent_uses_similarity_result_for_semantic_duplicate"
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-method "WechatRobot.UnitTests.PrivateChat.PrivateKnowledgeProposalAgentTests.Agent_uses_similarity_result_for_semantic_duplicate"
 ```
 
 Expected: FAIL with `private_knowledge_agent_invalid_output` because the current
@@ -180,8 +180,8 @@ Run the same filtered unit-test command. Expected: PASS.
 - [ ] **Step 1: Run all private-knowledge focused tests**
 
 ```powershell
-dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --filter "FullyQualifiedName~PrivateKnowledge"
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~PrivateKnowledgeIngestPipelineTests"
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-class "*PrivateKnowledge*"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "*PrivateKnowledgeIngestPipelineTests"
 ```
 
 Expected: all tests PASS.
