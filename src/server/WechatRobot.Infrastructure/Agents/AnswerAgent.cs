@@ -71,6 +71,9 @@ public sealed class AnswerAgent(
                     message.Role,
                     "system",
                     StringComparison.OrdinalIgnoreCase))
+                .Where(message => !message.Content.Contains(
+                    "<<<UNTRUSTED_BUSINESS_EVIDENCE_BEGIN>>>",
+                    StringComparison.Ordinal))
                 .Select(message => new
                 {
                     role = message.Role,
@@ -82,9 +85,21 @@ public sealed class AnswerAgent(
                 cancellationToken);
             var agent = new ChatClientAgent(
                 client,
-                instructions,
-                "AnswerAgent",
-                "Produces one answer using the deterministic server-provided context.");
+                new ChatClientAgentOptions
+                {
+                    Name = "AnswerAgent",
+                    Description =
+                        "Produces one answer using the deterministic server-provided context.",
+                    ChatOptions = new ChatOptions
+                    {
+                        Instructions = instructions
+                    },
+                    AIContextProviders =
+                    [
+                        new KnowledgeEvidenceProvider(
+                            request.ControlledEvidence ?? [])
+                    ]
+                });
             var response = await agent.RunAsync(
                 JsonSerializer.Serialize(
                     new { messages = untrustedMessages },

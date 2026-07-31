@@ -25,7 +25,8 @@ public sealed record GroundedAnswerRequest(Guid MessageId, Guid GroupProfileId, 
     GroupAnswerFallbackSettings? AnswerFallback = null,
     Guid? RobotConfigId = null,
     string? SubjectKey = null,
-    string? SenderDisplayName = null);
+    string? SenderDisplayName = null,
+    QueryRewriteAudit? QueryRewriteAudit = null);
 
 public interface IRetrievalEvidenceProvider
 {

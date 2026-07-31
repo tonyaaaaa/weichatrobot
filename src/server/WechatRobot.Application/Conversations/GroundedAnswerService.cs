@@ -289,9 +289,13 @@ public sealed class GroundedAnswerService(
             messages.Add(new("user", $"<<<UNTRUSTED_CONVERSATION_CONTEXT_BEGIN>>>\n{contextText}<<<UNTRUSTED_CONVERSATION_CONTEXT_END>>>"));
         var evidenceText = new StringBuilder();
         for (var index = 0; index < evidence.Count; index++) evidenceText.AppendLine($"Evidence data {index + 1}: {EscapeUntrusted(evidence[index].Text)}");
-        messages.Add(new("user", $"<<<UNTRUSTED_BUSINESS_EVIDENCE_BEGIN>>>\n{evidenceText}<<<UNTRUSTED_BUSINESS_EVIDENCE_END>>>\n" +
+        messages.Add(new(
+            "user",
+            $"<<<UNTRUSTED_BUSINESS_EVIDENCE_BEGIN>>>\n{evidenceText}<<<UNTRUSTED_BUSINESS_EVIDENCE_END>>>"));
+        messages.Add(new(
+            "user",
             $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{FormatCurrentQuestion(request)}\n<<<UNTRUSTED_QUESTION_END>>>"));
-        return new(messages);
+        return new(messages, ControlledEvidence: evidence);
     }
 
     private static string FormatConversationData(ConversationHistoryMessage message) =>
@@ -345,7 +349,8 @@ public sealed class GroundedAnswerService(
             RequestedTagIds = scope.RequestedTagIds,
             EffectiveVisibleTagIds = scope.EffectiveVisibleTagIds,
             RetrievalResultCount = retrievalResultCount,
-            options.ConfidenceThreshold, request.DegradationReason, request.SummaryFailureCode
+            options.ConfidenceThreshold, request.DegradationReason, request.SummaryFailureCode,
+            QueryRewrite = request.QueryRewriteAudit?.ToSummary()
         });
     }
 

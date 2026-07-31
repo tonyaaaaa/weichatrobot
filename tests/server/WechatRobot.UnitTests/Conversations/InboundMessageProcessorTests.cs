@@ -51,8 +51,9 @@ public sealed class InboundMessageProcessorTests
         var summarizer = new FakeSummarizer("must not run");
         var retrieval = new FakeRetrieval();
         var chat = new FakeChat();
-        var processor = new InboundMessageProcessor(repository, new ConversationContextService(), new RetrievalQueryBuilder(new(256)), summarizer,
-            new GroundedAnswerService(retrieval, chat, new GroundedAnswerOptions(), new AnswerOutputFirewall()), TimeProvider.System);
+        var processor = new InboundMessageProcessor(repository, new ConversationContextService(), summarizer,
+            new GroundedAnswerService(retrieval, chat, new GroundedAnswerOptions(), new AnswerOutputFirewall()), TimeProvider.System,
+            MultiTurn(new PassThroughRewriteAgent()));
 
         await processor.ProcessAsync(Job(request.MessageId), TestContext.Current.CancellationToken);
 
@@ -69,9 +70,9 @@ public sealed class InboundMessageProcessorTests
         var repository = new FakeRepository(Request() with { Question = "请转人工" });
         var retrieval = new FakeRetrieval();
         var chat = new FakeChat();
-        var processor = new InboundMessageProcessor(repository, new ConversationContextService(), new RetrievalQueryBuilder(new(256)),
+        var processor = new InboundMessageProcessor(repository, new ConversationContextService(),
             new FakeSummarizer("summary"), new GroundedAnswerService(retrieval, chat, new GroundedAnswerOptions(), new AnswerOutputFirewall()),
-            TimeProvider.System);
+            TimeProvider.System, MultiTurn(new PassThroughRewriteAgent()));
 
         await processor.ProcessAsync(Job(repository.Request.MessageId), TestContext.Current.CancellationToken);
 
@@ -88,7 +89,6 @@ public sealed class InboundMessageProcessorTests
         var processor = new InboundMessageProcessor(
             repository,
             new ConversationContextService(),
-            new RetrievalQueryBuilder(new(256)),
             new FakeSummarizer("summary"),
             new GroundedAnswerService(
                 new FakeRetrieval(),
@@ -96,6 +96,7 @@ public sealed class InboundMessageProcessorTests
                 new GroundedAnswerOptions(),
                 new AnswerOutputFirewall()),
             TimeProvider.System,
+            MultiTurn(new PassThroughRewriteAgent()),
             intentAgent: new FakeIntentAgent(IntentDecision.NoReply),
             intentAudits: audits,
             runtimeOptions: new AgentRuntimeOptions
@@ -122,7 +123,6 @@ public sealed class InboundMessageProcessorTests
         var processor = new InboundMessageProcessor(
             repository,
             new ConversationContextService(),
-            new RetrievalQueryBuilder(new(256)),
             new FakeSummarizer("summary"),
             new GroundedAnswerService(
                 new FakeRetrieval(),
@@ -130,6 +130,7 @@ public sealed class InboundMessageProcessorTests
                 new GroundedAnswerOptions(),
                 new AnswerOutputFirewall()),
             TimeProvider.System,
+            MultiTurn(new PassThroughRewriteAgent()),
             intentAgent: new FakeIntentAgent(IntentDecision.Uncertain),
             intentAudits: audits,
             runtimeOptions: new AgentRuntimeOptions
@@ -146,11 +147,111 @@ public sealed class InboundMessageProcessorTests
         Assert.False(Assert.Single(audits.Records).FormalConversationIncluded);
     }
 
+    [Fact]
+    public async Task Contextual_group_follow_up_retrieves_with_agent_rewritten_query()
+    {
+        var repository = new FakeRepository(Request() with
+        {
+            Question = "需要什么材料？"
+        });
+        var retrieval = new FakeRetrieval();
+        var rewriteAgent = new FakeRewriteAgent(new QueryRewriteResult(
+            QueryRewriteDecision.Search,
+            "办理日本三年签证需要准备什么材料？",
+            null,
+            QueryRewriteReasonCode.ContextualFollowUp,
+            17));
+        var processor = new InboundMessageProcessor(
+            repository,
+            new ConversationContextService(),
+            new FakeSummarizer("summary"),
+            new GroundedAnswerService(
+                retrieval,
+                new FakeChat(),
+                new GroundedAnswerOptions(),
+                new AnswerOutputFirewall()),
+            TimeProvider.System,
+            MultiTurn(rewriteAgent));
+
+        await processor.ProcessAsync(
+            Job(repository.Request.MessageId),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            "办理日本三年签证需要准备什么材料？",
+            retrieval.Query);
+        Assert.Equal(1, rewriteAgent.CallCount);
+        Assert.Contains(
+            "\"RewriteDecision\":\"Search\"",
+            repository.Result!.Audit.InputSummaryJson,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "\"RewriteReasonCode\":\"contextual_follow_up\"",
+            repository.Result.Audit.InputSummaryJson,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Ambiguous_group_follow_up_persists_clarification_without_retrieval()
+    {
+        var repository = new FakeRepository(Request() with
+        {
+            Question = "那个需要什么材料？"
+        });
+        var retrieval = new FakeRetrieval();
+        var processor = new InboundMessageProcessor(
+            repository,
+            new ConversationContextService(),
+            new FakeSummarizer("summary"),
+            new GroundedAnswerService(
+                retrieval,
+                new FakeChat(),
+                new GroundedAnswerOptions(),
+                new AnswerOutputFirewall()),
+            TimeProvider.System,
+            MultiTurn(new FakeRewriteAgent(
+                new QueryRewriteResult(
+                    QueryRewriteDecision.Clarification,
+                    null,
+                    "请确认您咨询的是日本三年签证还是五年签证？",
+                    QueryRewriteReasonCode.AmbiguousReference))));
+
+        await processor.ProcessAsync(
+            Job(repository.Request.MessageId),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(string.Empty, retrieval.Query);
+        Assert.Equal(
+            AnswerDecisionKind.Clarification,
+            repository.Result!.Decision.Kind);
+        Assert.Equal(
+            "请确认您咨询的是日本三年签证还是五年签证？",
+            repository.Result.Decision.GroupText);
+        Assert.Contains(
+            "\"RagExecuted\":false",
+            repository.Result.Audit.InputSummaryJson,
+            StringComparison.Ordinal);
+    }
+
     private static InboundMessageProcessor Processor(FakeRepository repository, IConversationSummarizer summarizer)
     {
         var answer = new GroundedAnswerService(new FakeRetrieval(), new FakeChat(), new GroundedAnswerOptions(), new AnswerOutputFirewall());
-        return new(repository, new ConversationContextService(), new RetrievalQueryBuilder(new(256)), summarizer, answer, TimeProvider.System);
+        return new(
+            repository,
+            new ConversationContextService(),
+            summarizer,
+            answer,
+            TimeProvider.System,
+            MultiTurn(new PassThroughRewriteAgent()));
     }
+
+    private static MultiTurnRetrievalService MultiTurn(
+        IQueryRewriteAgent agent) =>
+        new(
+            agent,
+            new RetrievalQueryOptions(256),
+            new AnswerOutputFirewall(),
+            new GroundedAnswerOptions());
 
     private static ConversationProcessingRequest Request()
     {
@@ -264,5 +365,31 @@ public sealed class InboundMessageProcessorTests
             Records.Add(record);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class FakeRewriteAgent(QueryRewriteResult result)
+        : IQueryRewriteAgent
+    {
+        public int CallCount { get; private set; }
+
+        public Task<QueryRewriteResult> RewriteAsync(
+            QueryRewriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(result);
+        }
+    }
+
+    private sealed class PassThroughRewriteAgent : IQueryRewriteAgent
+    {
+        public Task<QueryRewriteResult> RewriteAsync(
+            QueryRewriteRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new QueryRewriteResult(
+                QueryRewriteDecision.Search,
+                request.CurrentQuestion,
+                null,
+                QueryRewriteReasonCode.StandaloneQuestion));
     }
 }

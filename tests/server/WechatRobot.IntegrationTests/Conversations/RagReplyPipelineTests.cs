@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using WechatRobot.Application.Agents;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
@@ -175,6 +176,8 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
         .AddSingleton<AnswerOutputFirewall>()
         .AddSingleton(new RetrievalQueryOptions())
         .AddSingleton<RetrievalQueryBuilder>()
+        .AddSingleton<IQueryRewriteAgent, PassThroughQueryRewriteAgent>()
+        .AddScoped<MultiTurnRetrievalService>()
         .AddSingleton<IConversationSummarizer, NoOpSummarizer>()
         .AddSingleton<FakeEvidence>()
         .AddSingleton<IRetrievalEvidenceProvider>(provider => provider.GetRequiredService<FakeEvidence>())
@@ -218,5 +221,17 @@ public sealed class RagReplyPipelineTests : IClassFixture<MySqlFixture>
     {
         public Task<string> SummarizeAsync(ModelProviderConfiguration configuration, string? existingSummary, IReadOnlyList<ConversationHistoryMessage> evictedMessages, CancellationToken token) =>
             Task.FromResult(existingSummary ?? "summary");
+    }
+
+    private sealed class PassThroughQueryRewriteAgent : IQueryRewriteAgent
+    {
+        public Task<QueryRewriteResult> RewriteAsync(
+            QueryRewriteRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new QueryRewriteResult(
+                QueryRewriteDecision.Search,
+                request.CurrentQuestion,
+                null,
+                QueryRewriteReasonCode.StandaloneQuestion));
     }
 }

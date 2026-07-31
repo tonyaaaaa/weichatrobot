@@ -99,6 +99,7 @@ builder.Services.AddSingleton(services =>
 builder.Services.AddScoped<IMessageIntentAgent, MessageIntentAgent>();
 builder.Services.AddScoped<IMessageIntentAuditStore, MessageIntentAuditStore>();
 builder.Services.AddScoped<IAnswerAgent, AnswerAgent>();
+builder.Services.AddScoped<IQueryRewriteAgent, QueryRewriteAgent>();
 builder.Services.AddScoped<IFixedReplyTemplateStore, FixedReplyTemplateStore>();
 builder.Services.AddScoped<FixedReplyTemplateService>();
 builder.Services.AddScoped<ITemplateRoutingAgent, TemplateRoutingAgent>();
@@ -174,6 +175,7 @@ builder.Services.AddSingleton(conversationSummaryOptions);
 builder.Services.AddSingleton<ConversationContextService>();
 builder.Services.AddSingleton<AnswerOutputFirewall>();
 builder.Services.AddSingleton<RetrievalQueryBuilder>();
+builder.Services.AddScoped<MultiTurnRetrievalService>();
 builder.Services.AddScoped<IConversationSummarizer, ChatConversationSummarizer>();
 builder.Services.AddScoped<IGroundedConversationRepository, GroundedConversationRepository>();
 builder.Services.AddScoped<IRetrievalEvidenceProvider, KnowledgeRetrievalEvidenceProvider>();

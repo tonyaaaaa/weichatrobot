@@ -56,6 +56,7 @@ public sealed class PrivateChatProcessorTests
 
         var router = new RecordingTemplateRouter(
             new ContinueKnowledgeAnswer());
+        var rewrite = new CountingPassThroughRewriteAgent();
         var processor = new PrivateChatProcessor(
             database,
             new UnusedAnswerAgent(),
@@ -64,6 +65,7 @@ public sealed class PrivateChatProcessorTests
             new PrivateKnowledgeIngestStore(database),
             new ConversationContextService(),
             TimeProvider.System,
+            MultiTurn(rewrite),
             templateRouter: router,
             fixedReplies: new FixedReplyTemplateService(
                 new FixedReplyTemplateStore(database),
@@ -84,6 +86,7 @@ public sealed class PrivateChatProcessorTests
             .SingleAsync(x => x.Id == batch.Id, TestContext.Current.CancellationToken);
         Assert.Null(batchJob.RelatedConversationMessageId);
         Assert.Equal(0, router.PrivateCallCount);
+        Assert.Equal(0, rewrite.CallCount);
     }
 
     [Theory]
@@ -143,6 +146,7 @@ public sealed class PrivateChatProcessorTests
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
         var router = new RecordingTemplateRouter(
             new MatchFixedTemplate(template.Id, template.Version));
+        var rewrite = new CountingPassThroughRewriteAgent();
         var processor = new PrivateChatProcessor(
             database,
             new UnusedAnswerAgent(),
@@ -151,6 +155,7 @@ public sealed class PrivateChatProcessorTests
             new PrivateKnowledgeIngestStore(database),
             new ConversationContextService(),
             TimeProvider.System,
+            MultiTurn(rewrite),
             templateRouter: router,
             fixedReplies: new FixedReplyTemplateService(
                 new FixedReplyTemplateStore(database),
@@ -178,6 +183,7 @@ public sealed class PrivateChatProcessorTests
         Assert.Equal(template.Id, audit.FixedReplyTemplateId);
         Assert.Equal(template.Version, audit.FixedReplyTemplateVersion);
         Assert.Equal(1, router.PrivateCallCount);
+        Assert.Equal(0, rewrite.CallCount);
     }
 
     [Theory]
@@ -266,6 +272,7 @@ public sealed class PrivateChatProcessorTests
             new PrivateKnowledgeIngestStore(database),
             new ConversationContextService(),
             TimeProvider.System,
+            MultiTurn(new CountingPassThroughRewriteAgent()),
             templateRouter: router,
             fixedReplies: new FixedReplyTemplateService(
                 new FixedReplyTemplateStore(database),
@@ -312,10 +319,281 @@ public sealed class PrivateChatProcessorTests
             .ToArrayAsync(TestContext.Current.CancellationToken));
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public async Task Contextual_private_follow_up_passes_rewritten_query_to_answer_agent(
+        int roomType)
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var currentId = Guid.NewGuid();
+        var scopeHash = $"private-follow-up-{roomType}";
+        var previousAt = DateTime.UtcNow.AddMinutes(-1);
+        var ingestId = Guid.NewGuid();
+        var ingestNotice = PrivateMessage(
+            Guid.NewGuid(),
+            robotId,
+            roomType,
+            scopeHash,
+            "outbound",
+            "assistant",
+            "已收到，正在整理并对比现有知识。",
+            previousAt.AddSeconds(-1));
+        ingestNotice.InReplyToMessageId = ingestId;
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Name = "chat",
+            NormalizedName = "CHAT",
+            Provider = "OpenAI",
+            ConfigurationType = "chat",
+            BaseUrl = "https://example.test",
+            Model = "chat",
+            IsEnabled = true,
+            IsDefault = true
+        });
+        database.ConversationMessages.AddRange(
+            PrivateMessage(
+                ingestId,
+                robotId,
+                roomType,
+                scopeHash,
+                "inbound",
+                "user",
+                "#知识入库 测试知识",
+                previousAt.AddSeconds(-2)),
+            ingestNotice,
+            PrivateMessage(
+                Guid.NewGuid(),
+                robotId,
+                roomType,
+                scopeHash,
+                "inbound",
+                "user",
+                "日本三年签证你们能办吗？",
+                previousAt),
+            PrivateMessage(
+                Guid.NewGuid(),
+                robotId,
+                roomType,
+                scopeHash,
+                "outbound",
+                "assistant",
+                "可以办理。",
+                previousAt.AddSeconds(1)),
+            PrivateMessage(
+                currentId,
+                robotId,
+                roomType,
+                scopeHash,
+                "inbound",
+                "user",
+                "需要什么材料？",
+                DateTime.UtcNow),
+            PrivateMessage(
+                Guid.NewGuid(),
+                robotId,
+                roomType,
+                "different-private-scope",
+                "inbound",
+                "user",
+                "不属于当前私聊",
+                previousAt));
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var answer = new CapturingAnswerAgent();
+        var rewrite = new FixedRewriteAgent(new QueryRewriteResult(
+            QueryRewriteDecision.Search,
+            "办理日本三年签证需要准备什么材料？",
+            null,
+            QueryRewriteReasonCode.ContextualFollowUp,
+            11));
+        var processor = new PrivateChatProcessor(
+            database,
+            answer,
+            new ModelConfigurationService(new PassThroughProtector()),
+            new DurableJobRepository(database),
+            new PrivateKnowledgeIngestStore(database),
+            new ConversationContextService(),
+            TimeProvider.System,
+            MultiTurn(rewrite),
+            runtimeOptions: new AgentRuntimeOptions
+            {
+                TemplateRoutingRuntimeMode = TemplateRoutingRuntimeMode.Disabled
+            });
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                Guid.NewGuid(),
+                "ProcessPrivateMessage",
+                $$"""{"messageId":"{{currentId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, rewrite.CallCount);
+        Assert.Equal(
+            "办理日本三年签证需要准备什么材料？",
+            answer.LastRequest!.RetrievalQuery!.Query);
+        Assert.Equal(
+            ConversationChannelType.Private,
+            answer.LastRequest.QueryRewriteAudit!.ChannelType);
+        Assert.DoesNotContain(
+            rewrite.LastRequest!.Context.Messages,
+            historyMessage => historyMessage.Content.StartsWith(
+                "#知识入库",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            rewrite.LastRequest.Context.Messages,
+            historyMessage => historyMessage.Content.Contains(
+                "正在整理并对比现有知识",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            answer.LastRequest.Context.Messages,
+            message => message.Content == "不属于当前私聊");
+    }
+
+    [Fact]
+    public async Task Ambiguous_private_follow_up_replies_without_answer_or_retrieval()
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var currentId = Guid.NewGuid();
+        const int roomType = 2;
+        const string scopeHash = "private-ambiguous";
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Name = "chat",
+            NormalizedName = "CHAT",
+            Provider = "OpenAI",
+            ConfigurationType = "chat",
+            BaseUrl = "https://example.test",
+            Model = "chat",
+            IsEnabled = true,
+            IsDefault = true
+        });
+        database.ConversationMessages.AddRange(
+            PrivateMessage(
+                Guid.NewGuid(),
+                robotId,
+                roomType,
+                scopeHash,
+                "inbound",
+                "user",
+                "日本三年签证和五年签证都能办吗？",
+                DateTime.UtcNow.AddMinutes(-1)),
+            PrivateMessage(
+                currentId,
+                robotId,
+                roomType,
+                scopeHash,
+                "inbound",
+                "user",
+                "那个需要什么材料？",
+                DateTime.UtcNow));
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var answer = new CapturingAnswerAgent();
+        var processor = new PrivateChatProcessor(
+            database,
+            answer,
+            new ModelConfigurationService(new PassThroughProtector()),
+            new DurableJobRepository(database),
+            new PrivateKnowledgeIngestStore(database),
+            new ConversationContextService(),
+            TimeProvider.System,
+            MultiTurn(new FixedRewriteAgent(new QueryRewriteResult(
+                QueryRewriteDecision.Clarification,
+                null,
+                "请确认您咨询的是日本三年签证还是五年签证？",
+                QueryRewriteReasonCode.AmbiguousReference))),
+            runtimeOptions: new AgentRuntimeOptions
+            {
+                TemplateRoutingRuntimeMode = TemplateRoutingRuntimeMode.Disabled
+            });
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                Guid.NewGuid(),
+                "ProcessPrivateMessage",
+                $$"""{"messageId":"{{currentId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(answer.LastRequest);
+        var outbound = await database.ConversationMessages.AsNoTracking()
+            .SingleAsync(
+                message => message.InReplyToMessageId == currentId,
+                TestContext.Current.CancellationToken);
+        var audit = await database.RetrievalAudits.AsNoTracking()
+            .SingleAsync(
+                item => item.ConversationMessageId == currentId,
+                TestContext.Current.CancellationToken);
+        Assert.Equal(
+            "请确认您咨询的是日本三年签证还是五年签证？",
+            outbound.Text);
+        Assert.Contains(
+            "\"RagExecuted\":false",
+            audit.InputSummaryJson,
+            StringComparison.Ordinal);
+    }
+
     private static WechatRobotDbContext Database() =>
         new(new DbContextOptionsBuilder<WechatRobotDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
+
+    private static MultiTurnRetrievalService MultiTurn(
+        IQueryRewriteAgent rewriteAgent) =>
+        new(
+            rewriteAgent,
+            new RetrievalQueryOptions(),
+            new AnswerOutputFirewall(),
+            new GroundedAnswerOptions());
+
+    private static ConversationMessageEntity PrivateMessage(
+        Guid id,
+        Guid robotId,
+        int roomType,
+        string scopeHash,
+        string direction,
+        string role,
+        string text,
+        DateTime atUtc) =>
+        new()
+        {
+            Id = id,
+            RobotConfigId = robotId,
+            WorkToolMessageId = direction == "inbound"
+                ? $"private-{id:N}"
+                : null,
+            FallbackHash = $"private-{id:N}",
+            FallbackWindowStartUtc = DateTime.UnixEpoch,
+            ProcessingState = "pending",
+            ChannelType = "Private",
+            RoomType = roomType,
+            PeerDisplayName = "测试用户",
+            ScopeHash = scopeHash,
+            SenderDisplayName = direction == "outbound"
+                ? "机器人"
+                : "测试用户",
+            Direction = direction,
+            Role = role,
+            Text = text,
+            ReceivedAtUtc = atUtc,
+            CreatedAtUtc = atUtc
+        };
 
     private sealed class EmptyRetrieval : IRetrievalEvidenceProvider
     {
@@ -367,6 +645,61 @@ public sealed class PrivateChatProcessorTests
         {
             CallCount++;
             return inner.AnswerAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class CapturingAnswerAgent : IAnswerAgent
+    {
+        public GroundedAnswerRequest? LastRequest { get; private set; }
+
+        public Task<GroundedAnswerResult> AnswerAsync(
+            GroundedAnswerRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            return Task.FromResult(new GroundedAnswerResult(
+                new AnswerDecision(AnswerDecisionKind.Answer, "测试回答"),
+                new RetrievalAuditDraft(
+                    [],
+                    .7,
+                    .9,
+                    "private",
+                    "Answer",
+                    InputSummaryJson: "{}")));
+        }
+    }
+
+    private sealed class FixedRewriteAgent(QueryRewriteResult result)
+        : IQueryRewriteAgent
+    {
+        public int CallCount { get; private set; }
+        public QueryRewriteRequest? LastRequest { get; private set; }
+
+        public Task<QueryRewriteResult> RewriteAsync(
+            QueryRewriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            LastRequest = request;
+            return Task.FromResult(result);
+        }
+    }
+
+    private sealed class CountingPassThroughRewriteAgent
+        : IQueryRewriteAgent
+    {
+        public int CallCount { get; private set; }
+
+        public Task<QueryRewriteResult> RewriteAsync(
+            QueryRewriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(new QueryRewriteResult(
+                QueryRewriteDecision.Search,
+                request.CurrentQuestion,
+                null,
+                QueryRewriteReasonCode.StandaloneQuestion));
         }
     }
 

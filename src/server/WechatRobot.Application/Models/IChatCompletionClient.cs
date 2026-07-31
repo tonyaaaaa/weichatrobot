@@ -1,3 +1,5 @@
+using WechatRobot.Application.Conversations;
+
 namespace WechatRobot.Application.Models;
 
 public interface IChatCompletionClient
@@ -32,7 +34,8 @@ public sealed record ChatSource(
     int? Index = null);
 public sealed record ChatCompletionRequest(
     IReadOnlyList<ChatMessage> Messages,
-    WebSearchOptions? WebSearch = null);
+    WebSearchOptions? WebSearch = null,
+    IReadOnlyList<RetrievalEvidence>? ControlledEvidence = null);
 public sealed record ChatCompletionResponse(
     string Content,
     IReadOnlyList<ChatSource>? Sources = null);

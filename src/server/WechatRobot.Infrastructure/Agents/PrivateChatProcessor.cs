@@ -21,6 +21,7 @@ public sealed class PrivateChatProcessor(
     IPrivateKnowledgeIngestStore ingests,
     ConversationContextService contextService,
     TimeProvider timeProvider,
+    MultiTurnRetrievalService multiTurnRetrieval,
     ITemplateRoutingAgent? templateRouter = null,
     FixedReplyTemplateService? fixedReplies = null,
     AgentRuntimeOptions? runtimeOptions = null) : IPrivateChatProcessor
@@ -124,24 +125,39 @@ public sealed class PrivateChatProcessor(
         }
         var tagIds = await database.KnowledgeTags.AsNoTracking().Where(x => x.IsEnabled)
             .Select(x => x.Id).ToArrayAsync(cancellationToken);
-        var history = await database.ConversationMessages.AsNoTracking()
+        var historyRows = await database.ConversationMessages.AsNoTracking()
             .Where(x => x.RobotConfigId == message.RobotConfigId
                         && x.ChannelType == "Private"
                         && x.RoomType == message.RoomType
                         && x.ScopeHash == message.ScopeHash
                         && x.Id != message.Id)
             .OrderByDescending(x => x.CreatedAtUtc)
-            .Take(24)
+            .Take(48)
             .OrderBy(x => x.CreatedAtUtc)
-            .Select(x => new ConversationHistoryMessage(
-                x.Role,
-                message.ScopeHash ?? "*",
-                x.Text,
-                x.CreatedAtUtc,
-                x.Id,
-                x.SessionSequence,
-                x.SenderDisplayName))
             .ToArrayAsync(cancellationToken);
+        var ingestMessageIds = historyRows
+            .Where(row =>
+                string.Equals(row.Direction, "inbound", StringComparison.Ordinal)
+                && PrivateChatCommandParser.Parse(
+                    row.RoomType ?? 0,
+                    row.Text).Kind != PrivateChatMessageKind.Question)
+            .Select(row => row.Id)
+            .ToHashSet();
+        var history = historyRows
+            .Where(row => !ingestMessageIds.Contains(row.Id))
+            .Where(row =>
+                row.InReplyToMessageId is not { } sourceId
+                || !ingestMessageIds.Contains(sourceId))
+            .TakeLast(24)
+            .Select(row => new ConversationHistoryMessage(
+                row.Role,
+                message.ScopeHash ?? "*",
+                row.Text,
+                row.CreatedAtUtc,
+                row.Id,
+                row.SessionSequence,
+                row.SenderDisplayName))
+            .ToArray();
         var contextPolicy = new GroupContextSettings(false, 6, 30, 3000, true, true);
         var context = contextService.Build(
             history,
@@ -149,19 +165,61 @@ public sealed class PrivateChatProcessor(
             message.ScopeHash ?? "*",
             timeProvider.GetUtcNow().UtcDateTime,
             session.Summary);
+        var providerConfiguration =
+            modelConfigurations.ToProviderConfiguration(
+                new ModelConfigurationRecord(
+                    model.Id,
+                    model.Name,
+                    model.Provider,
+                    model.BaseUrl,
+                    model.Model,
+                    model.EncryptedApiKey,
+                    model.TimeoutSeconds,
+                    model.MaxRetries,
+                    model.IsEnabled,
+                    model.IsDefault,
+                    model.EmbeddingDimension,
+                    model.WebSearchMode));
+        var preparation = await multiTurnRetrieval.PrepareAsync(
+            new QueryRewriteRequest(
+                message.Id,
+                session.Id,
+                ConversationChannelType.Private,
+                null,
+                message.RobotConfigId,
+                message.ScopeHash ?? message.Id.ToString("N"),
+                message.PeerDisplayName ?? message.SenderDisplayName,
+                command.Body,
+                context,
+                providerConfiguration,
+                model.Id),
+            cancellationToken);
+        if (preparation.TerminalAnswer is not null)
+        {
+            var terminalResult = multiTurnRetrieval.CreateTerminalResult(
+                preparation,
+                contextPolicy);
+            await ReplyAsync(
+                message,
+                terminalResult.Decision.GroupText,
+                cancellationToken,
+                terminalResult,
+                model.Id);
+            return;
+        }
+
         var result = await answerAgent.AnswerAsync(new GroundedAnswerRequest(
             message.Id, Guid.Empty, message.ScopeHash ?? message.Id.ToString("N"), command.Body, tagIds,
             context,
             contextPolicy,
-            modelConfigurations.ToProviderConfiguration(new ModelConfigurationRecord(
-                model.Id, model.Name, model.Provider, model.BaseUrl, model.Model, model.EncryptedApiKey,
-                model.TimeoutSeconds, model.MaxRetries, model.IsEnabled, model.IsDefault,
-                model.EmbeddingDimension, model.WebSearchMode)),
+            providerConfiguration,
+            preparation.RetrievalQuery,
             ModelConfigurationId: model.Id,
             RobotConfigId: message.RobotConfigId,
             SubjectKey: message.PeerDisplayName,
             SenderDisplayName: message.PeerDisplayName,
-            AnswerFallback: PrivateAnswerFallback), cancellationToken);
+            AnswerFallback: PrivateAnswerFallback,
+            QueryRewriteAudit: preparation.Audit), cancellationToken);
         await ReplyAsync(message, result.Decision.GroupText, cancellationToken, result, model.Id);
     }
 

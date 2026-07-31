@@ -10,10 +10,10 @@ namespace WechatRobot.Application.Messaging;
 public sealed class InboundMessageProcessor(
     IGroundedConversationRepository conversations,
     ConversationContextService context,
-    RetrievalQueryBuilder retrievalQueries,
     IConversationSummarizer summarizer,
     GroundedAnswerService answers,
     TimeProvider timeProvider,
+    MultiTurnRetrievalService multiTurnRetrieval,
     ITemplateRoutingAgent? templateRouter = null,
     FixedReplyTemplateService? fixedReplies = null,
     IMessageIntentAgent? intentAgent = null,
@@ -205,14 +205,60 @@ public sealed class InboundMessageProcessor(
                     effectiveContext.EvictedMessages, effectiveContext.ContextTokenCount);
             }
         }
-        var retrievalQuery = retrievalQueries.Build(request.Question, effectiveContext);
         await EnsureLeaseAsync(request, cancellationToken);
+        var retrievalPreparation = await multiTurnRetrieval.PrepareAsync(
+            new QueryRewriteRequest(
+                request.MessageId,
+                request.ConversationSessionId,
+                ConversationChannelType.Group,
+                request.GroupProfileId,
+                request.RobotConfigId,
+                request.Scope.ScopeKey,
+                request.SenderDisplayName,
+                request.Question,
+                effectiveContext,
+                request.ChatConfiguration,
+                request.ModelConfigurationId),
+            cancellationToken);
+        await EnsureLeaseAsync(request, cancellationToken);
+        if (retrievalPreparation.TerminalAnswer is not null)
+        {
+            var terminalResult = multiTurnRetrieval.CreateTerminalResult(
+                retrievalPreparation,
+                request.ContextPolicy);
+            if (effectiveContext.WasIdleReset)
+            {
+                terminalResult = terminalResult with
+                {
+                    ResetContextBeforeCurrent = true,
+                    UpdatedSummary = null
+                };
+            }
+            if (updatedSummary is not null)
+            {
+                terminalResult = terminalResult with
+                {
+                    UpdatedSummary = updatedSummary
+                };
+            }
+            await conversations.PersistAnswerAndEnqueueAsync(
+                request,
+                terminalResult,
+                cancellationToken);
+            committed = true;
+            return;
+        }
+
+        var retrievalQuery = retrievalPreparation.RetrievalQuery
+            ?? throw new InvalidOperationException(
+                "Query rewrite produced neither retrieval nor terminal output.");
         var answerRequest = new GroundedAnswerRequest(request.MessageId, request.GroupProfileId, request.Scope.ScopeKey, request.Question,
             request.AllowedTagIds, effectiveContext, request.ContextPolicy, request.ChatConfiguration, retrievalQuery, request.ModelConfigurationId,
             request.Scope.DegradationReason, summaryFailureCode, request.AnswerFallback,
             RobotConfigId: request.RobotConfigId,
             SubjectKey: request.SenderDisplayName,
-            SenderDisplayName: request.SenderDisplayName);
+            SenderDisplayName: request.SenderDisplayName,
+            QueryRewriteAudit: retrievalPreparation.Audit);
         var result = runtime.AnswerRuntimeMode == AnswerRuntimeMode.AgentFramework
                      && answerAgent is not null
             ? await answerAgent.AnswerAsync(answerRequest, cancellationToken)
