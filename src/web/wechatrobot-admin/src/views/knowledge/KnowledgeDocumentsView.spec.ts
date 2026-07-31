@@ -18,6 +18,8 @@ const failedDocument: KnowledgeDocumentSummary = {
   latestVersionStatus: 'failed',
   latestFailureReason: 'Object storage upload failed; retry is available.',
   canRetryUpload: true,
+  isDeleteRequested: false,
+  canRetryPhysicalDelete: false,
   sourceKind: 'DocumentUpload',
   sourceActorDisplayName: '系统管理员',
   tags: [{ id: 'tag-1', name: '加拿大签证' }],
@@ -41,6 +43,18 @@ const activeDocument: KnowledgeDocumentSummary = {
   sourceKind: 'PrivateChatDirect',
   sourceActorDisplayName: '张伟',
   tags: []
+};
+
+const deletingDocument: KnowledgeDocumentSummary = {
+  ...activeDocument,
+  id: '55555555-5555-5555-5555-555555555555',
+  title: '等待删除的知识',
+  status: 'disabled',
+  stateVersion: 9,
+  activeVersionId: null,
+  latestVersionStatus: 'disabled',
+  isDeleteRequested: true,
+  canRetryPhysicalDelete: false
 };
 
 function page(items = [failedDocument, activeDocument]): KnowledgeDocumentPage {
@@ -338,6 +352,20 @@ describe('KnowledgeDocumentsView', () => {
     expect(api.listDocuments).toHaveBeenCalledTimes(2);
     expect(admin.get('[data-testid="document-list-notice"]').text())
       .toContain('删除请求已受理，等待后台清理');
+  });
+
+  it('shows pending physical cleanup without offering the initial delete action again', async () => {
+    const api = createApi();
+    api.listDocuments.mockResolvedValue(page([deletingDocument]));
+    const wrapper = mountView(api, 'Admin');
+    await flushPromises();
+
+    const row = wrapper.get(
+      `[data-testid="document-row-${deletingDocument.id}"]`);
+    expect(row.text()).toContain('等待物理清理');
+    expect(row.find(
+      `[data-testid="delete-document-${deletingDocument.id}"]`).exists())
+      .toBe(false);
   });
 
   it('refreshes a stale row when physical delete loses a concurrency race', async () => {

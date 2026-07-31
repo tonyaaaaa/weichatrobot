@@ -105,7 +105,9 @@ const canGenerateFromSource = computed(() =>
   currentVersion.value?.sourceKind === 'DocumentUpload' &&
   (versionStatus.value === 'uploaded' || versionStatus.value === 'preview'));
 const canRequestPhysicalDelete = computed(() =>
-  auth?.user?.roles.includes('Admin') === true);
+  auth?.user?.roles.includes('Admin') === true &&
+  (workbench.value?.documentIsDeleteRequested !== true ||
+    workbench.value.canRetryPhysicalDelete));
 const sourceText = computed(() => ({
   DocumentUpload: '文档上传',
   ConversationReview: '消息审核入库',
@@ -533,7 +535,9 @@ async function handleDocumentCommand(command: string): Promise<void> {
   }
   if (command === 'delete' && canRequestPhysicalDelete.value) {
     if (!await props.confirmAction(
-      '这会停用文档并提交异步物理清理。确认继续？'
+      workbench.value?.documentIsDeleteRequested
+        ? '这会重新提交失败的物理清理任务。确认继续？'
+        : '这会停用文档并提交异步物理清理。确认继续？'
     )) return;
     busy.value = true;
     try {
@@ -576,6 +580,14 @@ onMounted(load);
         <p>
           入库内容与索引 · v{{ currentVersion?.version ?? '-' }}
           · {{ sourceText }}
+          <span
+            v-if="workbench?.documentIsDeleteRequested"
+            data-testid="physical-delete-state"
+          >
+            · {{ workbench.canRetryPhysicalDelete
+              ? '物理清理失败'
+              : '等待物理清理' }}
+          </span>
         </p>
       </div>
       <div class="header-actions">
@@ -593,7 +605,9 @@ onMounted(load);
                 v-if="canRequestPhysicalDelete"
                 command="delete"
                 divided
-              >提交物理删除</ElDropdownItem>
+              >{{ workbench?.documentIsDeleteRequested
+                ? '重新提交物理清理'
+                : '提交物理删除' }}</ElDropdownItem>
             </ElDropdownMenu>
           </template>
         </ElDropdown>

@@ -9,6 +9,45 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeDocumentWorkbenchQueryTests
 {
     [Fact]
+    public async Task Workbench_exposes_pending_delete_and_terminal_retryability()
+    {
+        await using var database = NewDatabase();
+        var document = Document("等待物理清理");
+        document.Status = "disabled";
+        document.IsDeleteRequested = true;
+        var version = Version(
+            document.Id,
+            "PrivateChatDirect",
+            null,
+            "张伟");
+        version.Status = "disabled";
+        database.AddRange(
+            document,
+            version,
+            new DurableJobEntity
+            {
+                Id = KnowledgeDocumentCleanupJobIdentity.Create(document.Id),
+                JobType = "CleanupKnowledgeDocument",
+                Status = "deadLetter",
+                PayloadJson = JsonSerializer.Serialize(new
+                {
+                    documentId = document.Id
+                })
+            });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var result = await new KnowledgeDocumentWorkbenchQuery(database)
+            .GetAsync(
+                document.Id,
+                version.Id,
+                TestContext.Current.CancellationToken);
+
+        Assert.NotNull(result);
+        Assert.True(result.DocumentIsDeleteRequested);
+        Assert.True(result.CanRetryPhysicalDelete);
+    }
+
+    [Fact]
     public async Task Private_chat_workbench_returns_approved_chunks_tags_and_source_message()
     {
         await using var database = NewDatabase();

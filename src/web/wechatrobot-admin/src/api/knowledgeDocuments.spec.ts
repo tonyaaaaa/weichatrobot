@@ -131,6 +131,8 @@ describe('knowledgeApi document administration', () => {
         latestVersionStatus: 'failed',
         latestFailureReason: 'Object storage upload failed; retry is available.',
         canRetryUpload: true,
+        isDeleteRequested: false,
+        canRetryPhysicalDelete: false,
         sourceKind: 'DocumentUpload',
         sourceActorDisplayName: '系统管理员',
         tags: [],

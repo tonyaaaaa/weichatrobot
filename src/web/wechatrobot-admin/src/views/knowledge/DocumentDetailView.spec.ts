@@ -23,6 +23,8 @@ function createApi(): KnowledgeApi {
       documentTitle: '产品手册',
       documentStatus: 'preview',
       documentStateVersion: 3,
+      documentIsDeleteRequested: false,
+      canRetryPhysicalDelete: false,
       activeVersionId: null,
       version: {
         id: 'version-1', version: 1, status: 'preview', isPublished: false,
@@ -163,6 +165,8 @@ describe('DocumentDetailView advanced chunk controls', () => {
       documentTitle: '签证知识',
       documentStatus: 'active',
       documentStateVersion: 5,
+      documentIsDeleteRequested: false,
+      canRetryPhysicalDelete: false,
       activeVersionId: 'version-1',
       version: {
         id: 'version-1', version: 1, status: 'active', isPublished: true,
@@ -250,6 +254,8 @@ describe('DocumentDetailView advanced chunk controls', () => {
       documentTitle: '审核知识',
       documentStatus: 'active',
       documentStateVersion: 2,
+      documentIsDeleteRequested: false,
+      canRetryPhysicalDelete: false,
       activeVersionId: 'version-1',
       version: {
         id: 'version-1', version: 1, status: 'active', isPublished: true,
@@ -288,6 +294,8 @@ describe('DocumentDetailView advanced chunk controls', () => {
     vi.mocked(api.getWorkbench).mockResolvedValue({
       documentId: 'document-1', documentTitle: '私聊知识',
       documentStatus: 'active', documentStateVersion: 6,
+      documentIsDeleteRequested: false,
+      canRetryPhysicalDelete: false,
       activeVersionId: 'version-1',
       version: {
         id: 'version-1', version: 1, status: 'active', isPublished: true,

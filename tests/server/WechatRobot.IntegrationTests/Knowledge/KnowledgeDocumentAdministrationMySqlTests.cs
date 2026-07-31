@@ -10,6 +10,69 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixture) : IClassFixture<MySqlFixture>
 {
     [Fact]
+    public async Task Physical_delete_state_queries_translate_on_mysql()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var document = new KnowledgeDocumentEntity
+        {
+            Title = $"Pending Delete {suffix}",
+            Status = "disabled",
+            IsDeleteRequested = true
+        };
+        var version = new KnowledgeDocumentVersionEntity
+        {
+            KnowledgeDocumentId = document.Id,
+            Version = 1,
+            OriginalFileName = "pending-delete.txt",
+            SafeFileName = "pending-delete.txt",
+            ContentType = "text/plain",
+            Sha256 = Guid.NewGuid().ToString("N").PadRight(64, '0'),
+            ObjectKey = $"test/pending-delete/{suffix}",
+            Status = "disabled"
+        };
+        var cleanupJobId =
+            KnowledgeDocumentCleanupJobIdentity.Create(document.Id);
+        await using (var setup = CreateDatabase())
+        {
+            await setup.Database.MigrateAsync(
+                TestContext.Current.CancellationToken);
+            setup.AddRange(
+                document,
+                version,
+                new DurableJobEntity
+                {
+                    Id = cleanupJobId,
+                    JobType = "CleanupKnowledgeDocument",
+                    Status = "deadLetter",
+                    PayloadJson = "{}"
+                });
+            await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var database = CreateDatabase();
+        var page = await new KnowledgeDocumentAdministrationQuery(database)
+            .ListAsync(
+                suffix,
+                "disabled",
+                null,
+                null,
+                1,
+                20,
+                TestContext.Current.CancellationToken);
+        var workbench = await new KnowledgeDocumentWorkbenchQuery(database)
+            .GetAsync(
+                document.Id,
+                version.Id,
+                TestContext.Current.CancellationToken);
+
+        var summary = Assert.Single(page.Items);
+        Assert.True(summary.IsDeleteRequested);
+        Assert.True(summary.CanRetryPhysicalDelete);
+        Assert.True(workbench!.DocumentIsDeleteRequested);
+        Assert.True(workbench.CanRetryPhysicalDelete);
+    }
+
+    [Fact]
     public async Task List_and_detail_queries_translate_on_mysql()
     {
         var suffix = Guid.NewGuid().ToString("N");

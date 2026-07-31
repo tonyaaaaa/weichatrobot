@@ -22,6 +22,8 @@ function detail(): KnowledgeDocumentDetail {
       latestVersionStatus: 'failed',
       latestFailureReason: 'Object storage upload failed; retry is available.',
       canRetryUpload: true,
+      isDeleteRequested: false,
+      canRetryPhysicalDelete: false,
       sourceKind: 'DocumentUpload',
       sourceActorDisplayName: '系统管理员',
       tags: [],
@@ -275,6 +277,29 @@ describe('KnowledgeDocumentManagementView', () => {
     expect(wrapper.text()).toContain('删除请求已受理，等待后台清理');
     expect(wrapper.text()).not.toContain('已物理删除');
     expect(api.getDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a pending cleanup state without offering the initial delete action again', async () => {
+    const api = createApi();
+    api.getDocument.mockResolvedValue({
+      ...detail(),
+      document: {
+        ...detail().document,
+        status: 'disabled',
+        isDeleteRequested: true,
+        canRetryPhysicalDelete: false
+      }
+    });
+    const wrapper = mount(KnowledgeDocumentManagementView, {
+      props: { documentId, api },
+      global: { plugins: [authenticate('Admin')] }
+    });
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="document-state"]').text())
+      .toContain('等待物理清理');
+    expect(wrapper.find('[data-testid="request-physical-delete"]').exists())
+      .toBe(false);
   });
 
   it('replaces stale status from a concurrency response', async () => {

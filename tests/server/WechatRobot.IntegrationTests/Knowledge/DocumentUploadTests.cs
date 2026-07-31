@@ -244,6 +244,54 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
     }
 
     [Fact]
+    public async Task Admin_can_resubmit_a_dead_lettered_physical_cleanup()
+    {
+        using var admin = CreateClient(SystemRoles.Admin);
+        using var uploaded = await UploadTextAsync(
+            admin,
+            "physical-delete-retry.txt",
+            "physical-delete-retry");
+        var body = await uploaded.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+        var documentId = body.GetProperty("documentId").GetGuid();
+
+        Assert.Equal(
+            HttpStatusCode.Accepted,
+            (await RequestPhysicalDeleteAsync(admin, documentId)).StatusCode);
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider
+                .GetRequiredService<WechatRobotDbContext>();
+            var cleanup = await database.DurableJobs.SingleAsync(
+                job =>
+                    job.JobType == "CleanupKnowledgeDocument" &&
+                    job.PayloadJson.Contains(documentId.ToString()),
+                TestContext.Current.CancellationToken);
+            cleanup.Status = "deadLetter";
+            cleanup.AttemptCount = 4;
+            cleanup.LeaseOwner = null;
+            cleanup.LeaseExpiresAtUtc = null;
+            await database.SaveChangesAsync(
+                TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(
+            HttpStatusCode.Accepted,
+            (await RequestPhysicalDeleteAsync(admin, documentId)).StatusCode);
+
+        await using var verifyScope = _factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider
+            .GetRequiredService<WechatRobotDbContext>();
+        var recovered = await verify.DurableJobs.AsNoTracking().SingleAsync(
+            job =>
+                job.JobType == "CleanupKnowledgeDocument" &&
+                job.PayloadJson.Contains(documentId.ToString()),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("pending", recovered.Status);
+        Assert.Equal(0, recovered.AttemptCount);
+    }
+
+    [Fact]
     public async Task Delete_wins_when_provider_put_finished_before_database_activation()
     {
         _factory.Storage.Reset();

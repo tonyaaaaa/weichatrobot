@@ -147,12 +147,23 @@ public sealed class KnowledgeDocumentWorkbenchQuery(WechatRobotDbContext databas
                                 document.Status != "disabled" &&
                                 chunks.Length > 0 &&
                                 editableRevision is null;
+        var cleanupStatus = document.IsDeleteRequested
+            ? await database.DurableJobs.AsNoTracking()
+                .Where(job =>
+                    job.Id ==
+                    KnowledgeDocumentCleanupJobIdentity.Create(document.Id) &&
+                    job.JobType == "CleanupKnowledgeDocument")
+                .Select(job => job.Status)
+                .SingleOrDefaultAsync(cancellationToken)
+            : null;
 
         return new KnowledgeDocumentWorkbench(
             document.Id,
             document.Title,
             document.Status,
             document.StateVersion,
+            document.IsDeleteRequested,
+            cleanupStatus is "deadLetter" or "cancelled",
             document.ActiveVersionId,
             new KnowledgeWorkbenchVersion(
                 version.Id,

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
@@ -15,6 +16,81 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 
 public sealed class KnowledgeDocumentCleanupWorkerTests
 {
+    [Fact]
+    public async Task Completed_legacy_cleanup_with_remaining_tombstone_is_recovered_and_deleted()
+    {
+        var documentId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var versionId = Guid.NewGuid();
+        var cleanupJobId = Guid.Parse("03373499-eb61-6c73-6bd0-aedea0036746");
+        var storage = new FakeStorage();
+        var services = new ServiceCollection();
+        var databaseName = Guid.NewGuid().ToString();
+        services.AddDbContext<WechatRobotDbContext>(builder =>
+            builder.UseInMemoryDatabase(databaseName)
+                .ConfigureWarnings(warnings =>
+                    warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        services.AddScoped<IDurableJobRepository, InMemoryCleanupJobs>();
+        services.AddSingleton<IObjectStorage>(storage);
+        services.AddSingleton<IVectorStore>(new FakeVectors());
+        services.AddSingleton(new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<ISecretProtector, PassThroughProtector>();
+        services.AddScoped<ModelConfigurationService>();
+        services.AddScoped<QdrantKnowledgeService>();
+        await using var provider = services.BuildServiceProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            database.AddRange(
+                new KnowledgeDocumentEntity
+                {
+                    Id = documentId,
+                    Status = "disabled",
+                    IsDeleteRequested = true
+                },
+                new KnowledgeDocumentVersionEntity
+                {
+                    Id = versionId,
+                    KnowledgeDocumentId = documentId,
+                    Version = 1,
+                    OriginalFileName = "legacy.txt",
+                    SafeFileName = "legacy.txt",
+                    ContentType = "text/plain",
+                    Sha256 = "c".PadLeft(64, '0'),
+                    ObjectKey = "wechatrobot/knowledge/legacy.txt",
+                    Status = "disabled"
+                },
+                new DurableJobEntity
+                {
+                    Id = cleanupJobId,
+                    JobType = "CleanupKnowledgeDocument",
+                    Status = "completed",
+                    PayloadJson = JsonSerializer.Serialize(new { documentId }),
+                    CompletedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+                });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var worker = new KnowledgeDocumentCleanupWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System);
+
+        Assert.True(await worker.ProcessOnceAsync(
+            TestContext.Current.CancellationToken));
+
+        await using var verifyScope = provider.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        Assert.False(await verify.KnowledgeDocuments.AnyAsync(
+            item => item.Id == documentId,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(
+            "completed",
+            (await verify.DurableJobs.SingleAsync(
+                item => item.Id == cleanupJobId,
+                TestContext.Current.CancellationToken)).Status);
+        Assert.Equal(["wechatrobot/knowledge/legacy.txt"], storage.Deleted);
+    }
+
     [Fact]
     public async Task Physical_delete_job_removes_every_oss_object_and_vector_generation_then_completes()
     {
@@ -164,6 +240,117 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
         }
         public Task<StoredObject> PutAsync(string objectKey, Stream content, string contentType, CancellationToken token) => throw new NotSupportedException();
     }
+    private sealed class InMemoryCleanupJobs(
+        WechatRobotDbContext database) : IDurableJobRepository
+    {
+        public async Task<LeasedDurableJob?> LeaseNextJobAsync(
+            string type,
+            string owner,
+            DateTime now,
+            TimeSpan duration,
+            CancellationToken token)
+        {
+            var job = await database.DurableJobs.SingleOrDefaultAsync(
+                item =>
+                    item.JobType == type &&
+                    (item.Status == "pending" ||
+                     item.Status == "retrying") &&
+                    item.NextAttemptAtUtc <= now,
+                token);
+            if (job is null)
+                return null;
+            job.Status = "leased";
+            job.LeaseOwner = owner;
+            job.LeaseExpiresAtUtc = now.Add(duration);
+            job.Version++;
+            await database.SaveChangesAsync(token);
+            return new(
+                job.Id,
+                job.JobType,
+                job.PayloadJson,
+                job.AttemptCount,
+                owner);
+        }
+
+        public async Task CompleteJobAsync(
+            Guid id,
+            string owner,
+            DateTime at,
+            CancellationToken token)
+        {
+            var job = await database.DurableJobs.SingleAsync(
+                item =>
+                    item.Id == id &&
+                    item.Status == "leased" &&
+                    item.LeaseOwner == owner,
+                token);
+            job.Status = "completed";
+            job.CompletedAtUtc = at;
+            job.LeaseOwner = null;
+            job.LeaseExpiresAtUtc = null;
+            job.Version++;
+            await database.SaveChangesAsync(token);
+        }
+
+        public Task FailJobAsync(
+            LeasedDurableJob job,
+            string reason,
+            DateTime at,
+            CancellationToken token) =>
+            throw new Xunit.Sdk.XunitException(reason);
+
+        public Task<InboundMessageIngestResult> IngestInboundMessageAsync(
+            InboundMessageIngestRequest request,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(
+            EnqueueSendCommandRequest request,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task<LeasedSendCommand?> LeaseNextSendCommandAsync(
+            string owner,
+            DateTime now,
+            TimeSpan duration,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task<bool> MarkSendDispatchingAsync(
+            LeasedSendCommand command,
+            DateTime dispatchedAtUtc,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task MarkSendDeliveryUnknownAsync(
+            LeasedSendCommand command,
+            string reason,
+            DateTime failedAtUtc,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task MarkSendAcceptedAsync(
+            LeasedSendCommand command,
+            string workToolMessageId,
+            DateTime at,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task MarkSendRejectedAsync(
+            LeasedSendCommand command,
+            string reason,
+            DateTime at,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task FailSendCommandAsync(
+            LeasedSendCommand command,
+            string reason,
+            DateTime at,
+            TimeSpan? delay,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+        public Task<bool> RenewSendLeasesAsync(
+            LeasedSendCommand command,
+            DateTime now,
+            TimeSpan duration,
+            CancellationToken token) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class FakeVectors : IVectorStore
     {
         public List<(VectorCollection Collection, Guid VersionId)> Deleted { get; } = [];

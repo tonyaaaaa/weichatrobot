@@ -217,7 +217,9 @@ async function retryUpload(document: KnowledgeDocumentSummary): Promise<void> {
 async function requestPhysicalDelete(document: KnowledgeDocumentSummary): Promise<void> {
   if (!canRequestPhysicalDelete.value) return;
   const confirmed = await props.confirmAction(
-    '这会停用文档并提交异步物理清理，期间不可上传新版本。确认继续？');
+    document.isDeleteRequested
+      ? '这会重新提交失败的物理清理任务。确认继续？'
+      : '这会停用文档并提交异步物理清理，期间不可上传新版本。确认继续？');
   if (!confirmed) return;
 
   const deleteMethod = props.api?.requestPhysicalDelete ??
@@ -292,6 +294,17 @@ function statusLabel(status: string): string {
     active: '已生效',
     disabled: '已停用'
   } as Record<string, string>)[status] ?? status;
+}
+
+function documentStatusLabel(
+  document: KnowledgeDocumentSummary
+): string {
+  if (document.isDeleteRequested) {
+    return document.canRetryPhysicalDelete
+      ? '物理清理失败'
+      : '等待物理清理';
+  }
+  return statusLabel(document.status);
 }
 
 function sourceLabel(sourceKind: string): string {
@@ -563,7 +576,7 @@ onMounted(() => {
               </td>
               <td class="status-cell">
                 <ElTag :type="statusType(document.status)" effect="plain">
-                  {{ statusLabel(document.status) }}
+                  {{ documentStatusLabel(document) }}
                 </ElTag>
                 <span v-if="document.latestFailureReason" class="failure-summary secondary-line">
                   {{ document.latestFailureReason }}
@@ -587,14 +600,18 @@ onMounted(() => {
                     @click="retryUpload(document)"
                   >重试上传</ElButton>
                   <ElButton
-                    v-if="canRequestPhysicalDelete"
+                    v-if="canRequestPhysicalDelete &&
+                      (!document.isDeleteRequested ||
+                        document.canRetryPhysicalDelete)"
                     :data-testid="`delete-document-${document.id}`"
                     type="danger"
                     link
                     size="small"
                     :loading="busyId === document.id && busyOperation === 'physical-delete'"
                     @click="requestPhysicalDelete(document)"
-                  >提交物理删除</ElButton>
+                  >{{ document.isDeleteRequested
+                    ? '重新提交物理清理'
+                    : '提交物理删除' }}</ElButton>
                 </div>
               </td>
             </tr>
@@ -618,7 +635,7 @@ onMounted(() => {
               </p>
             </div>
             <ElTag :type="statusType(document.status)" effect="plain">
-              {{ statusLabel(document.status) }}
+              {{ documentStatusLabel(document) }}
             </ElTag>
           </header>
           <dl>
@@ -660,13 +677,17 @@ onMounted(() => {
               @click="retryUpload(document)"
             >重试上传</ElButton>
             <ElButton
-              v-if="canRequestPhysicalDelete"
+              v-if="canRequestPhysicalDelete &&
+                (!document.isDeleteRequested ||
+                  document.canRetryPhysicalDelete)"
               type="danger"
               link
               size="small"
               :loading="busyId === document.id && busyOperation === 'physical-delete'"
               @click="requestPhysicalDelete(document)"
-            >提交物理删除</ElButton>
+            >{{ document.isDeleteRequested
+              ? '重新提交物理清理'
+              : '提交物理删除' }}</ElButton>
           </div>
         </article>
       </div>

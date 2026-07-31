@@ -340,6 +340,24 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
         var tagsByVersion = await LoadVersionTagsAsync(
             effectiveVersionIds,
             cancellationToken);
+        var cleanupJobIds = documents
+            .Where(document => document.IsDeleteRequested)
+            .ToDictionary(
+                document => document.Id,
+                document => KnowledgeDocumentCleanupJobIdentity.Create(
+                    document.Id));
+        var cleanupJobIdValues = cleanupJobIds.Values.ToArray();
+        var cleanupStatuses = cleanupJobIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await database.DurableJobs
+                .AsNoTracking()
+                .Where(job =>
+                    cleanupJobIdValues.Contains(job.Id) &&
+                    job.JobType == "CleanupKnowledgeDocument")
+                .ToDictionaryAsync(
+                    job => job.Id,
+                    job => job.Status,
+                    cancellationToken);
         return documents.Select(document =>
         {
             var documentVersions = grouped.GetValueOrDefault(document.Id) ?? [];
@@ -359,6 +377,10 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                 !document.IsDeleteRequested &&
                 document.Status != "disabled" &&
                 latest is { Status: "failed", HasStagedContent: true },
+                document.IsDeleteRequested,
+                cleanupJobIds.TryGetValue(document.Id, out var cleanupJobId) &&
+                cleanupStatuses.TryGetValue(cleanupJobId, out var cleanupStatus) &&
+                cleanupStatus is "deadLetter" or "cancelled",
                 effective?.SourceKind ?? "LegacyUnknown",
                 effective?.SourceActorDisplayName,
                 effective is null

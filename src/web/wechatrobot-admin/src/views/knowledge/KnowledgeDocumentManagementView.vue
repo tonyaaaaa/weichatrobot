@@ -42,7 +42,17 @@ const notice = ref('');
 const selectedFile = ref<File>();
 const uploadProgress = ref(0);
 const canRequestPhysicalDelete = computed(() =>
-  auth.user?.roles.includes('Admin') === true);
+  auth.user?.roles.includes('Admin') === true &&
+  (detail.value?.document.isDeleteRequested !== true ||
+    detail.value.document.canRetryPhysicalDelete));
+const documentStateLabel = computed(() => {
+  if (detail.value?.document.isDeleteRequested) {
+    return detail.value.document.canRetryPhysicalDelete
+      ? '物理清理失败'
+      : '等待物理清理';
+  }
+  return detail.value?.document.status ?? '';
+});
 const isAutomaticSource = computed(() =>
   detail.value?.document.sourceKind === 'ConversationReview' ||
   detail.value?.document.sourceKind === 'PrivateChatDirect');
@@ -131,7 +141,9 @@ async function disable(): Promise<void> {
 async function requestPhysicalDelete(): Promise<void> {
   if (!detail.value || !canRequestPhysicalDelete.value) return;
   const confirmed = await props.confirmAction(
-    '这会停用文档并提交异步物理清理，期间不可上传新版本。确认继续？');
+    detail.value.document.isDeleteRequested
+      ? '这会重新提交失败的物理清理任务。确认继续？'
+      : '这会停用文档并提交异步物理清理，期间不可上传新版本。确认继续？');
   if (!confirmed) return;
   await mutate(
     'physical-delete',
@@ -267,7 +279,7 @@ onMounted(load);
           <p class="eyebrow">持久化状态</p>
           <h2 id="document-state-title">文档状态</h2>
           <p data-testid="document-state">
-            <ElTag effect="plain">{{ detail.document.status }}</ElTag>
+            <ElTag effect="plain">{{ documentStateLabel }}</ElTag>
             <span>状态版本 {{ detail.document.stateVersion }} · 共 {{ detail.document.versionCount }} 个版本</span>
           </p>
           <p v-if="detail.document.latestFailureReason" class="failure-summary">
@@ -307,7 +319,9 @@ onMounted(load);
             plain
             :loading="busy === 'physical-delete'"
             @click="requestPhysicalDelete"
-          >提交物理删除</ElButton>
+          >{{ detail.document.isDeleteRequested
+            ? '重新提交物理清理'
+            : '提交物理删除' }}</ElButton>
         </div>
       </section>
 

@@ -250,7 +250,15 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         if (current.StateVersion != expectedStateVersion) throw Concurrency(current);
         if (current.IsDeleteRequested)
         {
-            if (rejectExistingRequest) throw new DocumentDeleteRequestedException();
+            if (rejectExistingRequest)
+            {
+                if (await TryRequeuePhysicalCleanupAsync(
+                        documentId,
+                        actor,
+                        cancellationToken))
+                    return true;
+                throw new DocumentDeleteRequestedException();
+            }
             return true;
         }
         await using var transaction = await BeginTransactionIfRelationalAsync(cancellationToken);
@@ -292,7 +300,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
                 .SetProperty(job => job.LeaseOwner, (string?)null)
                 .SetProperty(job => job.UpdatedAtUtc, now)
                 .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
-        var cleanupId = CleanupJobId(documentId);
+        var cleanupId = KnowledgeDocumentCleanupJobIdentity.Create(documentId);
         if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken))
             database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
         AddAudit(
@@ -318,6 +326,113 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         }
     }
 
+    private async Task<bool> TryRequeuePhysicalCleanupAsync(
+        Guid documentId,
+        string? actor,
+        CancellationToken cancellationToken)
+    {
+        var cleanupId = KnowledgeDocumentCleanupJobIdentity.Create(documentId);
+        var terminalStatuses = new[] { "deadLetter", "cancelled", "completed" };
+        var cleanup = await database.DurableJobs.AsNoTracking()
+            .Where(job =>
+                job.Id == cleanupId &&
+                job.JobType == "CleanupKnowledgeDocument")
+            .Select(job => new { job.Status, job.AttemptCount })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (cleanup is null || !terminalStatuses.Contains(cleanup.Status))
+            return false;
+
+        var now = DateTime.UtcNow;
+        if (IsInMemory)
+        {
+            var tracked = await database.DurableJobs.SingleAsync(
+                job =>
+                    job.Id == cleanupId &&
+                    job.JobType == "CleanupKnowledgeDocument",
+                cancellationToken);
+            if (!terminalStatuses.Contains(tracked.Status))
+                return false;
+            tracked.Status = "pending";
+            tracked.AttemptCount = 0;
+            tracked.NextAttemptAtUtc = now;
+            tracked.CompletedAtUtc = null;
+            tracked.LeaseOwner = null;
+            tracked.LeaseExpiresAtUtc = null;
+            tracked.UpdatedAtUtc = now;
+            tracked.Version++;
+            database.DeadLetters.RemoveRange(
+                await database.DeadLetters
+                    .Where(letter => letter.DurableJobId == cleanupId)
+                    .ToArrayAsync(cancellationToken));
+            AddPhysicalCleanupRetryAudit(
+                actor,
+                documentId,
+                cleanup.Status,
+                cleanup.AttemptCount);
+            await database.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        await using var transaction =
+            await BeginTransactionIfRelationalAsync(cancellationToken);
+        var updated = await database.DurableJobs
+            .Where(job =>
+                job.Id == cleanupId &&
+                job.JobType == "CleanupKnowledgeDocument" &&
+                (job.Status == "deadLetter" ||
+                 job.Status == "cancelled" ||
+                 job.Status == "completed"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "pending")
+                .SetProperty(job => job.AttemptCount, 0)
+                .SetProperty(job => job.NextAttemptAtUtc, now)
+                .SetProperty(job => job.CompletedAtUtc, (DateTime?)null)
+                .SetProperty(job => job.LeaseOwner, (string?)null)
+                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(job => job.UpdatedAtUtc, now)
+                .SetProperty(job => job.Version, job => job.Version + 1),
+                cancellationToken);
+        if (updated != 1)
+        {
+            if (transaction is not null)
+                await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+        await database.DeadLetters
+            .Where(letter => letter.DurableJobId == cleanupId)
+            .ExecuteDeleteAsync(cancellationToken);
+        AddPhysicalCleanupRetryAudit(
+            actor,
+            documentId,
+            cleanup.Status,
+            cleanup.AttemptCount);
+        await database.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+            await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    private void AddPhysicalCleanupRetryAudit(
+        string? actor,
+        Guid documentId,
+        string priorStatus,
+        int priorAttemptCount)
+    {
+        AddAudit(
+            actor,
+            "knowledge-document.retry-physical-delete",
+            documentId,
+            new
+            {
+                before = new
+                {
+                    status = priorStatus,
+                    attemptCount = priorAttemptCount
+                },
+                after = new { status = "pending", attemptCount = 0 }
+            });
+    }
+
     private Task<Guid> UploadJobIdAsync(Guid versionId, CancellationToken cancellationToken) => database.DurableJobs
         .Where(job => job.JobType == "UploadKnowledgeDocument" && job.PayloadJson.Contains(versionId.ToString()))
         .OrderByDescending(job => job.CreatedAtUtc).Select(job => job.Id).FirstAsync(cancellationToken);
@@ -333,12 +448,6 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
     {
         Id = id ?? Guid.NewGuid(), JobType = type, Status = status, PayloadJson = JsonSerializer.Serialize(new { documentId, versionId }), NextAttemptAtUtc = DateTime.UtcNow
     };
-
-    private static Guid CleanupJobId(Guid documentId)
-    {
-        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"CleanupKnowledgeDocument:{documentId:N}"));
-        return new Guid(hash.AsSpan(0, 16));
-    }
 
     private bool IsInMemory => database.Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true;
 
@@ -411,7 +520,15 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         if (document.StateVersion != expectedStateVersion) throw Concurrency(document);
         if (document.IsDeleteRequested)
         {
-            if (rejectExistingRequest) throw new DocumentDeleteRequestedException();
+            if (rejectExistingRequest)
+            {
+                if (await TryRequeuePhysicalCleanupAsync(
+                        documentId,
+                        actor,
+                        cancellationToken))
+                    return true;
+                throw new DocumentDeleteRequestedException();
+            }
             return true;
         }
         var now = DateTime.UtcNow;
@@ -425,7 +542,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         foreach (var job in await database.KnowledgeIndexJobs.Where(job => job.KnowledgeDocumentId == documentId && job.Operation != "cleanup" &&
                      (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased" || job.Status == "activating")).ToArrayAsync(cancellationToken))
         { job.Status = "cancelled"; job.LeaseOwner = null; job.UpdatedAtUtc = now; job.Version++; }
-        var cleanupId = CleanupJobId(documentId);
+        var cleanupId = KnowledgeDocumentCleanupJobIdentity.Create(documentId);
         if (!await database.DurableJobs.AnyAsync(job => job.Id == cleanupId, cancellationToken)) database.DurableJobs.Add(NewJob("CleanupKnowledgeDocument", documentId, null, "pending", cleanupId));
         AddAudit(
             actor,

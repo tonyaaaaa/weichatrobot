@@ -20,6 +20,149 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeDocumentCleanupMySqlTests(MySqlFixture fixture) : IClassFixture<MySqlFixture>
 {
     [Fact]
+    public async Task Dead_lettered_cleanup_can_be_resubmitted_on_mysql()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new DbContextOptionsBuilder<WechatRobotDbContext>()
+            .UseMySQL(fixture.ConnectionString)
+            .Options;
+        var document = new KnowledgeDocumentEntity
+        {
+            Title = "dead-letter-retry-" + Guid.NewGuid().ToString("N"),
+            Status = "disabled",
+            IsDeleteRequested = true,
+            StateVersion = 3
+        };
+        var cleanupJobId =
+            KnowledgeDocumentCleanupJobIdentity.Create(document.Id);
+        await using (var setup = new WechatRobotDbContext(options))
+        {
+            await setup.Database.MigrateAsync(token);
+            setup.AddRange(
+                document,
+                new DurableJobEntity
+                {
+                    Id = cleanupJobId,
+                    JobType = "CleanupKnowledgeDocument",
+                    Status = "deadLetter",
+                    AttemptCount = 4,
+                    PayloadJson = JsonSerializer.Serialize(new
+                    {
+                        documentId = document.Id
+                    })
+                },
+                new DeadLetterEntity
+                {
+                    DurableJobId = cleanupJobId,
+                    Reason = "sanitized cleanup failure",
+                    PayloadJson = "{}"
+                });
+            await setup.SaveChangesAsync(token);
+        }
+
+        await using (var database = new WechatRobotDbContext(options))
+        {
+            Assert.True(await new KnowledgeDocumentStore(database)
+                .RequestPhysicalDeleteAsync(
+                    document.Id,
+                    document.StateVersion,
+                    "mysql-test-admin",
+                    token));
+        }
+
+        await using var verify = new WechatRobotDbContext(options);
+        var job = await verify.DurableJobs.AsNoTracking().SingleAsync(
+            item => item.Id == cleanupJobId,
+            token);
+        Assert.Equal("pending", job.Status);
+        Assert.Equal(0, job.AttemptCount);
+        Assert.False(await verify.DeadLetters.AnyAsync(
+            item => item.DurableJobId == cleanupJobId,
+            token));
+        Assert.True(await verify.AdministrationAudits.AnyAsync(
+            item =>
+                item.Action == "knowledge-document.retry-physical-delete" &&
+                item.TargetId == document.Id.ToString(),
+            token));
+    }
+
+    [Fact]
+    public async Task Completed_legacy_cleanup_is_recovered_with_real_mysql_leasing()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var options = new DbContextOptionsBuilder<WechatRobotDbContext>()
+            .UseMySQL(fixture.ConnectionString)
+            .Options;
+        var document = new KnowledgeDocumentEntity
+        {
+            Title = "legacy-physical-delete-" + Guid.NewGuid().ToString("N"),
+            Status = "disabled",
+            IsDeleteRequested = true
+        };
+        var version = new KnowledgeDocumentVersionEntity
+        {
+            KnowledgeDocumentId = document.Id,
+            Version = 1,
+            OriginalFileName = "legacy-delete.txt",
+            SafeFileName = "legacy-delete.txt",
+            ContentType = "text/plain",
+            Sha256 = Guid.NewGuid().ToString("N").PadRight(64, '0'),
+            ObjectKey = "wechatrobot/knowledge/legacy-delete.txt",
+            Status = "disabled"
+        };
+        var cleanupJobId =
+            KnowledgeDocumentCleanupJobIdentity.Create(document.Id);
+        await using (var setup = new WechatRobotDbContext(options))
+        {
+            await setup.Database.MigrateAsync(token);
+            setup.AddRange(
+                document,
+                version,
+                new DurableJobEntity
+                {
+                    Id = cleanupJobId,
+                    JobType = "CleanupKnowledgeDocument",
+                    Status = "completed",
+                    PayloadJson = JsonSerializer.Serialize(new
+                    {
+                        documentId = document.Id
+                    }),
+                    CompletedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+                });
+            await setup.SaveChangesAsync(token);
+        }
+
+        var services = new ServiceCollection();
+        services.AddDbContext<WechatRobotDbContext>(builder =>
+            builder.UseMySQL(fixture.ConnectionString));
+        services.AddScoped<IDurableJobRepository, DurableJobRepository>();
+        services.AddSingleton<IObjectStorage, FakeStorage>();
+        services.AddSingleton<IVectorStore, FakeVectors>();
+        services.AddSingleton(
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<ISecretProtector, PassThroughProtector>();
+        services.AddScoped<ModelConfigurationService>();
+        services.AddScoped<QdrantKnowledgeService>();
+        await using var provider = services.BuildServiceProvider();
+        var worker = new KnowledgeDocumentCleanupWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System);
+
+        Assert.True(await worker.ProcessOnceAsync(token));
+
+        await using var verify = new WechatRobotDbContext(options);
+        Assert.False(await verify.KnowledgeDocuments.AnyAsync(
+            item => item.Id == document.Id,
+            token));
+        Assert.Equal(
+            "completed",
+            (await verify.DurableJobs.AsNoTracking().SingleAsync(
+                item => item.Id == cleanupJobId,
+                token)).Status);
+    }
+
+    [Fact]
     public async Task Cleanup_detaches_candidate_cascades_document_data_and_releases_sha256()
     {
         var token = TestContext.Current.CancellationToken;

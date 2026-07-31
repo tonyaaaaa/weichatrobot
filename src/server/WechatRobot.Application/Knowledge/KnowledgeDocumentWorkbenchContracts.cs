@@ -42,6 +42,8 @@ public sealed record KnowledgeDocumentWorkbench(
     string DocumentTitle,
     string DocumentStatus,
     int DocumentStateVersion,
+    bool DocumentIsDeleteRequested,
+    bool CanRetryPhysicalDelete,
     Guid? ActiveVersionId,
     KnowledgeWorkbenchVersion Version,
     IReadOnlyList<KnowledgeWorkbenchChunk> Chunks,

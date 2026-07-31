@@ -21,6 +21,8 @@ export interface KnowledgeDocumentSummary {
   latestVersionStatus: string | null;
   latestFailureReason: string | null;
   canRetryUpload: boolean;
+  isDeleteRequested: boolean;
+  canRetryPhysicalDelete: boolean;
   sourceKind: 'DocumentUpload' | 'ConversationReview' | 'PrivateChatDirect' | 'LegacyUnknown' | string;
   sourceActorDisplayName: string | null;
   tags: KnowledgeDocumentTagSummary[];
@@ -123,6 +125,8 @@ export interface KnowledgeDocumentWorkbench {
   documentTitle: string;
   documentStatus: string;
   documentStateVersion: number;
+  documentIsDeleteRequested: boolean;
+  canRetryPhysicalDelete: boolean;
   activeVersionId: string | null;
   version: KnowledgeWorkbenchVersion;
   chunks: KnowledgeWorkbenchChunk[];

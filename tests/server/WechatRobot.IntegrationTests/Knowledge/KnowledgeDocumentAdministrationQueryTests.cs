@@ -9,6 +9,46 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeDocumentAdministrationQueryTests
 {
     [Fact]
+    public async Task List_exposes_pending_physical_delete_and_terminal_retryability()
+    {
+        await using var database = NewDatabase();
+        var document = Document(
+            "00000000-0000-0000-0000-000000000001",
+            "Pending physical cleanup",
+            "disabled",
+            DateTime.UtcNow);
+        document.IsDeleteRequested = true;
+        database.KnowledgeDocuments.Add(document);
+        database.KnowledgeDocumentVersions.Add(
+            Version(document.Id, 1, "disabled"));
+        database.DurableJobs.Add(new DurableJobEntity
+        {
+            Id = Guid.Parse("17003701-daa4-96e9-d797-a91d86a9695f"),
+            JobType = "CleanupKnowledgeDocument",
+            Status = "deadLetter",
+            PayloadJson = JsonSerializer.Serialize(new
+            {
+                documentId = document.Id
+            })
+        });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var page = await new KnowledgeDocumentAdministrationQuery(database)
+            .ListAsync(
+                query: null,
+                status: null,
+                sourceKind: null,
+                tagId: null,
+                page: 1,
+                pageSize: 20,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+        var summary = Assert.Single(page.Items);
+        Assert.True(summary.IsDeleteRequested);
+        Assert.True(summary.CanRetryPhysicalDelete);
+    }
+
+    [Fact]
     public async Task List_filters_and_orders_documents_with_latest_retry_truth()
     {
         await using var database = NewDatabase();

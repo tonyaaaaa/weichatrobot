@@ -13,12 +13,33 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
 {
     private readonly string _owner = $"knowledge-delete-{Environment.MachineName}-{Guid.NewGuid():N}";
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(30);
+    private DateTime _nextRecoveryAtUtc = DateTime.MinValue;
 
     public async Task<bool> ProcessOnceAsync(CancellationToken token)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var jobs = scope.ServiceProvider.GetRequiredService<IDurableJobRepository>();
-        var job = await jobs.LeaseNextJobAsync("CleanupKnowledgeDocument", _owner, timeProvider.GetUtcNow().UtcDateTime, LeaseDuration, token);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var job = await jobs.LeaseNextJobAsync(
+            "CleanupKnowledgeDocument",
+            _owner,
+            now,
+            LeaseDuration,
+            token);
+        if (job is null && now >= _nextRecoveryAtUtc)
+        {
+            _nextRecoveryAtUtc = now.Add(RecoveryInterval);
+            var database = scope.ServiceProvider
+                .GetRequiredService<WechatRobotDbContext>();
+            if (await RecoverCompletedLegacyCleanupAsync(database, now, token))
+                job = await jobs.LeaseNextJobAsync(
+                    "CleanupKnowledgeDocument",
+                    _owner,
+                    now,
+                    LeaseDuration,
+                    token);
+        }
         if (job is null) return false;
         try
         {
@@ -57,6 +78,71 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
             await jobs.FailJobAsync(job, $"Knowledge document physical cleanup failed: {exception.Message}", timeProvider.GetUtcNow().UtcDateTime, CancellationToken.None);
         }
         return true;
+    }
+
+    private static async Task<bool> RecoverCompletedLegacyCleanupAsync(
+        WechatRobotDbContext database,
+        DateTime nowUtc,
+        CancellationToken token)
+    {
+        var strandedDocumentIds = await database.KnowledgeDocuments
+            .AsNoTracking()
+            .Where(document => document.IsDeleteRequested)
+            .OrderBy(document => document.UpdatedAtUtc)
+            .ThenBy(document => document.Id)
+            .Select(document => document.Id)
+            .Take(100)
+            .ToArrayAsync(token);
+        if (strandedDocumentIds.Length == 0)
+            return false;
+
+        var cleanupJobIds = strandedDocumentIds
+            .Select(KnowledgeDocumentCleanupJobIdentity.Create)
+            .ToArray();
+        if (database.Database.ProviderName?.Contains(
+                "InMemory",
+                StringComparison.OrdinalIgnoreCase) == true)
+        {
+            var completedJobs = await database.DurableJobs
+                .Where(job =>
+                    cleanupJobIds.Contains(job.Id) &&
+                    job.JobType == "CleanupKnowledgeDocument" &&
+                    job.Status == "completed")
+                .ToArrayAsync(token);
+            foreach (var completedJob in completedJobs)
+                ResetForRecovery(completedJob, nowUtc);
+            if (completedJobs.Length != 0)
+                await database.SaveChangesAsync(token);
+            return completedJobs.Length != 0;
+        }
+
+        return await database.DurableJobs
+            .Where(job =>
+                cleanupJobIds.Contains(job.Id) &&
+                job.JobType == "CleanupKnowledgeDocument" &&
+                job.Status == "completed")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, "pending")
+                .SetProperty(job => job.CompletedAtUtc, (DateTime?)null)
+                .SetProperty(job => job.NextAttemptAtUtc, nowUtc)
+                .SetProperty(job => job.LeaseOwner, (string?)null)
+                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(job => job.UpdatedAtUtc, nowUtc)
+                .SetProperty(job => job.Version, job => job.Version + 1),
+                token) != 0;
+    }
+
+    private static void ResetForRecovery(
+        DurableJobEntity job,
+        DateTime nowUtc)
+    {
+        job.Status = "pending";
+        job.CompletedAtUtc = null;
+        job.NextAttemptAtUtc = nowUtc;
+        job.LeaseOwner = null;
+        job.LeaseExpiresAtUtc = null;
+        job.UpdatedAtUtc = nowUtc;
+        job.Version++;
     }
 
     private static async Task DeleteDatabaseRecordsAsync(

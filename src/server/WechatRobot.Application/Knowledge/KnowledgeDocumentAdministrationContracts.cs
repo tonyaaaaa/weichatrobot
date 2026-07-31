@@ -16,6 +16,8 @@ public sealed record KnowledgeDocumentSummary(
     string? LatestVersionStatus,
     string? LatestFailureReason,
     bool CanRetryUpload,
+    bool IsDeleteRequested,
+    bool CanRetryPhysicalDelete,
     string SourceKind,
     string? SourceActorDisplayName,
     IReadOnlyList<KnowledgeDocumentTagSummary> Tags,
