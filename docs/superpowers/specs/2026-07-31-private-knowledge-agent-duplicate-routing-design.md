@@ -58,6 +58,8 @@ Agent 竞争的判定逻辑。
 ## 处理流程
 
 1. Agent 通过 `find_similar_knowledge` 检索活动知识。
+   `propose_knowledge_items` 必须以程序方式确认每个最终问题已经调用过该
+   工具，不能只依赖提示词要求模型主动检索。
 2. Agent 根据问题语义判断是否与已有知识重复：
    - 问题相同但答案不同，判定为 `Duplicate`。
    - 问题措辞不同但含义相同，判定为 `Duplicate`。
@@ -65,6 +67,8 @@ Agent 竞争的判定逻辑。
      `Correction`。
 3. Agent 输出提案，其中包含 `ChangeKind` 和可选的
    `SimilarVersionId`；`Duplicate` 必须返回相似活动版本 ID。
+   `Duplicate`、`Supplement` 和 `Correction` 的版本 ID 必须来自该问题
+   本次 `find_similar_knowledge` 的返回结果，否则拒绝整次提交。
 4. 处理器继续保留现有“问题和答案逐字相同”的确定性快速判重。
 5. 若提案为 `Duplicate`：
    - `SimilarVersionId` 指向当前活动版本时，记录匹配文档、版本和标签，
@@ -100,6 +104,12 @@ Agent 竞争的判定逻辑。
 
 同时保留并运行既有新增、补充/纠正、原子激活和通知测试，防止修复改变
 非重复路径。
+
+新增 Agent 单元回归测试：
+
+- 未调用 `find_similar_knowledge` 就直接提交 `New` 时拒绝提案。
+- 提交的重复版本 ID 不在该问题的相似检索结果中时拒绝提案。
+- 完成相似检索并提交其返回的版本 ID 时接受语义重复提案。
 
 ## 验收标准
 

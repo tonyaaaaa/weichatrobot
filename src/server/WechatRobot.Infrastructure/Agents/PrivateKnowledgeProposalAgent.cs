@@ -31,6 +31,8 @@ public sealed class PrivateKnowledgeProposalAgent(
             .Select(x => x.Id)
             .ToArrayAsync(cancellationToken);
         var proposed = new List<ProposalToolItem>();
+        var similarVersionIdsByQuestion =
+            new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
 
         using var client = await clients.CreateAsync(modelId, cancellationToken);
         var listTags = AIFunctionFactory.Create(
@@ -49,19 +51,23 @@ public sealed class PrivateKnowledgeProposalAgent(
                 {
                     return Array.Empty<SimilarToolItem>();
                 }
+                var normalizedQuestion = NormalizeLookupQuestion(question);
                 var scope = await retrieval.ResolveScopeAsync(tagIds, cancellationToken);
                 var matches = await retrieval.RetrieveAsync(
-                    question.Trim()[..Math.Min(question.Trim().Length, 500)],
+                    normalizedQuestion,
                     scope,
                     5,
                     cancellationToken);
-                return matches.Select(x => new SimilarToolItem(
+                var result = matches.Select(x => new SimilarToolItem(
                     x.DocumentId,
                     x.VersionId,
                     x.Similarity,
                     x.DocumentTitle,
                     x.Text[..Math.Min(x.Text.Length, 800)]))
                     .ToArray();
+                similarVersionIdsByQuestion[normalizedQuestion] =
+                    result.Select(x => x.VersionId).ToHashSet();
+                return result;
             },
             "find_similar_knowledge",
             "Finds currently active knowledge similar to one proposed question.");
@@ -69,11 +75,18 @@ public sealed class PrivateKnowledgeProposalAgent(
             (ProposalEnvelope envelope) =>
             {
                 proposed.Clear();
-                if (envelope?.Items is not null)
+                var items = envelope?.Items;
+                var accepted = items is { Count: > 0 and <= 20 }
+                               && items.All(item => IsSimilarityValidated(
+                                   item,
+                                   similarVersionIdsByQuestion));
+                if (accepted)
                 {
-                    proposed.AddRange(envelope.Items);
+                    proposed.AddRange(items!);
                 }
-                return new { accepted = proposed.Count is > 0 and <= 20 };
+                return new ProposalSubmissionResult(
+                    accepted,
+                    accepted ? null : "similarity_validation_failed");
             },
             "propose_knowledge_items",
             "Submits the final list of 1 to 20 question-answer knowledge items.");
@@ -83,6 +96,7 @@ public sealed class PrivateKnowledgeProposalAgent(
             You organize internal private-chat notes into reusable knowledge.
             Use tools to inspect active tags. Before deciding ChangeKind, call
             find_similar_knowledge for every proposed question.
+            propose_knowledge_items rejects any final question that was not searched.
             Judge duplicates by question meaning, not exact wording or answer text.
             Use Duplicate when the same question already exists even if the new answer differs,
             or when wording differs but the question has the same meaning.
@@ -136,6 +150,38 @@ public sealed class PrivateKnowledgeProposalAgent(
         Guid? SuggestedTagId,
         Guid? SimilarVersionId,
         string? ChangeKind);
+    private static bool IsSimilarityValidated(
+        ProposalToolItem item,
+        IReadOnlyDictionary<string, HashSet<Guid>> similarVersionIdsByQuestion)
+    {
+        if (string.IsNullOrWhiteSpace(item.Question)
+            || !similarVersionIdsByQuestion.TryGetValue(
+                NormalizeLookupQuestion(item.Question),
+                out var versionIds))
+        {
+            return false;
+        }
+
+        if (!Enum.TryParse<KnowledgeChangeKind>(
+                item.ChangeKind,
+                ignoreCase: true,
+                out var changeKind))
+        {
+            return false;
+        }
+
+        return changeKind == KnowledgeChangeKind.New
+               || item.SimilarVersionId is { } versionId
+               && versionIds.Contains(versionId);
+    }
+
+    private static string NormalizeLookupQuestion(string question)
+    {
+        var trimmed = question.Trim();
+        return trimmed[..Math.Min(trimmed.Length, 500)];
+    }
+
+    private sealed record ProposalSubmissionResult(bool Accepted, string? Reason);
     private sealed record TagToolItem(Guid Id, string Name);
     private sealed record SimilarToolItem(
         Guid DocumentId,

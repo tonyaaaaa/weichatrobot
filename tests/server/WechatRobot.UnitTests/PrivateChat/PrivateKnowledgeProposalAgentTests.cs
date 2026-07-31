@@ -14,7 +14,7 @@ namespace WechatRobot.UnitTests.PrivateChat;
 public sealed class PrivateKnowledgeProposalAgentTests
 {
     [Fact]
-    public async Task Agent_uses_terminal_tool_and_returns_bounded_typed_proposals()
+    public async Task Agent_rejects_terminal_submission_that_skips_similarity_lookup()
     {
         await using var db = Database();
         var modelId = Guid.NewGuid();
@@ -37,13 +37,12 @@ public sealed class PrivateKnowledgeProposalAgentTests
             new StubFactory(client),
             new StubRetrieval());
 
-        var result = await agent.ProposeAsync(
-            "加拿大签证通常需要等待审核结果。",
-            TestContext.Current.CancellationToken);
+        var exception = await Assert.ThrowsAsync<PrivateKnowledgeProposalException>(
+            () => agent.ProposeAsync(
+                "加拿大签证通常需要等待审核结果。",
+                TestContext.Current.CancellationToken));
 
-        var item = Assert.Single(result);
-        Assert.Equal("加拿大签证需要多久？", item.Question);
-        Assert.Equal("New", item.ChangeKind.ToString());
+        Assert.Equal("private_knowledge_agent_invalid_output", exception.Code);
         Assert.True(client.SawProposalTool);
     }
 
@@ -84,6 +83,42 @@ public sealed class PrivateKnowledgeProposalAgentTests
             "加拿大旅游签证收到补件要求后如何处理？",
             retrieval.LastQuestion);
         Assert.True(client.SawSemanticDuplicateGuidance);
+    }
+
+    [Fact]
+    public async Task Agent_rejects_duplicate_target_that_was_not_returned_by_similarity_lookup()
+    {
+        await using var db = Database();
+        var modelId = Guid.NewGuid();
+        var retrievedVersionId = Guid.NewGuid();
+        db.ModelConfigs.Add(new ModelConfigEntity
+        {
+            Id = modelId,
+            Name = "chat",
+            NormalizedName = "CHAT",
+            Provider = "OpenAI",
+            ConfigurationType = "chat",
+            BaseUrl = "https://example.test",
+            Model = "test",
+            IsEnabled = true,
+            IsDefault = true
+        });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var retrieval = new TrackingRetrieval(retrievedVersionId);
+        var agent = new PrivateKnowledgeProposalAgent(
+            db,
+            new StubFactory(new SemanticDuplicateChatClient(Guid.NewGuid())),
+            retrieval);
+
+        var exception = await Assert.ThrowsAsync<PrivateKnowledgeProposalException>(
+            () => agent.ProposeAsync(
+                "加拿大旅游签证收到补件要求后如何处理？",
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal("private_knowledge_agent_invalid_output", exception.Code);
+        Assert.Equal(
+            "加拿大旅游签证收到补件要求后如何处理？",
+            retrieval.LastQuestion);
     }
 
     private static WechatRobotDbContext Database()
