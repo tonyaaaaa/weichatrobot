@@ -32,6 +32,7 @@ public sealed class MultiTurnRetrievalServiceTests
         Assert.False(result.Audit.UsedOriginalQuestion);
         Assert.Equal(QueryRewriteReasonCode.ContextualFollowUp, result.Audit.ReasonCode);
         Assert.Equal(23, result.Audit.DurationMilliseconds);
+        Assert.Equal(1, agent.CallCount);
     }
 
     [Fact]
@@ -77,25 +78,28 @@ public sealed class MultiTurnRetrievalServiceTests
     }
 
     [Fact]
-    public async Task Provider_failure_without_history_uses_original_question()
+    public async Task Empty_formal_context_uses_original_question_without_invoking_agent()
     {
-        var service = Service(new StubRewriteAgent(new(
+        var agent = new StubRewriteAgent(new(
             QueryRewriteDecision.Failure,
             null,
             null,
             QueryRewriteReasonCode.ProviderFailure,
-            FailureCode: "query_rewrite_provider_failure")));
+            DurationMilliseconds: 999,
+            FailureCode: "must_not_be_called"));
+        var service = Service(agent);
 
         var result = await service.PrepareAsync(
             Request(),
             TestContext.Current.CancellationToken);
 
+        Assert.Equal(0, agent.CallCount);
         Assert.Equal("需要什么材料？", result.RetrievalQuery!.Query);
         Assert.True(result.Audit.UsedOriginalQuestion);
         Assert.True(result.Audit.RagExecuted);
-        Assert.Equal(
-            "query_rewrite_provider_failure",
-            result.Audit.FailureCode);
+        Assert.Equal(QueryRewriteReasonCode.StandaloneQuestion, result.Audit.ReasonCode);
+        Assert.Equal(0, result.Audit.DurationMilliseconds);
+        Assert.Null(result.Audit.FailureCode);
     }
 
     [Fact]
@@ -145,50 +149,6 @@ public sealed class MultiTurnRetrievalServiceTests
         }
     }
 
-    [Fact]
-    public async Task Invalid_output_without_history_still_stops_before_retrieval()
-    {
-        var service = Service(new StubRewriteAgent(new(
-            QueryRewriteDecision.Search,
-            " ",
-            null,
-            QueryRewriteReasonCode.ContextualFollowUp)));
-
-        var result = await service.PrepareAsync(
-            Request(),
-            TestContext.Current.CancellationToken);
-
-        Assert.Null(result.RetrievalQuery);
-        Assert.Equal(
-            AnswerDecisionKind.SystemFailure,
-            result.TerminalAnswer!.Kind);
-        Assert.False(result.Audit.RagExecuted);
-        Assert.Equal(
-            QueryRewriteReasonCode.InvalidOutput,
-            result.Audit.ReasonCode);
-    }
-
-    [Fact]
-    public async Task Explicit_invalid_failure_without_history_does_not_fallback()
-    {
-        var service = Service(new StubRewriteAgent(new(
-            QueryRewriteDecision.Failure,
-            null,
-            null,
-            QueryRewriteReasonCode.InvalidOutput,
-            FailureCode: "query_rewrite_invalid_output")));
-
-        var result = await service.PrepareAsync(
-            Request(),
-            TestContext.Current.CancellationToken);
-
-        Assert.Null(result.RetrievalQuery);
-        Assert.Equal(
-            AnswerDecisionKind.SystemFailure,
-            result.TerminalAnswer!.Kind);
-        Assert.False(result.Audit.RagExecuted);
-    }
-
     private static MultiTurnRetrievalService Service(IQueryRewriteAgent agent) =>
         new(
             agent,
@@ -235,9 +195,14 @@ public sealed class MultiTurnRetrievalServiceTests
     private sealed class StubRewriteAgent(QueryRewriteResult result)
         : IQueryRewriteAgent
     {
+        public int CallCount { get; private set; }
+
         public Task<QueryRewriteResult> RewriteAsync(
             QueryRewriteRequest request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(result);
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(result);
+        }
     }
 }

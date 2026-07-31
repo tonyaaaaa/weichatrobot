@@ -83,6 +83,11 @@ public sealed class InboundMessageProcessor(
                 cancellationToken);
             return;
         }
+        var request = await conversations.LeaseForProcessingAsync(payload.MessageId, sessionLeaseOwner, timeProvider.GetUtcNow().UtcDateTime,
+            SessionLeaseDuration, cancellationToken);
+        var committed = false;
+        try
+        {
         if (runtime.IntentRuntimeMode is IntentRuntimeMode.Shadow or IntentRuntimeMode.AgentFramework)
         {
             var groupId = policy.GroupProfileId
@@ -136,11 +141,6 @@ public sealed class InboundMessageProcessor(
                 return;
             }
         }
-        var request = await conversations.LeaseForProcessingAsync(payload.MessageId, sessionLeaseOwner, timeProvider.GetUtcNow().UtcDateTime,
-            SessionLeaseDuration, cancellationToken);
-        var committed = false;
-        try
-        {
         if (runtime.TemplateRoutingRuntimeMode == TemplateRoutingRuntimeMode.AgentFramework
             && templateRouter is not null
             && fixedReplies is not null)

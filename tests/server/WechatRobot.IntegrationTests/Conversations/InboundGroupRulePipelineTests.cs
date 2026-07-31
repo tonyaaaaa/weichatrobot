@@ -83,6 +83,74 @@ public sealed class InboundGroupRulePipelineTests : IClassFixture<MySqlFixture>
             TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Intent_no_reply_detaches_preleased_message_from_formal_context()
+    {
+        await using var database = new WechatRobotDbContext(
+            new DbContextOptionsBuilder<WechatRobotDbContext>()
+                .UseMySQL(fixture.ConnectionString)
+                .Options);
+        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        var now = DateTime.UtcNow;
+        var robot = new RobotConfigEntity
+        {
+            Name = $"intent-no-reply-{Guid.NewGuid():N}",
+            WorkToolRobotId = $"intent-no-reply-{Guid.NewGuid():N}",
+            CallbackSecretHash = "test"
+        };
+        var group = new GroupProfileEntity
+        {
+            RobotConfigId = robot.Id,
+            Name = $"意图过滤群-{Guid.NewGuid():N}"
+        };
+        var session = new ConversationSessionEntity
+        {
+            GroupProfileId = group.Id,
+            SenderScopeKey = "group-shared",
+            LastActivityAtUtc = now,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        var message = new ConversationMessageEntity
+        {
+            RobotConfigId = robot.Id,
+            GroupProfileId = group.Id,
+            ConversationSessionId = session.Id,
+            SessionSequence = 1,
+            Direction = "inbound",
+            Role = "user",
+            GroupName = group.Name,
+            SenderDisplayName = "Alice",
+            Text = "你们两个人继续聊",
+            FallbackHash = Guid.NewGuid().ToString("N"),
+            ProcessingState = "leased"
+        };
+        database.AddRange(robot, group, session, message);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var repository = new GroundedConversationRepository(
+            database,
+            new ModelConfigurationService(new PassThroughProtector()),
+            TimeProvider.System);
+
+        await repository.PersistNoReplyTerminalAsync(
+            new(
+                message.Id,
+                InboundPolicyDecisionKind.NoReply,
+                group.Id,
+                "human_to_human_exchange",
+                "{}"),
+            TestContext.Current.CancellationToken);
+
+        database.ChangeTracker.Clear();
+        var stored = await database.ConversationMessages.AsNoTracking()
+            .SingleAsync(
+                item => item.Id == message.Id,
+                TestContext.Current.CancellationToken);
+        Assert.Null(stored.ConversationSessionId);
+        Assert.Null(stored.SessionSequence);
+        Assert.Equal("no_reply", stored.TerminalDecision);
+    }
+
     public static TheoryData<string, string, GroupRulePatternKind, string?, GroupRulePatternKind, bool, bool, string?> Cases => new()
     {
         { "技术部", "技术部", GroupRulePatternKind.Exact, null, GroupRulePatternKind.Exact, true, true, null },

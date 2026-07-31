@@ -194,6 +194,8 @@ public sealed class GroundedConversationRepository(
             throw new ArgumentException("A typed no-reply decision is required.", nameof(decision));
         var updated = await database.ConversationMessages.Where(item => item.Id == decision.MessageId && item.Direction == "inbound")
             .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.GroupProfileId, decision.GroupProfileId)
+                .SetProperty(item => item.ConversationSessionId, (Guid?)null)
+                .SetProperty(item => item.SessionSequence, (long?)null)
                 .SetProperty(item => item.ProcessingState, "completed").SetProperty(item => item.TerminalDecision, "no_reply")
                 .SetProperty(item => item.TerminalReason, decision.Reason).SetProperty(item => item.TerminalEvidenceJson, decision.EvidenceJson), token);
         if (updated != 1) throw new InvalidOperationException("Inbound no-reply terminal could not be persisted.");

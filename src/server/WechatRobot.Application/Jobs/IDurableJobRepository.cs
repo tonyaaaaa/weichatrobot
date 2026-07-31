@@ -6,6 +6,18 @@ public interface IDurableJobRepository
     Task<LeasedDurableJob?> LeaseNextJobAsync(string jobType, string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken);
     Task CompleteJobAsync(Guid jobId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken);
     Task FailJobAsync(LeasedDurableJob job, string reason, DateTime failedAtUtc, CancellationToken cancellationToken);
+    Task DeferJobAsync(
+        LeasedDurableJob job,
+        string reason,
+        DateTime deferredAtUtc,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken) =>
+        FailJobAsync(job, reason, deferredAtUtc, cancellationToken);
+    Task<bool> RenewJobLeaseAsync(
+        LeasedDurableJob job,
+        DateTime nowUtc,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken) => Task.FromResult(true);
     Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken);
     Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken);
     Task<bool> EnsureSendEnabledAsync(LeasedSendCommand command, CancellationToken cancellationToken) => Task.FromResult(true);
@@ -41,7 +53,13 @@ public enum InboundMessageIngestResult
     Duplicate
 }
 
-public sealed record LeasedDurableJob(Guid Id, string JobType, string PayloadJson, int AttemptCount, string LeaseOwner);
+public sealed record LeasedDurableJob(
+    Guid Id,
+    string JobType,
+    string PayloadJson,
+    int AttemptCount,
+    string LeaseOwner,
+    DateTime? CreatedAtUtc = null);
 
 public sealed record EnqueueSendCommandRequest(Guid RobotConfigId, string WorkToolRobotId, string GroupName, string Text, string IdempotencyKey);
 

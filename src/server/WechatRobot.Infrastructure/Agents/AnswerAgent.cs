@@ -92,7 +92,8 @@ public sealed class AnswerAgent(
                         "Produces one answer using the deterministic server-provided context.",
                     ChatOptions = new ChatOptions
                     {
-                        Instructions = instructions
+                        Instructions = instructions,
+                        MaxOutputTokens = 2048
                     },
                     AIContextProviders =
                     [

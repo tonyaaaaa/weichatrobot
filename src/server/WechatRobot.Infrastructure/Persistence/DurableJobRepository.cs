@@ -140,7 +140,13 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         await transaction.CommitAsync(cancellationToken);
 
         var leased = await database.DurableJobs.AsNoTracking().SingleAsync(job => job.Id == candidate.Id, cancellationToken);
-        return new LeasedDurableJob(leased.Id, leased.JobType, leased.PayloadJson, leased.AttemptCount, leaseOwner);
+        return new LeasedDurableJob(
+            leased.Id,
+            leased.JobType,
+            leased.PayloadJson,
+            leased.AttemptCount,
+            leaseOwner,
+            leased.CreatedAtUtc);
     }
 
     public async Task CompleteJobAsync(Guid jobId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken)
@@ -156,6 +162,60 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             .SetProperty(job => job.UpdatedAtUtc, completedAtUtc), cancellationToken);
         if (updated == 1) await UpdateRelatedMessageStateAsync(jobId, "completed", cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task DeferJobAsync(
+        LeasedDurableJob job,
+        string reason,
+        DateTime deferredAtUtc,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await database.Database.BeginTransactionAsync(
+            cancellationToken);
+        var updated = await database.DurableJobs
+            .Where(value =>
+                value.Id == job.Id
+                && value.Status == "leased"
+                && value.LeaseOwner == job.LeaseOwner)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(value => value.Status, "retrying")
+                .SetProperty(
+                    value => value.NextAttemptAtUtc,
+                    deferredAtUtc.Add(retryDelay))
+                .SetProperty(value => value.LeaseOwner, (string?)null)
+                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
+                .SetProperty(value => value.Version, value => value.Version + 1)
+                .SetProperty(value => value.UpdatedAtUtc, deferredAtUtc),
+                cancellationToken);
+        if (updated == 1)
+            await UpdateRelatedMessageStateAsync(
+                job.Id,
+                "retrying",
+                cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<bool> RenewJobLeaseAsync(
+        LeasedDurableJob job,
+        DateTime nowUtc,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        var updated = await database.DurableJobs
+            .Where(value =>
+                value.Id == job.Id
+                && value.Status == "leased"
+                && value.LeaseOwner == job.LeaseOwner
+                && value.LeaseExpiresAtUtc > nowUtc)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(
+                    value => value.LeaseExpiresAtUtc,
+                    nowUtc.Add(leaseDuration))
+                .SetProperty(value => value.Version, value => value.Version + 1)
+                .SetProperty(value => value.UpdatedAtUtc, nowUtc),
+                cancellationToken);
+        return updated == 1;
     }
 
     public async Task FailJobAsync(LeasedDurableJob job, string reason, DateTime failedAtUtc, CancellationToken cancellationToken)

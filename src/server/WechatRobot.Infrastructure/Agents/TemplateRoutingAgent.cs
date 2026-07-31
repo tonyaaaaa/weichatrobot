@@ -88,7 +88,8 @@ public sealed class TemplateRoutingAgent(
                 new ChatOptions
                 {
                     Tools = [match, continueAnswer],
-                    ToolMode = ChatToolMode.RequireAny
+                    ToolMode = ChatToolMode.RequireAny,
+                    MaxOutputTokens = 128
                 },
                 cancellationToken);
             var calls = response.Messages.SelectMany(item => item.Contents)

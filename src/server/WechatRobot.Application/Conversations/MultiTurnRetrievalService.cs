@@ -93,7 +93,6 @@ public sealed class MultiTurnRetrievalService(
     {
         retrievalOptions.Validate();
         answerOptions.Validate();
-        var result = await agent.RewriteAsync(request, cancellationToken);
         var contextMessageIds = request.Context.Messages
             .Where(message => message.MessageId.HasValue)
             .Select(message => message.MessageId!.Value)
@@ -101,6 +100,25 @@ public sealed class MultiTurnRetrievalService(
         var hasFormalContext =
             contextMessageIds.Length > 0
             || !string.IsNullOrWhiteSpace(request.Context.Summary);
+        if (!hasFormalContext)
+        {
+            var query = BoundOriginalQuestion(request.CurrentQuestion);
+            return new(
+                new RetrievalQueryResult(query, []),
+                null,
+                Audit(
+                    request,
+                    QueryRewriteDecision.Search,
+                    QueryRewriteReasonCode.StandaloneQuestion,
+                    [],
+                    0,
+                    true,
+                    true,
+                    query,
+                    null));
+        }
+
+        var result = await agent.RewriteAsync(request, cancellationToken);
 
         return result.Decision switch
         {

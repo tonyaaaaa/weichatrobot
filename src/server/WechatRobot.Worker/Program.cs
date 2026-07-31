@@ -118,7 +118,10 @@ builder.Services.AddScoped<QdrantKnowledgeService>();
 builder.Services.AddScoped<IKnowledgeService>(services => services.GetRequiredService<QdrantKnowledgeService>());
 builder.Services.AddScoped<KnowledgeIndexService>();
 builder.Services.AddScoped<KnowledgeCandidatePublishProcessor>();
-builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddHttpClient<OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddScoped<IEmbeddingClient>(services =>
+    new RequestCachingEmbeddingClient(
+        services.GetRequiredService<OpenAiCompatibleEmbeddingClient>()));
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
 builder.Services.AddHttpClient<IMemoryVectorIndex, QdrantMemoryVectorIndex>(client =>
 {

@@ -32,6 +32,7 @@ public sealed class QueryRewriteAgentTests
             QueryRewriteReasonCode.ContextualFollowUp,
             result.ReasonCode);
         Assert.Null(result.FailureCode);
+        Assert.Equal(256, client.LastMaxOutputTokens);
     }
 
     [Fact]
@@ -222,6 +223,7 @@ public sealed class QueryRewriteAgentTests
     {
         private int calls;
         public string LastPrompt { get; private set; } = string.Empty;
+        public int? LastMaxOutputTokens { get; private set; }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<AiChatMessage> messages,
@@ -229,6 +231,7 @@ public sealed class QueryRewriteAgentTests
             CancellationToken cancellationToken = default)
         {
             calls++;
+            LastMaxOutputTokens = options?.MaxOutputTokens;
             LastPrompt = string.Join(
                 '\n',
                 messages.SelectMany(message => message.Contents)

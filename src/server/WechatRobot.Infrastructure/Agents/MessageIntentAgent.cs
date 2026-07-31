@@ -119,7 +119,14 @@ public sealed class MessageIntentAgent(
                 """);
             var agent = new ChatClientAgent(
                 client,
-                """
+                new ChatClientAgentOptions
+                {
+                    Name = "MessageIntentAgent",
+                    Description =
+                        "Classifies whether one group message should enter the reply pipeline.",
+                    ChatOptions = new ChatOptions
+                    {
+                        Instructions = """
                 Decide whether the current WeCom group message is directed to the robot.
                 You can only classify intent. Never answer the message and never infer knowledge.
                 Use only the supplied raw same-group messages. Call submit_intent_decision exactly once.
@@ -130,9 +137,10 @@ public sealed class MessageIntentAgent(
                 social_or_acknowledgement, insufficient_context.
                 When uncertain, choose Uncertain and insufficient_context.
                 """,
-                "MessageIntentAgent",
-                "Classifies whether one group message should enter the reply pipeline.",
-                [submit]);
+                        Tools = [submit],
+                        MaxOutputTokens = 128
+                    }
+                });
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(options.IntentTimeoutSeconds));
             await agent.RunAsync(prompt, cancellationToken: timeout.Token);

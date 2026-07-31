@@ -4,6 +4,7 @@ using WechatRobot.Application.Memory;
 using WechatRobot.Application.Models;
 using WechatRobot.Domain.Memory;
 using WechatRobot.Infrastructure.Persistence;
+using WechatRobot.Infrastructure.Persistence.Entities;
 
 namespace WechatRobot.Infrastructure.Memory;
 
@@ -75,8 +76,12 @@ public sealed class MemoryRecallService(
             var ids = scores.Keys.ToArray();
             var normalizedSubject = MemoryScope.NormalizeSubject(subjectKey);
             var now = timeProvider.GetUtcNow().UtcDateTime;
+            var idPredicate = GuidBatchQuery.BuildPredicate<MemoryEntryEntity>(
+                ids,
+                entry => entry.Id);
             var entries = await database.MemoryEntries.AsNoTracking()
-                .Where(x => ids.Contains(x.Id) &&
+                .Where(idPredicate)
+                .Where(x =>
                             x.Status == "active" &&
                             (x.ExpiresAtUtc == null || x.ExpiresAtUtc > now) &&
                             (

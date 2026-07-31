@@ -45,6 +45,7 @@ public sealed class MessageIntentAgentTests
         Assert.Equal("explicitly_addresses_bot", result.ReasonCode);
         Assert.Contains("上一条群消息", client.LastPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("不应泄漏到当前群", client.LastPrompt, StringComparison.Ordinal);
+        Assert.Equal(128, client.LastMaxOutputTokens);
     }
 
     [Fact]
@@ -186,6 +187,7 @@ public sealed class MessageIntentAgentTests
     {
         private int calls;
         public string LastPrompt { get; private set; } = string.Empty;
+        public int? LastMaxOutputTokens { get; private set; }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -193,6 +195,7 @@ public sealed class MessageIntentAgentTests
             CancellationToken cancellationToken = default)
         {
             calls++;
+            LastMaxOutputTokens = options?.MaxOutputTokens;
             LastPrompt = string.Join(
                 '\n',
                 new[] { options?.Instructions ?? string.Empty }

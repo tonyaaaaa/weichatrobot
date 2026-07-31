@@ -59,5 +59,49 @@ public sealed class AnswerOutputFirewallTests
         }
     }
 
+    public static TheoryData<string> InternalToolProtocolMarkers => new()
+    {
+        """
+        ``` <|tool_call|>
+        [{"name":"web_search","arguments":{"query":"法国商务五年签证 说明信 怎么写 模板"}}]
+        <|tool_call|>
+        ```
+        """,
+        "<|tool_response|>{\"results\":[]}",
+        "{\"function_call\":{\"name\":\"web_search\"}}",
+        "{\"tool_calls\":[{\"name\":\"web_search\"}]}"
+    };
+
+    [Theory]
+    [MemberData(nameof(InternalToolProtocolMarkers))]
+    public void Internal_tool_protocol_markers_are_rejected_from_every_model_output(
+        string output)
+    {
+        var firewall = new AnswerOutputFirewall();
+
+        Assert.False(firewall.Validate(output, [Evidence()]).IsSafe);
+        Assert.False(firewall.ValidateUngrounded(output).IsSafe);
+    }
+
+    [Fact]
+    public void Markerless_web_search_tool_arguments_are_rejected()
+    {
+        const string output =
+            """[{"name":"web_search","arguments":{"query":"法国商务五年签证说明信"}}]""";
+        var firewall = new AnswerOutputFirewall();
+
+        Assert.False(firewall.Validate(output, [Evidence()]).IsSafe);
+        Assert.False(firewall.ValidateUngrounded(output).IsSafe);
+    }
+
+    [Fact]
+    public void Normal_answer_that_mentions_search_as_a_user_concept_is_allowed()
+    {
+        var firewall = new AnswerOutputFirewall();
+
+        Assert.True(firewall.ValidateUngrounded(
+            "您可以在法国签证官网查询最新材料清单。").IsSafe);
+    }
+
     private static RetrievalEvidence Evidence() => new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 4, .9, [], "manual.pdf", "safe evidence");
 }

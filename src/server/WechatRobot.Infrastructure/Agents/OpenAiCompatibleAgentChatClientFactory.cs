@@ -5,6 +5,7 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using WechatRobot.Application.Agents;
 using WechatRobot.Application.Security;
+using WechatRobot.Infrastructure.Models;
 using WechatRobot.Infrastructure.Persistence;
 
 namespace WechatRobot.Infrastructure.Agents;
@@ -35,35 +36,17 @@ public sealed class OpenAiCompatibleAgentChatClientFactory(
             Endpoint = OpenAiCompatibleAgentEndpointResolver.ResolveServiceEndpoint(model.BaseUrl),
             NetworkTimeout = TimeSpan.FromSeconds(model.TimeoutSeconds)
         };
-        if (!hasApiKey)
-        {
-            options.Transport = new HttpClientPipelineTransport(
-                new HttpClient(new RemoveAuthorizationHandler())
-                {
-                    Timeout = Timeout.InfiniteTimeSpan
-                });
-        }
+        options.Transport = new HttpClientPipelineTransport(
+            new HttpClient(new OpenAiCompatibleRequestTuningHandler(
+                new SocketsHttpHandler(),
+                model.BaseUrl,
+                model.Model,
+                removeAuthorization: !hasApiKey))
+            {
+                Timeout = Timeout.InfiniteTimeSpan
+            });
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), options);
         return client.GetChatClient(model.Model).AsIChatClient();
     }
 
-    private sealed class RemoveAuthorizationHandler()
-        : DelegatingHandler(new SocketsHttpHandler())
-    {
-        protected override HttpResponseMessage Send(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            request.Headers.Authorization = null;
-            return base.Send(request, cancellationToken);
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            request.Headers.Authorization = null;
-            return base.SendAsync(request, cancellationToken);
-        }
-    }
 }

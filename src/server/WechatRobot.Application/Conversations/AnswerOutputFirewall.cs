@@ -10,9 +10,17 @@ public sealed class AnswerOutputFirewall
         @"(?:\[\s*\d+\s*\]|\b(?:source|sources|reference|references|ref|page)\s*[:：#]?|(?:来源|参考|引用|页码|第\s*\d+\s*页)\s*[:：]?|https?://|www\.|\b[^\s]+\.(?:pdf|docx?|md|txt|xlsx?|pptx?)\b)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+    private static readonly Regex InternalProtocolMarker = new(
+        @"(?:<\s*\|?\s*(?:tool[_\s-]?(?:call|response|result)|function[_\s-]?call)\s*\|?\s*>|[\""'](?:tool[_\s-]?calls?|function[_\s-]?call)[\""']\s*:|<<<\s*(?:UNTRUSTED|ESCAPED_UNTRUSTED)_|\bsystem\s+prompt\b)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex MarkerlessWebSearchCall = new(
+        @"(?:[\""']name[\""']\s*:\s*[\""']web_search[\""']\s*,\s*[\""']arguments[\""']\s*:|[\""']arguments[\""']\s*:\s*\{[\s\S]{0,512}?\}\s*,\s*[\""']name[\""']\s*:\s*[\""']web_search[\""'])",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     public OutputValidationResult Validate(string output, IReadOnlyList<RetrievalEvidence> evidence)
     {
         if (string.IsNullOrWhiteSpace(output)) return new(false, "empty_output");
+        if (ContainsInternalProtocol(output)) return new(false, "internal_instruction_marker");
         if (GenericMarker.IsMatch(output)) return new(false, "generic_source_marker");
         foreach (var item in evidence)
         {
@@ -35,12 +43,14 @@ public sealed class AnswerOutputFirewall
         if (output.Any(character => char.IsControl(character)
             && character is not ('\r' or '\n' or '\t')))
             return new(false, "control_character");
-        if (output.Contains("<<<UNTRUSTED_", StringComparison.Ordinal)
-            || output.Contains("\"tool_calls\"", StringComparison.OrdinalIgnoreCase)
-            || output.Contains("system prompt", StringComparison.OrdinalIgnoreCase))
+        if (ContainsInternalProtocol(output))
             return new(false, "internal_instruction_marker");
         return new(true);
     }
+
+    private static bool ContainsInternalProtocol(string output) =>
+        InternalProtocolMarker.IsMatch(output)
+        || MarkerlessWebSearchCall.IsMatch(output);
 
     private static bool ContainsId(string output, Guid id) => output.Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
         output.Contains(id.ToString("N"), StringComparison.OrdinalIgnoreCase);

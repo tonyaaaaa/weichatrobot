@@ -193,7 +193,10 @@ builder.Services.AddScoped<InboundMessageService>(services => new InboundMessage
 builder.Services.AddApiRateLimits(builder.Environment.IsEnvironment("Testing"));
 builder.Services.AddWechatRobotHealth(builder.Configuration);
 builder.Services.AddHttpClient<IChatCompletionClient, OpenAiCompatibleChatClient>();
-builder.Services.AddHttpClient<IEmbeddingClient, OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddHttpClient<OpenAiCompatibleEmbeddingClient>();
+builder.Services.AddScoped<IEmbeddingClient>(services =>
+    new RequestCachingEmbeddingClient(
+        services.GetRequiredService<OpenAiCompatibleEmbeddingClient>()));
 builder.Services.AddHttpClient<IMemoryVectorIndex, QdrantMemoryVectorIndex>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Qdrant:BaseUrl"] ?? "http://127.0.0.1:6333/");

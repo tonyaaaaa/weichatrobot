@@ -21,6 +21,10 @@ public sealed class OpenAiCompatibleChatClient(HttpClient httpClient, ISecretPro
                     content = message.Content
                 })
             };
+            OpenAiCompatibleRequestTuning.Apply(
+                body,
+                configuration.BaseUrl,
+                configuration.Model);
             if (request.WebSearch is not null)
             {
                 if (!string.Equals(
