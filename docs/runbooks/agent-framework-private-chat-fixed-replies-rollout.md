@@ -18,14 +18,17 @@ Worker；运行中的进程不会自动重新加载。
 
 ## 运行模式
 
-| 配置 | 合法值 | 初始建议 | 作用 |
+| 配置 | 合法值 | 当前默认 | 作用 |
 | --- | --- | --- | --- |
-| `IntentRuntimeMode` | `Legacy`、`Shadow`、`AgentFramework`、`Paused` | `Legacy` | 控制群消息是否进入正式回答链路 |
-| `AnswerRuntimeMode` | `Legacy`、`Shadow`、`AgentFramework` | `Legacy` | 控制回答生成实现 |
+| `IntentRuntimeMode` | `Legacy`、`Shadow`、`AgentFramework`、`Paused` | `AgentFramework` | 控制群消息是否进入正式回答链路 |
+| `AnswerRuntimeMode` | `Legacy`、`Shadow`、`AgentFramework` | `AgentFramework` | 控制回答生成实现 |
 | `PrivateChatRuntimeMode` | `Disabled`、`AgentFramework` | `AgentFramework` | 控制私聊问答和入库 |
 | `TemplateRoutingRuntimeMode` | `Disabled`、`Shadow`、`AgentFramework` | `AgentFramework` | 控制固定模板识别 |
 
 推荐上线顺序：
+
+仓库默认配置已在双通道真实模型、Embedding、Qdrant 与回答链路验收后统一切换为
+`AgentFramework`。新环境首次部署或异常回退时，仍按以下顺序逐项启用。
 
 1. 首次部署：Intent=`Legacy`、Answer=`Legacy`、PrivateChat=`Disabled`、
    TemplateRouting=`Disabled`。

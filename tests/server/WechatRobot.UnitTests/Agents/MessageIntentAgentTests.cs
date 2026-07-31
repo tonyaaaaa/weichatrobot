@@ -80,6 +80,57 @@ public sealed class MessageIntentAgentTests
         Assert.Equal("intent_agent_uncertain", result.FailureCode);
     }
 
+    [Fact]
+    public async Task Provider_aliases_are_normalized_to_the_typed_intent_contract()
+    {
+        await using var database = Database();
+        var modelId = Guid.NewGuid();
+        var robotId = Guid.NewGuid();
+        var groupId = Guid.NewGuid();
+        var currentId = Guid.NewGuid();
+        database.ModelConfigs.Add(Model(modelId));
+        database.ConversationMessages.Add(
+            Message(
+                robotId,
+                groupId,
+                currentId,
+                "张三",
+                "机器人，请帮我查签证进度",
+                DateTime.UtcNow));
+        await database.SaveChangesAsync(
+            TestContext.Current.CancellationToken);
+        var client = new IntentChatClient(
+            "Yes",
+            "explicitly_addresses_bot",
+            "explicitly_addresses_bot",
+            .98m);
+        var agent = new MessageIntentAgent(
+            database,
+            new StubFactory(client),
+            Options.Create(new AgentRuntimeOptions
+            {
+                IntentRuntimeMode = IntentRuntimeMode.AgentFramework,
+                IntentMinimumConfidence = .8m
+            }));
+
+        var result = await agent.DecideAsync(
+            new MessageIntentRequest(currentId, groupId, true),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(IntentDecision.Reply, result.Decision);
+        Assert.Equal(IntentCategory.DirectedToBot, result.Category);
+        Assert.Equal("explicitly_addresses_bot", result.ReasonCode);
+        Assert.Null(result.FailureCode);
+        Assert.Contains(
+            "Reply, NoReply, or Uncertain",
+            client.LastPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DirectedToBot, FollowUpToBot, HumanConversation, SocialChatter, or Uncertain",
+            client.LastPrompt,
+            StringComparison.Ordinal);
+    }
+
     private static WechatRobotDbContext Database() =>
         new(new DbContextOptionsBuilder<WechatRobotDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -142,8 +193,12 @@ public sealed class MessageIntentAgentTests
             CancellationToken cancellationToken = default)
         {
             calls++;
-            LastPrompt = string.Join('\n', messages.SelectMany(x => x.Contents)
-                .OfType<TextContent>().Select(x => x.Text));
+            LastPrompt = string.Join(
+                '\n',
+                new[] { options?.Instructions ?? string.Empty }
+                    .Concat(messages.SelectMany(x => x.Contents)
+                        .OfType<TextContent>()
+                        .Select(x => x.Text)));
             if (calls == 1)
             {
                 return Task.FromResult(new ChatResponse(new ChatMessage(

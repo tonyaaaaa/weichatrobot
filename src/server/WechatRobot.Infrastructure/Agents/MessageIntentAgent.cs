@@ -111,13 +111,20 @@ public sealed class MessageIntentAgent(
                     return new { accepted = true };
                 },
                 "submit_intent_decision",
-                "Submit exactly one final intent decision. Do not provide free text.");
+                """
+                Submit exactly one final intent decision. Do not provide free text.
+                decision must be Reply, NoReply, or Uncertain.
+                category must be DirectedToBot, FollowUpToBot, HumanConversation,
+                SocialChatter, or Uncertain.
+                """);
             var agent = new ChatClientAgent(
                 client,
                 """
                 Decide whether the current WeCom group message is directed to the robot.
                 You can only classify intent. Never answer the message and never infer knowledge.
                 Use only the supplied raw same-group messages. Call submit_intent_decision exactly once.
+                decision must be Reply, NoReply, or Uncertain.
+                category must be DirectedToBot, FollowUpToBot, HumanConversation, SocialChatter, or Uncertain.
                 Allowed reasons: explicitly_addresses_bot, mentions_bot_in_question,
                 continues_recent_bot_turn, asks_group_member, human_to_human_exchange,
                 social_or_acknowledgement, insufficient_context.
@@ -131,10 +138,11 @@ public sealed class MessageIntentAgent(
             await agent.RunAsync(prompt, cancellationToken: timeout.Token);
 
             if (submitted is null
-                || !Enum.TryParse<IntentDecision>(submitted.Decision, true, out var decision)
-                || !Enum.TryParse<IntentCategory>(submitted.Category, true, out var category)
+                || !TryNormalizeDecision(submitted.Decision, out var decision)
+                || !TryNormalizeCategory(submitted.Category, out var category)
                 || !ReasonCodes.Contains(submitted.ReasonCode)
-                || submitted.Confidence is < 0 or > 1)
+                || submitted.Confidence is < 0 or > 1
+                || !IsConsistent(decision, category, submitted.ReasonCode))
             {
                 return Failed("intent_agent_invalid_output", started, modelId, modelVersion);
             }
@@ -223,6 +231,98 @@ public sealed class MessageIntentAgent(
 
     private static int Elapsed(long started) =>
         (int)Math.Min(int.MaxValue, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+
+    private static bool TryNormalizeDecision(
+        string value,
+        out IntentDecision decision)
+    {
+        if (Enum.TryParse(value?.Trim(), true, out decision))
+        {
+            return true;
+        }
+
+        switch (value?.Trim().ToLowerInvariant())
+        {
+            case "yes":
+                decision = IntentDecision.Reply;
+                return true;
+            case "no":
+                decision = IntentDecision.NoReply;
+                return true;
+            default:
+                decision = default;
+                return false;
+        }
+    }
+
+    private static bool TryNormalizeCategory(
+        string value,
+        out IntentCategory category)
+    {
+        if (Enum.TryParse(value?.Trim(), true, out category))
+        {
+            return true;
+        }
+
+        category = value?.Trim().ToLowerInvariant() switch
+        {
+            "directed_to_bot"
+                or "explicitly_addresses_bot"
+                or "mentions_bot_in_question" =>
+                IntentCategory.DirectedToBot,
+            "follow_up_to_bot"
+                or "continues_recent_bot_turn" =>
+                IntentCategory.FollowUpToBot,
+            "human_conversation"
+                or "asks_group_member"
+                or "human_to_human_exchange" =>
+                IntentCategory.HumanConversation,
+            "social_chatter"
+                or "social_or_acknowledgement" =>
+                IntentCategory.SocialChatter,
+            "insufficient_context" =>
+                IntentCategory.Uncertain,
+            _ => default
+        };
+        return value?.Trim().ToLowerInvariant() is
+            "directed_to_bot"
+            or "explicitly_addresses_bot"
+            or "mentions_bot_in_question"
+            or "follow_up_to_bot"
+            or "continues_recent_bot_turn"
+            or "human_conversation"
+            or "asks_group_member"
+            or "human_to_human_exchange"
+            or "social_chatter"
+            or "social_or_acknowledgement"
+            or "insufficient_context";
+    }
+
+    private static bool IsConsistent(
+        IntentDecision decision,
+        IntentCategory category,
+        string reasonCode) =>
+        reasonCode switch
+        {
+            "explicitly_addresses_bot"
+                or "mentions_bot_in_question" =>
+                decision == IntentDecision.Reply
+                && category == IntentCategory.DirectedToBot,
+            "continues_recent_bot_turn" =>
+                decision == IntentDecision.Reply
+                && category == IntentCategory.FollowUpToBot,
+            "asks_group_member"
+                or "human_to_human_exchange" =>
+                decision == IntentDecision.NoReply
+                && category == IntentCategory.HumanConversation,
+            "social_or_acknowledgement" =>
+                decision == IntentDecision.NoReply
+                && category == IntentCategory.SocialChatter,
+            "insufficient_context" =>
+                decision == IntentDecision.Uncertain
+                && category == IntentCategory.Uncertain,
+            _ => false
+        };
 
     private sealed record IntentToolResult(
         string Decision,

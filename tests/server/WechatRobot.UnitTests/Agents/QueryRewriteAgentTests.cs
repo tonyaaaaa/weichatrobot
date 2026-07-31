@@ -35,6 +35,50 @@ public sealed class QueryRewriteAgentTests
     }
 
     [Fact]
+    public async Task Literal_null_clarification_is_normalized_for_search_submission()
+    {
+        var agent = new QueryRewriteAgent(new StubFactory(
+            new RewriteChatClient(
+                "Search",
+                "日本三年签证是否可以办理？",
+                "null",
+                "standalone_question")));
+
+        var result = await agent.RewriteAsync(
+            Request(History()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(QueryRewriteDecision.Search, result.Decision);
+        Assert.Equal(
+            "日本三年签证是否可以办理？",
+            result.StandaloneQuery);
+        Assert.Null(result.ClarificationQuestion);
+        Assert.Null(result.FailureCode);
+    }
+
+    [Fact]
+    public async Task Literal_null_query_is_normalized_for_clarification_submission()
+    {
+        var agent = new QueryRewriteAgent(new StubFactory(
+            new RewriteChatClient(
+                "Clarification",
+                "null",
+                "请确认您咨询的具体签证类型？",
+                "ambiguous_reference")));
+
+        var result = await agent.RewriteAsync(
+            Request(History()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(QueryRewriteDecision.Clarification, result.Decision);
+        Assert.Null(result.StandaloneQuery);
+        Assert.Equal(
+            "请确认您咨询的具体签证类型？",
+            result.ClarificationQuestion);
+        Assert.Null(result.FailureCode);
+    }
+
+    [Fact]
     public async Task Prompt_contains_only_formal_context_with_participant_labels()
     {
         var client = new RewriteChatClient(

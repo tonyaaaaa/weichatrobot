@@ -38,8 +38,8 @@ public sealed class QueryRewriteAgent(IAgentChatClientFactory clients)
                     submissionCount++;
                     submitted = new(
                         decision,
-                        standaloneQuery,
-                        clarificationQuestion,
+                        NormalizeOptionalToolArgument(standaloneQuery),
+                        NormalizeOptionalToolArgument(clarificationQuestion),
                         reasonCode);
                     return new { accepted = submissionCount == 1 };
                 },
@@ -193,6 +193,14 @@ public sealed class QueryRewriteAgent(IAgentChatClientFactory clients)
             reasonCode,
             Elapsed(started),
             failureCode);
+
+    private static string? NormalizeOptionalToolArgument(string? value) =>
+        string.Equals(
+            value?.Trim(),
+            "null",
+            StringComparison.OrdinalIgnoreCase)
+            ? null
+            : value;
 
     private static int Elapsed(long started) =>
         (int)Math.Min(
