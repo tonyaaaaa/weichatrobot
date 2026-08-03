@@ -44,6 +44,22 @@ public sealed class ChunkingService
         var result = new List<ChunkPreview>();
         foreach (var block in blocks)
         {
+            var headingPrefix = SearchableHeadingPrefix(block.Headings);
+            if (headingPrefix is not null)
+            {
+                context?.Checkpoint("chunk-heading-prefix");
+                context?.Reserve(checked((long)headingPrefix.Length * 64), "chunk-heading-prefix");
+            }
+            var headingPrefixTokens = headingPrefix is null ? 0 : TokenSpans(headingPrefix).Count;
+            var maximumContentTokens = policy.MaximumTokens - headingPrefixTokens;
+            if (maximumContentTokens < 1)
+                throw new ArgumentException("The heading path leaves no room for chunk content within the maximum token limit.", nameof(blocks));
+            var targetContentTokens = Math.Min(
+                maximumContentTokens,
+                Math.Max(1, policy.TargetTokens - headingPrefixTokens));
+            var overlapContentTokens = Math.Min(
+                policy.OverlapTokens,
+                Math.Max(0, targetContentTokens - 1));
             context?.Checkpoint("chunk-split-before");
             context?.Reserve(checked((long)block.Text.Length * 34), "chunk-sections");
             var sections = Split(block.Text, policy).ToArray();
@@ -61,10 +77,11 @@ public sealed class ChunkingService
                 while (start < tokens.Count)
                 {
                     context?.Checkpoint("chunk");
-                    var take = Math.Min(policy.TargetTokens, Math.Min(policy.MaximumTokens, tokens.Count - start));
+                    var take = Math.Min(targetContentTokens, Math.Min(maximumContentTokens, tokens.Count - start));
                     var first = tokens[start];
                     var last = tokens[start + take - 1];
-                    var text = section[first.Index..(last.Index + last.Length)].Trim();
+                    var body = section[first.Index..(last.Index + last.Length)].Trim();
+                    var text = headingPrefix is null ? body : $"{headingPrefix}\n{body}";
                     var overlapCharacters = start == 0 ? 0 : Math.Max(0, previousEnd - first.Index);
                     context?.Reserve(checked((long)text.Length * sizeof(char) + 256), "chunk-output");
                     context?.AddResultCharacters(text.Length, "chunk");
@@ -72,7 +89,7 @@ public sealed class ChunkingService
                         block.IsTable, block.TableRows, block.TableColumns, OverlapPrefixCharacters: overlapCharacters));
                     previousEnd = last.Index + last.Length;
                     if (start + take >= tokens.Count) break;
-                    start += Math.Max(1, take - policy.OverlapTokens);
+                    start += Math.Max(1, take - overlapContentTokens);
                 }
             }
         }
@@ -116,6 +133,11 @@ public sealed class ChunkingService
 
     internal static IReadOnlyList<string> Tokenize(string text) => TokenSpans(text)
         .Select(match => match.Value).ToArray();
+    internal static string? SearchableHeadingPrefix(IReadOnlyList<string> headings)
+    {
+        var path = headings.Where(heading => !string.IsNullOrWhiteSpace(heading)).ToArray();
+        return path.Length == 0 ? null : $"标题路径：{string.Join(" > ", path)}";
+    }
     private static IReadOnlyList<Match> TokenSpans(string text) => Regex.Matches(text, @"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]|[\p{L}\p{N}]+|[^\s]", RegexOptions.CultureInvariant, RegexTimeout)
         .ToArray();
 }
@@ -126,7 +148,7 @@ public sealed class ChunkPreviewEditor
     public IReadOnlyList<ChunkPreview> Edit(IReadOnlyList<ChunkPreview> previews, Guid id, string text)
     {
         EnsureExists(previews, id);
-        return Normalize(previews.Select(item => item.Id == id ? item with { Text = Required(text) } : item));
+        return Normalize(previews.Select(item => item.Id == id ? item with { Text = RequiredWithHeading(item, text) } : item));
     }
     public IReadOnlyList<ChunkPreview> Delete(IReadOnlyList<ChunkPreview> previews, Guid id)
     {
@@ -141,10 +163,16 @@ public sealed class ChunkPreviewEditor
         {
             if (item.Id != id) { result.Add(item); continue; }
             if (offset <= 0 || offset >= item.Text.Length) throw new ArgumentOutOfRangeException(nameof(offset));
-            if (item.OverlapPrefixCharacters > 0 && offset < item.OverlapPrefixCharacters)
+            var headingPrefixCharacters = SearchableHeadingPrefixCharacters(item);
+            if (headingPrefixCharacters > 0 && offset <= headingPrefixCharacters)
+                throw new InvalidOperationException("A headed chunk cannot be split inside its searchable heading prefix.");
+            if (item.OverlapPrefixCharacters > 0 && offset < headingPrefixCharacters + item.OverlapPrefixCharacters)
                 throw new InvalidOperationException("An overlapped chunk cannot be split inside its overlap prefix.");
             result.Add(item with { Text = item.Text[..offset] });
-            result.Add(item with { Id = Guid.NewGuid(), Text = item.Text[offset..], OverlapPrefixCharacters = 0 });
+            var secondText = headingPrefixCharacters == 0
+                ? item.Text[offset..]
+                : $"{item.Text[..headingPrefixCharacters]}{item.Text[offset..]}";
+            result.Add(item with { Id = Guid.NewGuid(), Text = secondText, OverlapPrefixCharacters = 0 });
         }
         return Normalize(result);
     }
@@ -159,11 +187,14 @@ public sealed class ChunkPreviewEditor
             throw new InvalidOperationException("Previews with different source metadata cannot be merged.");
         if (!QaCompatible(first, second)) throw new InvalidOperationException("QA previews with different semantics cannot be merged.");
         var suffix = second.Text;
+        var secondHeadingPrefixCharacters = SearchableHeadingPrefixCharacters(second);
+        if (secondHeadingPrefixCharacters > 0)
+            suffix = second.Text[secondHeadingPrefixCharacters..];
         if (second.OverlapPrefixCharacters > 0)
         {
-            if (second.OverlapPrefixCharacters > second.Text.Length || !first.Text.EndsWith(second.Text[..second.OverlapPrefixCharacters], StringComparison.Ordinal))
+            if (second.OverlapPrefixCharacters > suffix.Length || !first.Text.EndsWith(suffix[..second.OverlapPrefixCharacters], StringComparison.Ordinal))
                 throw new InvalidOperationException("The configured chunk overlap is ambiguous and cannot be merged safely.");
-            suffix = second.Text[second.OverlapPrefixCharacters..];
+            suffix = suffix[second.OverlapPrefixCharacters..];
         }
         return Normalize(previews.Where(item => item.Id != secondId).Select(item => item.Id == firstId ? item with { Text = $"{first.Text}{suffix}" } : item));
     }
@@ -187,9 +218,26 @@ public sealed class ChunkPreviewEditor
         if (text.Length > MaximumPreviewCharacters) throw new ArgumentException("Preview text exceeds the configured safety limit.");
         return text;
     }
+    private static string RequiredWithHeading(ChunkPreview preview, string text)
+    {
+        var value = Required(text);
+        var prefix = ChunkingService.SearchableHeadingPrefix(preview.Headings);
+        if (prefix is null) return value;
+        var searchablePrefix = $"{prefix}\n";
+        return value.StartsWith(searchablePrefix, StringComparison.Ordinal)
+            ? value
+            : $"{searchablePrefix}{value}";
+    }
     private static void EnsureExists(IReadOnlyList<ChunkPreview> previews, Guid id)
     {
         if (!previews.Any(item => item.Id == id)) throw new KeyNotFoundException();
+    }
+    private static int SearchableHeadingPrefixCharacters(ChunkPreview preview)
+    {
+        var prefix = ChunkingService.SearchableHeadingPrefix(preview.Headings);
+        if (prefix is null) return 0;
+        var value = $"{prefix}\n";
+        return preview.Text.StartsWith(value, StringComparison.Ordinal) ? value.Length : 0;
     }
     private static bool QaCompatible(ChunkPreview first, ChunkPreview second)
     {

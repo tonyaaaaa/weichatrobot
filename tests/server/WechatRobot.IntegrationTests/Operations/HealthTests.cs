@@ -219,6 +219,26 @@ public sealed class HealthTests
         Assert.Equal(policy, endpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName);
     }
 
+    [Theory]
+    [InlineData("POST", "/api/knowledge/documents", RateLimitPolicies.Upload)]
+    [InlineData("GET", "/api/knowledge/documents", RateLimitPolicies.Ordinary)]
+    [InlineData("GET", "/api/knowledge/documents/id/versions", RateLimitPolicies.Ordinary)]
+    public void Global_rate_limit_classification_reserves_upload_limits_for_uploads(
+        string method,
+        string path,
+        string expectedPolicy)
+    {
+        var classify = typeof(RateLimitPolicies).GetMethod(
+            "Classify",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        var result = ((string Policy, int Permits))classify.Invoke(
+            null,
+            [new Microsoft.AspNetCore.Http.PathString(path), method])!;
+
+        Assert.Equal(expectedPolicy, result.Policy);
+    }
+
     private static async Task AssertReadyAsync(
         IReadOnlyCollection<IComponentHealthProbe> probes,
         HttpStatusCode expectedCode,

@@ -5,7 +5,7 @@ namespace WechatRobot.Application.Knowledge;
 public sealed record KnowledgeIndexOptions(
     int Dimension,
     VectorDistance Distance,
-    int BatchSize = 32,
+    int BatchSize = 20,
     int MaximumAttempts = 3,
     int MaximumCollectionsPerSearch = 64)
 {

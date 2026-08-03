@@ -10,11 +10,13 @@
   </Folder>
   <Folder Name="/tests/" />
   <Folder Name="/tools/">
+    <Project Path="tools/WechatRobot.LegacyVisaImport/WechatRobot.LegacyVisaImport.csproj" />
     <Project Path="tools/WechatRobot.WorkToolEvidence/WechatRobot.WorkToolEvidence.csproj" />
   </Folder>
   <Folder Name="/tests/server/">
     <Project Path="tests/server/WechatRobot.ContractTests/WechatRobot.ContractTests.csproj" />
     <Project Path="tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj" />
+    <Project Path="tests/server/WechatRobot.LegacyVisaImportTests/WechatRobot.LegacyVisaImportTests.csproj" />
     <Project Path="tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj" />
   </Folder>
 </Solution>

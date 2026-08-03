@@ -16,6 +16,48 @@ public sealed class ChunkingServiceTests
         Assert.Contains(chunks[0].Text.Split(' ').TakeLast(5).First(), chunks[1].Text);
     }
 
+    [Fact]
+    public void Smart_policy_prefixes_every_headed_chunk_with_searchable_path_within_maximum()
+    {
+        var chunks = new ChunkingService().Generate(
+            [new ParsedBlock("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉", null, ["日本", "护照"], false, null, null)],
+            new ChunkPolicy(ChunkPolicyKind.Smart, TargetTokens: 15, OverlapTokens: 2, MaximumTokens: 16));
+
+        Assert.True(chunks.Count > 1);
+        Assert.All(chunks, chunk =>
+        {
+            Assert.StartsWith("标题路径：日本 > 护照\n", chunk.Text, StringComparison.Ordinal);
+            Assert.Equal(["日本", "护照"], chunk.Headings);
+            Assert.InRange(chunk.EstimatedTokens, 1, 16);
+            Assert.Equal(1, chunk.Text.Split("标题路径：", StringSplitOptions.None).Length - 1);
+        });
+    }
+
+    [Fact]
+    public void Smart_policy_keeps_unheaded_text_unchanged()
+    {
+        var chunk = Assert.Single(new ChunkingService().Generate(
+            [new ParsedBlock("普通正文", null, [], false, null, null)],
+            new ChunkPolicy(ChunkPolicyKind.Smart)));
+
+        Assert.Equal("普通正文", chunk.Text);
+    }
+
+    [Fact]
+    public void Merge_round_trips_generated_headed_chunks_without_duplicate_prefix()
+    {
+        var chunks = new ChunkingService().Generate(
+            [new ParsedBlock("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen", 1, ["Guide", "Passport"], false, null, null)],
+            new ChunkPolicy(ChunkPolicyKind.Smart, TargetTokens: 12, OverlapTokens: 2, MaximumTokens: 14));
+
+        Assert.True(chunks.Count > 1);
+        var merged = new ChunkPreviewEditor().Merge(chunks, chunks[0].Id, chunks[1].Id);
+
+        Assert.StartsWith("标题路径：Guide > Passport\n", merged[0].Text, StringComparison.Ordinal);
+        Assert.Equal(1, merged[0].Text.Split("标题路径：", StringSplitOptions.None).Length - 1);
+        Assert.Contains("one two three", merged[0].Text, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(ChunkPolicyKind.Separator, "--", null)]
     [InlineData(ChunkPolicyKind.Regex, null, "\\|+")]
@@ -59,10 +101,11 @@ public sealed class ChunkingServiceTests
             new ChunkPreview(Guid.NewGuid(), 1, "丙丁", 3, ["次章"], true, 1, 1)
         };
         var edited = editor.Edit(source, source[0].Id, "甲乙改");
-        var split = editor.Split(edited, source[0].Id, 2);
+        var splitOffset = edited[0].Text.IndexOf("甲乙改", StringComparison.Ordinal) + 2;
+        var split = editor.Split(edited, source[0].Id, splitOffset);
         var merged = editor.Merge(split, split[0].Id, split[1].Id);
         var deleted = editor.Delete(merged, source[1].Id);
-        Assert.Equal("甲乙改", Assert.Single(deleted).Text);
+        Assert.Equal("标题路径：章\n甲乙改", Assert.Single(deleted).Text);
         Assert.Equal(2, deleted[0].PageNumber);
         Assert.Equal(["章"], deleted[0].Headings);
         Assert.Equal(0, deleted[0].Sequence);
@@ -84,6 +127,22 @@ public sealed class ChunkingServiceTests
         var preview = new ChunkPreview(Guid.NewGuid(), 0, "old", null, [], false, null, null);
         var edited = new ChunkPreviewEditor().Edit([preview], preview.Id, "  alpha beta  \n");
         Assert.Equal("  alpha beta  \n", Assert.Single(edited).Text);
+    }
+
+    [Fact]
+    public void Edit_restores_searchable_heading_prefix_without_duplicating_it()
+    {
+        var preview = new ChunkPreview(
+            Guid.NewGuid(), 0, "标题路径：指南 > 护照\n原正文", null,
+            ["指南", "护照"], false, null, null);
+        var editor = new ChunkPreviewEditor();
+
+        var bodyOnly = Assert.Single(editor.Edit([preview], preview.Id, "更新正文"));
+        var alreadyPrefixed = Assert.Single(editor.Edit([preview], preview.Id, "标题路径：指南 > 护照\n再次更新"));
+
+        Assert.Equal("标题路径：指南 > 护照\n更新正文", bodyOnly.Text);
+        Assert.Equal("标题路径：指南 > 护照\n再次更新", alreadyPrefixed.Text);
+        Assert.Equal(1, alreadyPrefixed.Text.Split("标题路径：", StringSplitOptions.None).Length - 1);
     }
 
     [Fact]

@@ -110,11 +110,18 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
                 .SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
         if (jobUpdated == 0)
         {
-            var alreadyUploaded = await database.KnowledgeDocumentVersions.AsNoTracking().AnyAsync(version => version.Id == upload.VersionId && version.Status == "uploaded", cancellationToken);
             if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
             if (upload.AuditActor is not null)
                 await ThrowManagementConflictAsync(upload.DocumentId, cancellationToken);
-            return alreadyUploaded;
+            return await database.KnowledgeDocumentVersions.AsNoTracking().AnyAsync(
+                version => version.Id == upload.VersionId &&
+                    (version.Status == "uploaded" ||
+                     version.Status == "preview" ||
+                     version.Status == "approved" ||
+                     version.Status == "indexing" ||
+                     version.Status == "indexed" ||
+                     version.Status == "active"),
+                cancellationToken);
         }
 
         var documentUpdated = await database.KnowledgeDocuments.Where(document =>
@@ -464,7 +471,7 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
             if (upload.AuditActor is not null) throw Concurrency(document);
             return false;
         }
-        if (version.Status == "uploaded")
+        if (IsUploadedOrLater(version.Status))
         {
             if (upload.AuditActor is not null && document.StateVersion != upload.DocumentStateVersion)
                 throw Concurrency(document);
@@ -485,6 +492,9 @@ public sealed class KnowledgeDocumentStore(WechatRobotDbContext database) : IKno
         await database.SaveChangesAsync(cancellationToken);
         return true;
     }
+
+    private static bool IsUploadedOrLater(string status) => status is
+        "uploaded" or "preview" or "approved" or "indexing" or "indexed" or "active";
 
     private async Task MarkFailedTrackedAsync(PendingDocumentUpload upload, CancellationToken cancellationToken)
     {

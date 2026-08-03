@@ -230,6 +230,7 @@ public sealed class KnowledgeDocumentAdministrationQueryTests
         Assert.Equal(2, current.OcrPageCount);
         Assert.Equal(1, current.OcrFailedPageCount);
         Assert.True(current.HasPublicObject);
+        Assert.Equal(currentVersion.Sha256, current.Sha256);
         var currentTag = Assert.Single(current.Tags);
         Assert.Equal(tag.Id, currentTag.Id);
         Assert.Equal("签证进度", currentTag.Name);

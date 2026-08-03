@@ -54,6 +54,7 @@ public sealed record KnowledgeDocumentVersionSummary(
     string SafeFileName,
     string ContentType,
     long SizeBytes,
+    string Sha256,
     string Status,
     string? FailureReason,
     bool IsPublished,

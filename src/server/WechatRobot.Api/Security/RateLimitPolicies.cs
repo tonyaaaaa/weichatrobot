@@ -38,7 +38,9 @@ public static class RateLimitPolicies
                     return RateLimitPartition.GetNoLimiter("liveness");
                 }
 
-                var (policy, permits) = Classify(context.Request.Path);
+                var (policy, permits) = Classify(
+                    context.Request.Path,
+                    context.Request.Method);
                 return Fixed($"{policy}:{Partition(context)}", permits);
             });
             options.AddPolicy(Login, context => Fixed($"login:{Partition(context)}", 5));
@@ -51,10 +53,14 @@ public static class RateLimitPolicies
         return services;
     }
 
-    private static (string Policy, int Permits) Classify(PathString path) =>
+    private static (string Policy, int Permits) Classify(
+        PathString path,
+        string method) =>
         path.StartsWithSegments("/api/auth/login") ? (Login, 5) :
         path.StartsWithSegments("/api/worktool/callback") ? (Callback, 50) :
-        path.StartsWithSegments("/api/knowledge/documents") ? (Upload, 10) :
+        string.Equals(method, HttpMethods.Post, StringComparison.OrdinalIgnoreCase) &&
+        (path.Equals("/api/knowledge/documents") ||
+         path.Equals("/api/knowledge/documents/")) ? (Upload, 10) :
         path.StartsWithSegments("/api/admin/worktool") ? (WorkToolCommands, 10) :
         (Ordinary, 120);
 

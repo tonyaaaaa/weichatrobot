@@ -339,6 +339,43 @@ public sealed class DocumentUploadTests : IClassFixture<DocumentUploadApiFactory
     }
 
     [Fact]
+    public async Task Concurrent_upload_completion_is_idempotent_after_version_advances_to_preview()
+    {
+        _factory.Storage.Reset();
+        _factory.Storage.CancelBeforePut = true;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DocumentUploadService>();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.UploadAsync(
+            null,
+            "concurrent-upload.txt",
+            "text/plain",
+            new MemoryStream("concurrent-upload-content"u8.ToArray()),
+            TestContext.Current.CancellationToken));
+        var db = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var version = await db.KnowledgeDocumentVersions
+            .OrderByDescending(item => item.CreatedAtUtc)
+            .FirstAsync(TestContext.Current.CancellationToken);
+        var store = scope.ServiceProvider.GetRequiredService<IKnowledgeDocumentStore>();
+        var pending = await store.GetRecoverableAsync(version.Id, TestContext.Current.CancellationToken);
+        Assert.NotNull(pending);
+        var stored = new StoredObject(
+            pending!.ObjectKey,
+            new Uri($"https://public.example.test/{pending.ObjectKey}"));
+
+        Assert.True(await store.MarkUploadedAsync(
+            pending, stored, TestContext.Current.CancellationToken));
+        db.ChangeTracker.Clear();
+        version = await db.KnowledgeDocumentVersions.SingleAsync(
+            item => item.Id == version.Id,
+            TestContext.Current.CancellationToken);
+        version.Status = "preview";
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(await store.MarkUploadedAsync(
+            pending, stored, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Upload_retry_and_delete_enforce_the_role_matrix()
     {
         _factory.Storage.Reset();

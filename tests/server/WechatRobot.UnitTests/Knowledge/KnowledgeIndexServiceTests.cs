@@ -9,6 +9,14 @@ public sealed class KnowledgeIndexServiceTests
     private static readonly Guid VersionId = Guid.Parse("20000000-0000-0000-0000-000000000001");
 
     [Fact]
+    public void Default_embedding_batch_size_fits_qwen37_synchronous_limit()
+    {
+        var options = new KnowledgeIndexOptions(1024, VectorDistance.Cosine);
+
+        Assert.Equal(20, options.BatchSize);
+    }
+
+    [Fact]
     public async Task Batches_points_and_activates_only_after_every_batch_succeeds()
     {
         var knowledge = new FakeKnowledgeService(Work(5));
