@@ -60,7 +60,7 @@ public sealed class KnowledgeVectorMigrationRunnerTests
 
         var source = new VectorCollection(document.ActiveCollectionName, 3, VectorDistance.Cosine);
         var point = new VectorPoint(Guid.NewGuid(), document.Id, version.Id, [Guid.NewGuid()], [1, 0, 0], true, 1);
-        var vectors = new InMemoryMigrationVectorStore(source, point);
+        var vectors = new InMemoryMigrationVectorStore(source, point, transientInspectFailures: 1);
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "WechatRobotTests", Guid.NewGuid().ToString("N"));
         var checkpointPath = Path.Combine(temporaryDirectory, "checkpoint.json");
         try
@@ -94,8 +94,12 @@ public sealed class KnowledgeVectorMigrationRunnerTests
         }
     }
 
-    private sealed class InMemoryMigrationVectorStore(VectorCollection source, VectorPoint point) : IVectorStore
+    private sealed class InMemoryMigrationVectorStore(
+        VectorCollection source,
+        VectorPoint point,
+        int transientInspectFailures = 0) : IVectorStore
     {
+        private int _remainingInspectFailures = transientInspectFailures;
         private readonly Dictionary<string, Dictionary<Guid, VectorPoint>> _collections = new(StringComparer.Ordinal)
         {
             [source.Name] = new() { [point.Id] = point }
@@ -116,10 +120,14 @@ public sealed class KnowledgeVectorMigrationRunnerTests
             return Task.CompletedTask;
         }
 
-        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken cancellationToken) =>
-            Task.FromResult<VectorCollection?>(_collections.ContainsKey(collectionName)
+        public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken cancellationToken)
+        {
+            if (_remainingInspectFailures-- > 0)
+                throw new VectorStoreUnavailableException("transient test failure");
+            return Task.FromResult<VectorCollection?>(_collections.ContainsKey(collectionName)
                 ? collectionName == source.Name ? source : new(collectionName, source.Dimension, source.Distance)
                 : null);
+        }
 
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<VectorPointMetadata>>(_collections[collection.Name].Values

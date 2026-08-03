@@ -35,20 +35,36 @@ public sealed class KnowledgeVectorMigrationRunner(
             .Where(item => !EmbeddingSpaceContract.IsSharedCollectionName(item.ActiveCollectionName))
             .ToArray();
         var versionIds = legacyDocuments.Select(item => item.ActiveVersionId!.Value).ToArray();
-        var versions = await database.KnowledgeDocumentVersions.AsNoTracking()
-            .Where(item => versionIds.Contains(item.Id))
-            .ToDictionaryAsync(item => item.Id, token);
-        var jobs = await database.KnowledgeIndexJobs.AsNoTracking()
-            .Where(item => versionIds.Contains(item.KnowledgeDocumentVersionId)
-                && item.ModelConfigurationId != null
-                && item.Status == "completed")
-            .OrderByDescending(item => item.UpdatedAtUtc)
-            .ToArrayAsync(token);
+        var versions = new Dictionary<Guid, KnowledgeDocumentVersionEntity>();
+        var jobs = new List<KnowledgeIndexJobEntity>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(versionIds))
+        {
+            var versionPredicate = GuidBatchQuery.BuildPredicate<KnowledgeDocumentVersionEntity>(batch, item => item.Id);
+            foreach (var version in await database.KnowledgeDocumentVersions.AsNoTracking()
+                         .Where(versionPredicate)
+                         .ToArrayAsync(token))
+                versions.TryAdd(version.Id, version);
+
+            var jobPredicate = GuidBatchQuery.BuildPredicate<KnowledgeIndexJobEntity>(batch, item => item.KnowledgeDocumentVersionId);
+            jobs.AddRange(await database.KnowledgeIndexJobs.AsNoTracking()
+                .Where(jobPredicate)
+                .Where(item => item.ModelConfigurationId != null && item.Status == "completed")
+                .ToArrayAsync(token));
+        }
+        jobs.Sort((left, right) => right.UpdatedAtUtc.CompareTo(left.UpdatedAtUtc));
         var modelIds = jobs.Select(item => item.ModelConfigurationId!.Value).Distinct().ToArray();
-        var models = await database.ModelConfigs.AsNoTracking()
-            .Where(item => modelIds.Contains(item.Id)
-                || (item.ConfigurationType == "embedding" && item.IsDefault))
-            .ToDictionaryAsync(item => item.Id, token);
+        var models = new Dictionary<Guid, ModelConfigEntity>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(modelIds))
+        {
+            var modelPredicate = GuidBatchQuery.BuildPredicate<ModelConfigEntity>(batch, item => item.Id);
+            foreach (var model in await database.ModelConfigs.AsNoTracking()
+                         .Where(modelPredicate)
+                         .ToArrayAsync(token))
+                models.TryAdd(model.Id, model);
+        }
+        var configuredDefault = await database.ModelConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.ConfigurationType == "embedding" && item.IsDefault, token);
+        if (configuredDefault is not null) models.TryAdd(configuredDefault.Id, configuredDefault);
         var defaultModel = models.Values.SingleOrDefault(item =>
             item.ConfigurationType == "embedding" && item.IsDefault);
 
@@ -87,33 +103,43 @@ public sealed class KnowledgeVectorMigrationRunner(
         var plan = planner.Build(mappings);
         var checkpoint = new MigrationCheckpoint();
         var mismatches = 0;
-        foreach (var planned in plan.Versions)
+        var documentMappings = legacyDocuments.ToDictionary(item => item.Id);
+        var verifiedVersions = new VersionMigrationCheckpoint?[plan.Versions.Count];
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, plan.Versions.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token },
+            async (index, cancellationToken) =>
         {
+            var planned = plan.Versions[index];
             var source = new VectorCollection(
                 planned.Source.SourceCollection,
                 planned.Source.Dimension,
                 planned.Source.Distance);
-            var inspectedCollection = await vectors.InspectCollectionAsync(source.Name, token);
+            var inspectedCollection = await WithTransientRetryAsync(
+                () => vectors.InspectCollectionAsync(source.Name, cancellationToken),
+                cancellationToken);
             if (inspectedCollection != source)
             {
-                mismatches++;
-                continue;
+                Interlocked.Increment(ref mismatches);
+                return;
             }
-            var metadata = await vectors.InspectVersionAsync(source, planned.Source.VersionId, token);
+            var metadata = await WithTransientRetryAsync(
+                () => vectors.InspectVersionAsync(source, planned.Source.VersionId, cancellationToken),
+                cancellationToken);
             var metadataMatches = metadata.Count > 0 && metadata.All(item =>
                 item.DocumentId == planned.Source.DocumentId
                 && item.VersionId == planned.Source.VersionId
                 && item.Active
                 && item.Generation == planned.Source.Generation);
-            if (!metadataMatches) mismatches++;
+            if (!metadataMatches) Interlocked.Increment(ref mismatches);
             var version = versions[planned.Source.VersionId];
-            checkpoint.Versions.Add(new()
+            verifiedVersions[index] = new()
             {
                 DocumentId = planned.Source.DocumentId,
                 VersionId = planned.Source.VersionId,
                 SourceCollection = planned.Source.SourceCollection,
                 SourceDocumentCollectionExclusive = planned.Source.SourceCollectionExclusive,
-                SourceDocumentEmbeddingContractKey = legacyDocuments.Single(item => item.Id == planned.Source.DocumentId).ActiveEmbeddingContractKey,
+                SourceDocumentEmbeddingContractKey = documentMappings[planned.Source.DocumentId].ActiveEmbeddingContractKey,
                 SourceVersionCollection = version.IndexCollectionName!,
                 SourceVersionCollectionExclusive = version.IndexCollectionExclusive,
                 SourceVersionEmbeddingContractKey = version.IndexEmbeddingContractKey,
@@ -124,8 +150,9 @@ public sealed class KnowledgeVectorMigrationRunner(
                 Generation = planned.Source.Generation,
                 ExpectedPointCount = metadata.Count,
                 ExpectedMetadataHash = MetadataHash(metadata)
-            });
-        }
+            };
+        });
+        checkpoint.Versions.AddRange(verifiedVersions.OfType<VersionMigrationCheckpoint>());
         checkpoint.State = mismatches == 0 ? "Planned" : "Blocked";
         await MigrationCheckpointStore.SaveAsync(checkpointPath, checkpoint, token);
         return Summarize(checkpoint, mismatches);
@@ -302,6 +329,23 @@ public sealed class KnowledgeVectorMigrationRunner(
         checkpoint.Versions.Sum(item => item.ExpectedPointCount),
         mismatches,
         checkpoint.State);
+
+    private static async Task<T> WithTransientRetryAsync<T>(
+        Func<Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await operation();
+            }
+            catch (VectorStoreUnavailableException) when (attempt < 4)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1 << (attempt - 1)), cancellationToken);
+            }
+        }
+    }
 
     private static VectorCollection Collection(string name, int dimension, string distance) =>
         new(name, dimension, ParseDistance(distance));
