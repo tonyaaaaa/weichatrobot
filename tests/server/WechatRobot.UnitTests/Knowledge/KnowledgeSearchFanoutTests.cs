@@ -114,6 +114,62 @@ public sealed class KnowledgeSearchFanoutTests
     }
 
     [Fact]
+    public async Task Three_hundred_twenty_two_documents_in_one_contract_use_one_vector_search()
+    {
+        await using var database = Database();
+        var tag = Tag("签证知识");
+        var contract = EmbeddingSpaceContract.Create(
+            "glm",
+            "https://embedding.example.test/v1",
+            "embedding-3",
+            3,
+            VectorDistance.Cosine);
+        database.Add(tag);
+        for (var index = 0; index < 322; index++)
+            AddActiveDocument(database, tag.Id, contract.CollectionName, contract.Key);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new EmptyRecordingVectorStore();
+        var service = Service(database, new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+
+        await service.SearchVisibleAsync(
+            [1, 0, 0],
+            [tag.Id],
+            contract,
+            vectors,
+            8,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, vectors.CallCount);
+        Assert.Equal(322, Assert.Single(vectors.Requests).ActiveVersionIds.Count);
+    }
+
+    [Fact]
+    public async Task Incompatible_embedding_contract_fails_before_vector_search()
+    {
+        await using var database = Database();
+        var tag = Tag("签证知识");
+        var indexedContract = EmbeddingSpaceContract.Create(
+            "glm", "https://embedding.example.test/v1", "embedding-3", 3, VectorDistance.Cosine);
+        var queryContract = EmbeddingSpaceContract.Create(
+            "glm", "https://embedding.example.test/v1", "embedding-4", 3, VectorDistance.Cosine);
+        database.Add(tag);
+        AddActiveDocument(database, tag.Id, indexedContract.CollectionName, indexedContract.Key);
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var vectors = new EmptyRecordingVectorStore();
+        var service = Service(database, new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+
+        await Assert.ThrowsAsync<VectorCollectionConfigurationException>(() => service.SearchVisibleAsync(
+            [1, 0, 0],
+            [tag.Id],
+            queryContract,
+            vectors,
+            8,
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, vectors.CallCount);
+    }
+
+    [Fact]
     public async Task Unrelated_active_collections_are_filtered_before_fanout()
     {
         await using var database = Database();
@@ -158,17 +214,19 @@ public sealed class KnowledgeSearchFanoutTests
     private static VectorSearchHit AddActiveDocument(
         WechatRobotDbContext database,
         Guid tagId,
-        string collection)
+        string collection,
+        string? embeddingContractKey = null)
     {
         var document = new KnowledgeDocumentEntity
         {
-            Status = "active", ActiveCollectionName = collection, ActiveEmbeddingDimension = 3, ActiveDistance = "cosine", ActiveIndexGeneration = 1
+            Status = "active", ActiveCollectionName = collection, ActiveEmbeddingContractKey = embeddingContractKey,
+            ActiveEmbeddingDimension = 3, ActiveDistance = "cosine", ActiveIndexGeneration = 1
         };
         var version = new KnowledgeDocumentVersionEntity
         {
             KnowledgeDocumentId = document.Id, Version = 1, OriginalFileName = Guid.NewGuid() + ".txt", SafeFileName = "file.txt",
             ContentType = "text/plain", Sha256 = Guid.NewGuid().ToString("N").PadLeft(64, '0'), ObjectKey = Guid.NewGuid().ToString("N"),
-            Status = "active", IsPublished = true
+            Status = "active", IsPublished = true, IndexEmbeddingContractKey = embeddingContractKey
         };
         document.ActiveVersionId = version.Id;
         var chunk = new KnowledgeChunkEntity { KnowledgeDocumentVersionId = version.Id, Text = "text", Status = "approved" };

@@ -98,7 +98,9 @@ public sealed class KnowledgeRetrievalVisibilityTests
 
         var jobId = await changedRuntime.QueueIndexAsync(document.Id, version.Id, [tag.Id], true, TestContext.Current.CancellationToken);
         var job = await database.KnowledgeIndexJobs.SingleAsync(item => item.Id == jobId, TestContext.Current.CancellationToken);
-        Assert.StartsWith("kb_dot_4_g", job.CollectionName, StringComparison.Ordinal);
+        Assert.True(EmbeddingSpaceContract.IsSharedCollectionName(job.CollectionName));
+        Assert.False(job.IsCollectionExclusive);
+        Assert.False(string.IsNullOrWhiteSpace(job.EmbeddingContractKey));
         Assert.Equal("kb_cosine_3_g1_old", document.ActiveCollectionName);
         job.Status = "failed";
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);

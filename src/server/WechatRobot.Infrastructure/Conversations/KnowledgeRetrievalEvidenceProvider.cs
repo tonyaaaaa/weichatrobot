@@ -38,9 +38,10 @@ public sealed class KnowledgeRetrievalEvidenceProvider(
         try
         {
             var configuration = await knowledge.LoadEmbeddingConfigurationAsync(null, null, token);
+            var queryContract = await knowledge.LoadEmbeddingSpaceContractAsync(null, null, token);
             var embedding = await embeddings.CreateEmbeddingsAsync(configuration, new([question]), token);
             var vector = embedding.Vectors.SingleOrDefault() ?? throw new RetrievalUnavailableException("Embedding provider returned no vector.");
-            var hits = await knowledge.SearchVisibleAsync(vector, scope, vectors, limit, token);
+            var hits = await knowledge.SearchVisibleAsync(vector, scope, queryContract, vectors, limit, token);
             if (hits.Count == 0) return [];
             var ids = hits.Select(hit => hit.ChunkId).Distinct().ToArray();
             var visibleTags = scope.EffectiveVisibleTagIds.ToHashSet();

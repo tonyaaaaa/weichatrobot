@@ -62,6 +62,12 @@ public sealed class SharedKnowledgeIndexQueueTests
         Assert.True(EmbeddingSpaceContract.IsSharedCollectionName(jobs[0].CollectionName));
         Assert.All(jobs, job => Assert.False(job.IsCollectionExclusive));
         Assert.All(jobs, job => Assert.False(string.IsNullOrWhiteSpace(job.EmbeddingContractKey)));
+        var queryContract = await service.LoadEmbeddingSpaceContractAsync(
+            null,
+            null,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(queryContract.Key, jobs[0].EmbeddingContractKey);
+        Assert.Equal(queryContract.CollectionName, jobs[0].CollectionName);
 
         var failed = await database.KnowledgeIndexJobs.SingleAsync(
             x => x.Id == firstJobId,

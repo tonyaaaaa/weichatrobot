@@ -439,6 +439,28 @@ public sealed class QdrantKnowledgeService(
         int? modelConfigurationVersion,
         CancellationToken token)
     {
+        var config = await LoadEmbeddingModelAsync(modelConfigurationId, modelConfigurationVersion, token);
+        return modelConfigurations.ToProviderConfiguration(new ModelConfigurationRecord(config.Id, config.Name, config.Provider, config.BaseUrl,
+            config.Model, config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault,
+            config.EmbeddingDimension, config.WebSearchMode));
+    }
+
+    public async Task<EmbeddingSpaceContract> LoadEmbeddingSpaceContractAsync(
+        Guid? modelConfigurationId,
+        int? modelConfigurationVersion,
+        CancellationToken token)
+    {
+        var config = await LoadEmbeddingModelAsync(modelConfigurationId, modelConfigurationVersion, token);
+        var dimension = config.EmbeddingDimension
+            ?? throw new InvalidOperationException("The embedding model does not define its vector dimension.");
+        return EmbeddingSpaceContract.Create(config.Provider, config.BaseUrl, config.Model, dimension, options.Distance);
+    }
+
+    private async Task<ModelConfigEntity> LoadEmbeddingModelAsync(
+        Guid? modelConfigurationId,
+        int? modelConfigurationVersion,
+        CancellationToken token)
+    {
         var configurations = database.ModelConfigs.AsNoTracking()
             .Where(item => item.ConfigurationType == "embedding" && item.IsEnabled);
         var config = modelConfigurationId is { } id
@@ -448,9 +470,7 @@ public sealed class QdrantKnowledgeService(
             throw new InvalidOperationException("The queued embedding model configuration is unavailable.");
         if (modelConfigurationVersion is { } expectedVersion && config.Version != expectedVersion)
             throw new InvalidOperationException("The queued embedding model configuration changed; submit a new index job.");
-        return modelConfigurations.ToProviderConfiguration(new ModelConfigurationRecord(config.Id, config.Name, config.Provider, config.BaseUrl,
-            config.Model, config.EncryptedApiKey, config.TimeoutSeconds, config.MaxRetries, config.IsEnabled, config.IsDefault,
-            config.EmbeddingDimension, config.WebSearchMode));
+        return config;
     }
 
     public async Task<bool> ActivateVersionAsync(KnowledgeIndexWork work, CancellationToken token)
@@ -761,8 +781,38 @@ public sealed class QdrantKnowledgeService(
         return await SearchVisibleAsync(vector, scope, vectors, limit, token);
     }
 
+    public async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleAsync(
+        IReadOnlyList<float> vector,
+        IReadOnlyList<Guid> requestedTagIds,
+        EmbeddingSpaceContract queryContract,
+        IVectorStore vectors,
+        int limit,
+        CancellationToken token)
+    {
+        var scope = await new KnowledgeTagScopeResolver(database).ResolveAsync(requestedTagIds, token);
+        return await SearchVisibleAsync(vector, scope, queryContract, vectors, limit, token);
+    }
+
     public async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleAsync(IReadOnlyList<float> vector, KnowledgeTagScope scope,
-        IVectorStore vectors, int limit, CancellationToken token)
+        IVectorStore vectors, int limit, CancellationToken token) =>
+        await SearchVisibleCoreAsync(vector, scope, null, vectors, limit, token);
+
+    public async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleAsync(
+        IReadOnlyList<float> vector,
+        KnowledgeTagScope scope,
+        EmbeddingSpaceContract queryContract,
+        IVectorStore vectors,
+        int limit,
+        CancellationToken token) =>
+        await SearchVisibleCoreAsync(vector, scope, queryContract, vectors, limit, token);
+
+    private async Task<IReadOnlyList<VectorSearchHit>> SearchVisibleCoreAsync(
+        IReadOnlyList<float> vector,
+        KnowledgeTagScope scope,
+        EmbeddingSpaceContract? queryContract,
+        IVectorStore vectors,
+        int limit,
+        CancellationToken token)
     {
         const int maximumCandidateCount = 200;
         var searchLimit = Math.Clamp(limit, 1, 50);
@@ -789,9 +839,34 @@ public sealed class QdrantKnowledgeService(
 
         var activeDocuments = await database.KnowledgeDocuments.AsNoTracking().Where(document => !document.IsDeleteRequested && document.Status == "active" &&
             document.ActiveVersionId != null && document.ActiveCollectionName != null && document.ActiveEmbeddingDimension == vector.Count && document.ActiveDistance != null)
-            .Select(document => new { document.ActiveVersionId, document.ActiveCollectionName, document.ActiveEmbeddingDimension, document.ActiveDistance }).ToArrayAsync(token);
+            .Select(document => new
+            {
+                document.ActiveVersionId,
+                document.ActiveCollectionName,
+                document.ActiveEmbeddingContractKey,
+                document.ActiveEmbeddingDimension,
+                document.ActiveDistance
+            }).ToArrayAsync(token);
 
-        var contracts = activeDocuments.Where(document => eligibleVersionIds.Contains(document.ActiveVersionId!.Value))
+        var relevantDocuments = activeDocuments.Where(document => eligibleVersionIds.Contains(document.ActiveVersionId!.Value)).ToArray();
+        if (queryContract is not null)
+        {
+            if (relevantDocuments.Any(document =>
+                    document.ActiveEmbeddingContractKey is { } key
+                    && !string.Equals(key, queryContract.Key, StringComparison.Ordinal)))
+                throw new VectorCollectionConfigurationException(
+                    "Active knowledge uses an embedding contract that does not match the query embedding contract.");
+            if (relevantDocuments.Any(document =>
+                    string.Equals(document.ActiveEmbeddingContractKey, queryContract.Key, StringComparison.Ordinal)
+                    && !string.Equals(document.ActiveCollectionName, queryContract.CollectionName, StringComparison.Ordinal)))
+                throw new VectorCollectionConfigurationException(
+                    "Active knowledge has a shared collection name that does not match its embedding contract.");
+            relevantDocuments = relevantDocuments.Where(document =>
+                document.ActiveEmbeddingContractKey is null
+                || string.Equals(document.ActiveEmbeddingContractKey, queryContract.Key, StringComparison.Ordinal)).ToArray();
+        }
+
+        var contracts = relevantDocuments
             .GroupBy(document => new { document.ActiveCollectionName, document.ActiveEmbeddingDimension, document.ActiveDistance })
             .Select(group => new SearchCollectionContract(group.Key.ActiveCollectionName!, group.Key.ActiveEmbeddingDimension!.Value,
                 group.Key.ActiveDistance!, group.Select(item => item.ActiveVersionId!.Value).Distinct().Order().ToArray()))
