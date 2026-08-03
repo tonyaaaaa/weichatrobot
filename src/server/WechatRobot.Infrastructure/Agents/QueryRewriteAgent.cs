@@ -20,6 +20,18 @@ public sealed class QueryRewriteAgent(IAgentChatClientFactory clients)
         QueryRewriteRequest request,
         CancellationToken cancellationToken)
     {
+        var result = await RewriteOnceAsync(request, cancellationToken);
+        // Query rewriting has no external business side effects, so one retry
+        // is safe when the provider fails before producing a decision.
+        return result.ReasonCode == QueryRewriteReasonCode.ProviderFailure
+            ? await RewriteOnceAsync(request, cancellationToken)
+            : result;
+    }
+
+    private async Task<QueryRewriteResult> RewriteOnceAsync(
+        QueryRewriteRequest request,
+        CancellationToken cancellationToken)
+    {
         var started = Stopwatch.GetTimestamp();
         try
         {

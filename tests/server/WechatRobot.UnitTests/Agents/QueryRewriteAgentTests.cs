@@ -150,6 +150,22 @@ public sealed class QueryRewriteAgentTests
     }
 
     [Fact]
+    public async Task Transient_provider_exception_is_retried_once()
+    {
+        var client = new FailOnceRewriteChatClient();
+        var agent = new QueryRewriteAgent(new StubFactory(client));
+
+        var result = await agent.RewriteAsync(
+            Request(History()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(QueryRewriteDecision.Search, result.Decision);
+        Assert.Equal("韩国签证需要什么资料", result.StandaloneQuery);
+        Assert.Equal(3, client.RequestCount);
+        Assert.Null(result.FailureCode);
+    }
+
+    [Fact]
     public async Task Caller_cancellation_is_propagated()
     {
         using var cancellation = new CancellationTokenSource();
@@ -285,6 +301,63 @@ public sealed class QueryRewriteAgentTests
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             Task.FromException<ChatResponse>(exception);
+
+        public async IAsyncEnumerable<ChatResponseUpdate>
+            GetStreamingResponseAsync(
+                IEnumerable<AiChatMessage> messages,
+                ChatOptions? options = null,
+                [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public object? GetService(
+            Type serviceType,
+            object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class FailOnceRewriteChatClient : IChatClient
+    {
+        public int RequestCount { get; private set; }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<AiChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            if (RequestCount == 1)
+            {
+                return Task.FromException<ChatResponse>(
+                    new HttpRequestException("temporary provider failure"));
+            }
+
+            if (RequestCount == 2)
+            {
+                return Task.FromResult(new ChatResponse(new AiChatMessage(
+                    ChatRole.Assistant,
+                    [
+                        new FunctionCallContent(
+                            "rewrite-retry",
+                            "submit_query_rewrite",
+                            new Dictionary<string, object?>
+                            {
+                                ["decision"] = "Search",
+                                ["standaloneQuery"] = "韩国签证需要什么资料",
+                                ["clarificationQuestion"] = null,
+                                ["reasonCode"] = "standalone_question"
+                            })
+                    ])));
+            }
+
+            return Task.FromResult(new ChatResponse(
+                new AiChatMessage(ChatRole.Assistant, "done")));
+        }
 
         public async IAsyncEnumerable<ChatResponseUpdate>
             GetStreamingResponseAsync(
