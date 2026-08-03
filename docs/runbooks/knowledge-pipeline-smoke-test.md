@@ -17,3 +17,7 @@ IAM nor grants OSS permissions. Do not put these values in appsettings or logs.
 Routine tests never call Alibaba Cloud. The real one-image acceptance test additionally
 requires `$env:RUN_ALIYUN_OCR_E2E = '1'`; leave it unset unless a paid call is explicitly
 approved. Readiness exposes only configured state and sanitized failures.
+
+For the no-container procedure that consolidates legacy per-version Qdrant collections,
+including dry-run, checkpoint resume, verification, and rollback gates, see
+[Shared knowledge vector migration](shared-knowledge-vector-migration.md).
