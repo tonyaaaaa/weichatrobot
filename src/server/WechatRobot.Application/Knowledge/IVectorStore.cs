@@ -17,16 +17,26 @@ public sealed record VectorSearchRequest(VectorCollection Collection, IReadOnlyL
 }
 public sealed record VectorSearchHit(Guid ChunkId, Guid DocumentId, Guid VersionId, double Score);
 public sealed record VectorPointMetadata(Guid ChunkId, Guid DocumentId, Guid VersionId, IReadOnlyList<Guid> TagIds, bool Active, int Generation);
+public sealed record VectorPointPage(IReadOnlyList<VectorPoint> Points, string? NextOffset);
 
 public interface IVectorStore
 {
     Task EnsureCollectionAsync(VectorCollection collection, CancellationToken cancellationToken);
+    Task EnsurePayloadIndexesAsync(VectorCollection collection, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Payload index management is not supported by this vector store.");
     Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken cancellationToken);
     Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken cancellationToken);
     Task DeleteCollectionAsync(VectorCollection collection, CancellationToken cancellationToken);
     Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken cancellationToken);
     Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken cancellationToken);
+    Task<VectorPointPage> ReadVersionPointsAsync(
+        VectorCollection collection,
+        Guid versionId,
+        string? offset,
+        int pageSize,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Vector point export is not supported by this vector store.");
     Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken cancellationToken);
 }
 

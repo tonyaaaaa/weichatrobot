@@ -7,6 +7,15 @@ namespace WechatRobot.Infrastructure.Knowledge;
 
 public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
 {
+    private static readonly IReadOnlyDictionary<string, string> RequiredPayloadIndexes =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["active"] = "bool",
+            ["version_id"] = "keyword",
+            ["document_id"] = "keyword",
+            ["tag_ids"] = "keyword"
+        };
+
     public async Task EnsureCollectionAsync(VectorCollection collection, CancellationToken cancellationToken)
     {
         using var existing = await httpClient.GetAsync($"/collections/{Uri.EscapeDataString(collection.Name)}", cancellationToken);
@@ -44,6 +53,35 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
             })
         }, cancellationToken);
         if (!response.IsSuccessStatusCode) throw await MapFailureAsync(response, "upsert points", cancellationToken);
+    }
+
+    public async Task EnsurePayloadIndexesAsync(VectorCollection collection, CancellationToken cancellationToken)
+    {
+        foreach (var (fieldName, fieldSchema) in RequiredPayloadIndexes)
+        {
+            using var response = await httpClient.PutAsJsonAsync(
+                $"/collections/{Uri.EscapeDataString(collection.Name)}/index?wait=true",
+                new { field_name = fieldName, field_schema = fieldSchema },
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw await MapFailureAsync(response, $"create payload index '{fieldName}'", cancellationToken);
+        }
+
+        using var collectionResponse = await httpClient.GetAsync(
+            $"/collections/{Uri.EscapeDataString(collection.Name)}",
+            cancellationToken);
+        if (!collectionResponse.IsSuccessStatusCode)
+            throw await MapFailureAsync(collectionResponse, "validate payload indexes", cancellationToken);
+        using var json = JsonDocument.Parse(await collectionResponse.Content.ReadAsStreamAsync(cancellationToken));
+        var payloadSchema = json.RootElement.GetProperty("result").GetProperty("payload_schema");
+        foreach (var (fieldName, expectedType) in RequiredPayloadIndexes)
+        {
+            if (!payloadSchema.TryGetProperty(fieldName, out var field)
+                || !field.TryGetProperty("data_type", out var type)
+                || !string.Equals(type.GetString(), expectedType, StringComparison.OrdinalIgnoreCase))
+                throw new VectorCollectionConfigurationException(
+                    $"Qdrant payload index '{fieldName}' is missing or incompatible for collection '{collection.Name}'.");
+        }
     }
 
     public async Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken cancellationToken)
@@ -108,6 +146,48 @@ public sealed class QdrantVectorStore(HttpClient httpClient) : IVectorStore
             offset = page.TryGetProperty("next_page_offset", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
         } while (offset is not null);
         return result;
+    }
+
+    public async Task<VectorPointPage> ReadVersionPointsAsync(
+        VectorCollection collection,
+        Guid versionId,
+        string? offset,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var boundedPageSize = Math.Clamp(pageSize, 1, 256);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/collections/{Uri.EscapeDataString(collection.Name)}/points/scroll",
+            new
+            {
+                filter = VersionFilter(versionId),
+                limit = boundedPageSize,
+                offset,
+                with_payload = true,
+                with_vector = true
+            },
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw await MapFailureAsync(response, "read version points", cancellationToken);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        var page = json.RootElement.GetProperty("result");
+        var points = page.GetProperty("points").EnumerateArray().Select(item =>
+        {
+            var payload = item.GetProperty("payload");
+            return new VectorPoint(
+                Guid.Parse(payload.GetProperty("chunk_id").GetString()!),
+                Guid.Parse(payload.GetProperty("document_id").GetString()!),
+                Guid.Parse(payload.GetProperty("version_id").GetString()!),
+                payload.GetProperty("tag_ids").EnumerateArray().Select(value => Guid.Parse(value.GetString()!)).ToArray(),
+                item.GetProperty("vector").EnumerateArray().Select(value => value.GetSingle()).ToArray(),
+                payload.GetProperty("active").GetBoolean(),
+                payload.TryGetProperty("generation", out var generation) ? generation.GetInt32() : 1);
+        }).ToArray();
+        var nextOffset = page.TryGetProperty("next_page_offset", out var next)
+            && next.ValueKind == JsonValueKind.String
+            ? next.GetString()
+            : null;
+        return new(points, nextOffset);
     }
 
     public async Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken cancellationToken)
