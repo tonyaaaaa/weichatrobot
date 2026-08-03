@@ -41,6 +41,8 @@ builder.Services.AddDbContextFactory<WechatRobotDbContext>(
     options => options.UseMySQL(connectionString));
 builder.Services.AddScoped<IDurableJobRepository, DurableJobRepository>();
 builder.Services.AddScoped<SendCommandService>();
+builder.Services.AddOptions<DurableReplyLaneOptions>()
+    .BindConfiguration(DurableReplyLaneOptions.SectionName);
 builder.Services.AddOptions<DocumentUploadOptions>().BindConfiguration(DocumentUploadOptions.SectionName)
     .Validate(options => options.MaximumBytes is > 0 and <= int.MaxValue && options.MaximumArchiveEntries > 0 &&
         options.MaximumExpandedArchiveBytes > 0 && options.MaximumArchiveExpansionRatio > 0, "Document upload limits are invalid.")

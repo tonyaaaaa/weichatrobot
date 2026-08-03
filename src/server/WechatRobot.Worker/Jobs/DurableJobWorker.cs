@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using WechatRobot.Application.Conversations;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Messaging;
@@ -10,6 +11,7 @@ namespace WechatRobot.Worker.Jobs;
 public sealed class DurableJobWorker(
     IServiceScopeFactory scopeFactory,
     TimeProvider timeProvider,
+    IOptionsMonitor<DurableReplyLaneOptions>? configuredLaneOptions = null,
     ILogger<DurableJobWorker>? configuredLogger = null,
     TimeSpan? renewalInterval = null) : BackgroundService
 {
@@ -142,8 +144,29 @@ public sealed class DurableJobWorker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var lanes = DurableReplyLanePlan.All.Select(lane => RunLaneAsync(
+        var initialOptions = configuredLaneOptions?.CurrentValue
+            ?? new DurableReplyLaneOptions();
+        var activation = new DurableReplyLaneActivation(initialOptions);
+        using var configurationSubscription = configuredLaneOptions?.OnChange(
+            options =>
+            {
+                if (!activation.TryUpdate(options, out var error))
+                {
+                    _logger.LogWarning(
+                        "Reply lane configuration reload was ignored. Reason={Reason}",
+                        error);
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Reply lane configuration reloaded. GroupLanes={GroupLanes} PrivateLanes={PrivateLanes} PrivateIngestLanes={PrivateIngestLanes}",
+                    options.GroupLaneCount,
+                    options.PrivateLaneCount,
+                    options.PrivateKnowledgeIngestLaneCount);
+            });
+        var lanes = DurableReplyLanePlan.Maximum.Select(lane => RunLaneAsync(
             lane,
+            activation,
             $"{_leaseOwner}-{lane.Name}",
             stoppingToken));
         await Task.WhenAll(lanes);
@@ -151,6 +174,7 @@ public sealed class DurableJobWorker(
 
     private async Task RunLaneAsync(
         DurableReplyLane lane,
+        DurableReplyLaneActivation activation,
         string leaseOwner,
         CancellationToken stoppingToken)
     {
@@ -158,6 +182,7 @@ public sealed class DurableJobWorker(
         {
             try
             {
+                await activation.WaitUntilEnabledAsync(lane, stoppingToken);
                 var processed = await ProcessOnceAsync(
                     lane.JobType,
                     leaseOwner,
