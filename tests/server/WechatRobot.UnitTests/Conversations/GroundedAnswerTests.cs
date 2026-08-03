@@ -86,6 +86,25 @@ public sealed class GroundedAnswerTests
     }
 
     [Fact]
+    public async Task Memory_failure_does_not_replace_a_grounded_knowledge_answer()
+    {
+        var memory = new FakeMemoryRecallService(new MemoryRecallResult([], "memory_recall_unavailable"));
+        var request = Request() with { RobotConfigId = Guid.NewGuid() };
+        var result = await new GroundedAnswerService(
+                new FakeRetrieval(Evidence(.91, "The warranty is two years.")),
+                new FakeChatClient("The warranty is two years."),
+                Options(.7),
+                new AnswerOutputFirewall(),
+                memory)
+            .AnswerAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(AnswerDecisionKind.Answer, result.Decision.Kind);
+        Assert.NotEqual("retrieval_unavailable", result.Audit.FailureCode);
+        Assert.Equal("knowledge", result.Audit.AnswerSource);
+        Assert.Equal("memory_recall_unavailable", result.Audit.MemoryRecall!.FailureCode);
+    }
+
+    [Fact]
     public async Task Insufficient_evidence_does_not_call_model()
     {
         var model = new FakeChatClient("must not be used");
