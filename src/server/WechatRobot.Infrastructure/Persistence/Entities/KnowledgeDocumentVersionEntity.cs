@@ -17,6 +17,7 @@ public sealed class KnowledgeDocumentVersionEntity
     public byte[] StagedContent { get; set; } = [];
     public bool IsPublished { get; set; }
     public string? IndexCollectionName { get; set; }
+    public string? IndexEmbeddingContractKey { get; set; }
     public int? EmbeddingDimension { get; set; }
     public string? VectorDistance { get; set; }
     public int? IndexGeneration { get; set; }

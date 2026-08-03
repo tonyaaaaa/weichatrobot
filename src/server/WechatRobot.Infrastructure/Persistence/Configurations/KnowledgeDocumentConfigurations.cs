@@ -13,6 +13,7 @@ internal sealed class KnowledgeDocumentConfiguration : IEntityTypeConfiguration<
         builder.Property(entity => entity.Title).HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();
         builder.Property(entity => entity.ActiveCollectionName).HasMaxLength(128);
+        builder.Property(entity => entity.ActiveEmbeddingContractKey).HasMaxLength(96);
         builder.Property(entity => entity.ActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.ActiveVersionId).IsConcurrencyToken();
         builder.Property(entity => entity.StateVersion).IsConcurrencyToken();
@@ -38,6 +39,7 @@ internal sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigu
         builder.Property(entity => entity.FailureReason).HasMaxLength(512);
         builder.Property(entity => entity.StagedContent).HasColumnType("longblob").IsRequired();
         builder.Property(entity => entity.IndexCollectionName).HasMaxLength(128);
+        builder.Property(entity => entity.IndexEmbeddingContractKey).HasMaxLength(96);
         builder.Property(entity => entity.VectorDistance).HasMaxLength(16);
         builder.Property(entity => entity.SourceKind).HasMaxLength(32).HasDefaultValue("LegacyUnknown").IsRequired();
         builder.Property(entity => entity.SourceActorDisplayName).HasMaxLength(128);
@@ -121,8 +123,10 @@ internal sealed class KnowledgeIndexJobConfiguration : IEntityTypeConfiguration<
         builder.HasIndex(entity => entity.SourceIndexJobId);
         builder.HasIndex(entity => entity.PrivateKnowledgeIngestBatchId);
         builder.Property(entity => entity.PreviousActiveCollectionName).HasMaxLength(128);
+        builder.Property(entity => entity.PreviousActiveEmbeddingContractKey).HasMaxLength(96);
         builder.Property(entity => entity.PreviousActiveDistance).HasMaxLength(16);
         builder.Property(entity => entity.CollectionName).HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.EmbeddingContractKey).HasMaxLength(96);
         builder.Property(entity => entity.Distance).HasMaxLength(16).IsRequired();
         builder.Property(entity => entity.PendingTagIdsJson).HasColumnType("json").IsRequired();
         builder.Property(entity => entity.Status).HasMaxLength(32).IsRequired();

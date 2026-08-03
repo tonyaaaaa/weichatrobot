@@ -7,6 +7,7 @@ public sealed class KnowledgeDocumentEntity
     public string Status { get; set; } = "uploading";
     public Guid? ActiveVersionId { get; set; }
     public string? ActiveCollectionName { get; set; }
+    public string? ActiveEmbeddingContractKey { get; set; }
     public int? ActiveEmbeddingDimension { get; set; }
     public string? ActiveDistance { get; set; }
     public int? ActiveIndexGeneration { get; set; }
