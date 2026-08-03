@@ -29,7 +29,7 @@ public sealed class KnowledgeIndexServiceTests
 
         Assert.Equal([2, 2, 1], vectors.BatchSizes);
         Assert.Equal([2, 2, 1], embeddings.BatchSizes);
-        Assert.Equal(["ensure", "upsert", "upsert", "upsert", "activate-vector", "activate-mysql", "cleanup"],
+        Assert.Equal(["ensure", "ensure-payload-indexes", "upsert", "upsert", "upsert", "activate-vector", "activate-mysql", "cleanup"],
             vectors.Events.Concat(knowledge.Events).OrderBy(item => item.Sequence).Select(item => item.Name));
     }
 
@@ -81,6 +81,47 @@ public sealed class KnowledgeIndexServiceTests
         Assert.DoesNotContain(vectors.Events, item => item.Name == "activate-vector");
     }
 
+    [Fact]
+    public async Task Shared_activation_conflict_deletes_only_the_new_version_points()
+    {
+        var work = Work(1) with
+        {
+            CollectionName = "kb_shared_0123456789abcdef_cosine_3",
+            IsCollectionExclusive = false
+        };
+        var knowledge = new FakeKnowledgeService(work) { ActivationSucceeds = false };
+        var vectors = new FakeVectorStore();
+        var service = new KnowledgeIndexService(
+            new FakeEmbeddingClient(3),
+            vectors,
+            knowledge,
+            new KnowledgeIndexOptions(3, VectorDistance.Cosine, 2, 1));
+
+        await Assert.ThrowsAsync<KnowledgeActivationConflictException>(() =>
+            service.IndexAsync(Guid.NewGuid(), TestContext.Current.CancellationToken));
+
+        Assert.Contains(vectors.Events, item => item.Name == "delete-version");
+        Assert.DoesNotContain(vectors.Events, item => item.Name == "delete-collection");
+    }
+
+    [Fact]
+    public void Shared_collection_replacement_still_cleans_the_previous_version()
+    {
+        var previousVersion = Guid.NewGuid();
+        var nextVersion = Guid.NewGuid();
+
+        Assert.True(KnowledgeIndexTransition.RequiresPreviousVersionCleanup(
+            previousVersion,
+            nextVersion,
+            "kb_shared_0123456789abcdef_cosine_3",
+            "kb_shared_0123456789abcdef_cosine_3"));
+        Assert.False(KnowledgeIndexTransition.RequiresPreviousVersionCleanup(
+            nextVersion,
+            nextVersion,
+            "kb_shared_0123456789abcdef_cosine_3",
+            "kb_shared_0123456789abcdef_cosine_3"));
+    }
+
     private static KnowledgeIndexWork Work(int count) => new(Guid.NewGuid(), DocumentId, VersionId, null, "kb_cosine_3", 3,
         VectorDistance.Cosine, Enumerable.Range(0, count).Select(index => new KnowledgeIndexChunk(
             Guid.Parse($"30000000-0000-0000-0000-{index + 1:000000000000}"), DocumentId, VersionId, $"text-{index}",
@@ -107,6 +148,7 @@ public sealed class KnowledgeIndexServiceTests
         public List<int> BatchSizes { get; } = [];
         public List<(long Sequence, string Name)> Events { get; } = [];
         public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) { Events.Add((EventClock.Next(), "ensure")); return Task.CompletedTask; }
+        public Task EnsurePayloadIndexesAsync(VectorCollection collection, CancellationToken token) { Events.Add((EventClock.Next(), "ensure-payload-indexes")); return Task.CompletedTask; }
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token)
         {
             UpsertAttempts++;
@@ -116,9 +158,9 @@ public sealed class KnowledgeIndexServiceTests
             BatchSizes.Add(points.Count); Events.Add((EventClock.Next(), "upsert")); return Task.CompletedTask;
         }
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) { Events.Add((EventClock.Next(), "activate-vector")); return Task.CompletedTask; }
-        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) { Events.Add((EventClock.Next(), "delete-collection")); return Task.CompletedTask; }
         public Task<VectorCollection?> InspectCollectionAsync(string collectionName, CancellationToken token) => Task.FromResult<VectorCollection?>(null);
-        public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) => Task.CompletedTask;
+        public Task DeleteVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) { Events.Add((EventClock.Next(), "delete-version")); return Task.CompletedTask; }
         public Task<IReadOnlyList<VectorPointMetadata>> InspectVersionAsync(VectorCollection collection, Guid versionId, CancellationToken token) =>
             Task.FromResult<IReadOnlyList<VectorPointMetadata>>([]);
         public Task<IReadOnlyList<VectorSearchHit>> SearchAsync(VectorSearchRequest request, CancellationToken token) => Task.FromResult<IReadOnlyList<VectorSearchHit>>([]);
@@ -129,6 +171,7 @@ public sealed class KnowledgeIndexServiceTests
         public bool Activated { get; private set; }
         public bool Failed { get; private set; }
         public bool RetryableFailure { get; private set; }
+        public bool ActivationSucceeds { get; set; } = true;
         public List<(long Sequence, string Name)> Events { get; } = [];
         public Task<KnowledgeIndexWork> LoadIndexWorkAsync(Guid jobId, CancellationToken token) => Task.FromResult(work);
         public Task<ModelProviderConfiguration> LoadEmbeddingConfigurationAsync(
@@ -137,7 +180,7 @@ public sealed class KnowledgeIndexServiceTests
             CancellationToken token) =>
             Task.FromResult(new ModelProviderConfiguration("https://fake/", "fake", "cipher", TimeSpan.FromSeconds(1), 0));
         public Task<bool> IsIndexLeaseOwnedAsync(Guid jobId, string owner, CancellationToken token) => Task.FromResult(true);
-        public Task<bool> ActivateVersionAsync(KnowledgeIndexWork value, CancellationToken token) { Activated = true; Events.Add((EventClock.Next(), "activate-mysql")); return Task.FromResult(true); }
+        public Task<bool> ActivateVersionAsync(KnowledgeIndexWork value, CancellationToken token) { Activated = true; Events.Add((EventClock.Next(), "activate-mysql")); return Task.FromResult(ActivationSucceeds); }
         public Task EnqueueCleanupAsync(KnowledgeIndexWork value, CancellationToken token) { Events.Add((EventClock.Next(), "cleanup")); return Task.CompletedTask; }
         public Task MarkIndexFailedAsync(Guid jobId, string? leaseOwner, string reason, bool retryable, CancellationToken token) { Failed = true; RetryableFailure = retryable; return Task.CompletedTask; }
     }

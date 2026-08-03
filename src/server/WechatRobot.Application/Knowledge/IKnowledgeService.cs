@@ -8,7 +8,8 @@ public sealed record KnowledgeIndexWork(Guid JobId, Guid DocumentId, Guid Versio
     string? LeaseOwner = null, int Generation = 1, string? PreviousActiveCollectionName = null,
     int? PreviousActiveEmbeddingDimension = null, VectorDistance? PreviousActiveDistance = null, bool IsCollectionExclusive = false,
     bool PreviousActiveCollectionExclusive = false, Guid? ModelConfigurationId = null, int? ModelConfigurationVersion = null,
-    Guid? PrivateKnowledgeIngestBatchId = null);
+    Guid? PrivateKnowledgeIngestBatchId = null, string? EmbeddingContractKey = null,
+    string? PreviousActiveEmbeddingContractKey = null);
 
 public interface IKnowledgeService
 {

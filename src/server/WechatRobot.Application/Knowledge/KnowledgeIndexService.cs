@@ -26,6 +26,18 @@ public sealed class EmbeddingDimensionMismatchException(int expected, int actual
     public int Actual { get; } = actual;
 }
 public sealed class KnowledgeActivationConflictException : Exception;
+public static class KnowledgeIndexTransition
+{
+    public static bool RequiresPreviousVersionCleanup(
+        Guid? previousVersionId,
+        Guid nextVersionId,
+        string? previousCollectionName,
+        string nextCollectionName) =>
+        previousVersionId is not null
+        && previousCollectionName is not null
+        && (previousVersionId != nextVersionId
+            || !string.Equals(previousCollectionName, nextCollectionName, StringComparison.Ordinal));
+}
 public sealed class KnowledgeSearchCapacityException(int eligibleCollectionCount, int maximumCollections)
     : Exception($"Knowledge search requires {eligibleCollectionCount} eligible collections, exceeding the configured limit of {maximumCollections}.")
 {
@@ -48,6 +60,7 @@ public sealed class KnowledgeIndexService(
             Validate(work);
             var collection = new VectorCollection(work.CollectionName, work.Dimension, work.Distance);
             await vectorStore.EnsureCollectionAsync(collection, cancellationToken);
+            await vectorStore.EnsurePayloadIndexesAsync(collection, cancellationToken);
             var provider = await knowledge.LoadEmbeddingConfigurationAsync(
                 work.ModelConfigurationId,
                 work.ModelConfigurationVersion,
@@ -77,7 +90,10 @@ public sealed class KnowledgeIndexService(
             await EnsureLeaseOwnedAsync(work, collection);
             if (!await knowledge.CompleteIndexAsync(work, cancellationToken))
             {
-                await vectorStore.SetVersionActiveAsync(collection, work.VersionId, false, cancellationToken);
+                if (work.IsCollectionExclusive)
+                    await vectorStore.DeleteCollectionAsync(collection, cancellationToken);
+                else
+                    await vectorStore.DeleteVersionAsync(collection, work.VersionId, cancellationToken);
                 throw new KnowledgeActivationConflictException();
             }
             await knowledge.EnqueueCleanupAsync(work, cancellationToken);
@@ -123,8 +139,12 @@ public sealed class KnowledgeIndexService(
         if (work.Dimension <= 0 || options.BatchSize <= 0 || options.MaximumAttempts <= 0)
             throw new InvalidOperationException("Knowledge index options are invalid.");
         var expectedCollection = $"kb_{options.Distance.ToString().ToLowerInvariant()}_{work.Dimension}";
+        var expectedSharedSuffix = $"_{options.Distance.ToString().ToLowerInvariant()}_{work.Dimension}";
         if (work.Distance != options.Distance ||
-            !(work.CollectionName == expectedCollection || work.CollectionName.StartsWith(expectedCollection + "_g", StringComparison.Ordinal)))
+            !(work.CollectionName == expectedCollection
+              || work.CollectionName.StartsWith(expectedCollection + "_g", StringComparison.Ordinal)
+              || EmbeddingSpaceContract.IsSharedCollectionName(work.CollectionName)
+              && work.CollectionName.EndsWith(expectedSharedSuffix, StringComparison.Ordinal)))
             throw new VectorCollectionConfigurationException("The queued index job does not match the configured collection. Explicit reindex is required.");
     }
 

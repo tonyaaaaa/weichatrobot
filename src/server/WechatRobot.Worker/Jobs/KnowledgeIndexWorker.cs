@@ -33,6 +33,11 @@ public sealed class KnowledgeIndexWorker(IServiceScopeFactory scopeFactory, Time
                 var collection = new VectorCollection(job.CollectionName, job.Dimension, job.Distance);
                 if (job.IsCollectionExclusive)
                 {
+                    if (!await knowledge.CanPhysicallyDeleteCollectionAsync(
+                            job.CollectionName,
+                            job.IsCollectionExclusive,
+                            operation.Token))
+                        throw new InvalidOperationException("Vector collection cleanup was rejected by the shared-collection safety policy.");
                     await vectors.DeleteCollectionAsync(collection, operation.Token);
                     if (await vectors.InspectCollectionAsync(collection.Name, operation.Token) is not null)
                         await vectors.DeleteCollectionAsync(collection, operation.Token);
