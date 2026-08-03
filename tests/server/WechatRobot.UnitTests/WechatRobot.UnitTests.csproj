@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\..\src\server\WechatRobot.Domain\WechatRobot.Domain.csproj" />
     <ProjectReference Include="..\..\..\src\server\WechatRobot.Application\WechatRobot.Application.csproj" />
     <ProjectReference Include="..\..\..\src\server\WechatRobot.Infrastructure\WechatRobot.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\tools\WechatRobot.KnowledgeVectorMigration\WechatRobot.KnowledgeVectorMigration.csproj" />
   </ItemGroup>
 
   <ItemGroup>
