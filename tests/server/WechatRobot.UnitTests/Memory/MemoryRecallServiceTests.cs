@@ -6,24 +6,23 @@ using WechatRobot.Application.Security;
 using WechatRobot.Infrastructure.Memory;
 using WechatRobot.Infrastructure.Persistence;
 using WechatRobot.Infrastructure.Persistence.Entities;
-using WechatRobot.IntegrationTests.Infrastructure;
 
-namespace WechatRobot.IntegrationTests.Memory;
+namespace WechatRobot.UnitTests.Memory;
 
-public sealed class MemoryRecallMySqlTests(MySqlFixture fixture)
-    : IClassFixture<MySqlFixture>
+public sealed class MemoryRecallServiceTests
 {
     [Fact]
-    public async Task Recall_loads_twenty_mixed_scope_hits_without_provider_query_failure()
+    public async Task Twenty_mixed_scope_hits_preserve_scope_priority_and_sender_isolation()
     {
         var options = new DbContextOptionsBuilder<WechatRobotDbContext>()
-            .UseMySQL(fixture.ConnectionString)
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         await using var database = new WechatRobotDbContext(options);
-        await database.Database.MigrateAsync(TestContext.Current.CancellationToken);
         var now = DateTime.UtcNow;
         var robotId = Guid.NewGuid();
         var groupId = Guid.NewGuid();
+        var otherRobotId = Guid.NewGuid();
+        var otherGroupId = Guid.NewGuid();
         database.ModelConfigs.Add(new ModelConfigEntity
         {
             Name = "memory-embedding",
@@ -41,33 +40,45 @@ public sealed class MemoryRecallMySqlTests(MySqlFixture fixture)
             Entry("Global", "global", now),
             Entry("Robot", "robot", now, robotId),
             Entry("Group", "group", now, robotId, groupId),
-            Entry("User", "user", now, robotId, groupId, "alice"),
-            Entry("Robot", "forbidden-robot", now, Guid.NewGuid()),
-            Entry("Group", "forbidden-group", now, robotId, Guid.NewGuid()),
-            Entry("User", "forbidden-user", now, robotId, groupId, "bob"),
+            Entry("User", "user-alice", now, robotId, groupId, "alice"),
+            Entry("Robot", "wrong-robot", now, otherRobotId),
+            Entry("Group", "wrong-group", now, robotId, otherGroupId),
+            Entry("User", "wrong-user", now, robotId, groupId, "bob"),
             Entry("Global", "expired", now, expiresAtUtc: now.AddMinutes(-1)),
             Entry("Global", "inactive", now, status: "inactive")
         };
         while (entries.Count < 20) entries.Add(Entry("Global", $"global-{entries.Count}", now));
         database.MemoryEntries.AddRange(entries);
         await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var index = new StubVectorIndex(entries.Select((entry, index) =>
+            new MemoryVectorHit(entry.Id, 1 - index / 100d)).ToArray());
         var service = new MemoryRecallService(
             database,
-            new StubVectorIndex(entries.Select((entry, index) => new MemoryVectorHit(entry.Id, 1 - index / 100d)).ToArray()),
+            index,
             new StubEmbeddingClient(),
             new ModelConfigurationService(new PassThroughProtector()),
             TimeProvider.System);
 
         var result = await service.RecallAsync(
-            "日本三年签证能办吗？",
+            "日本签证材料",
             robotId,
             groupId,
             " Alice ",
             TestContext.Current.CancellationToken);
 
         Assert.Null(result.FailureCode);
-        Assert.True(result.Memories.Count <= 5);
-        Assert.DoesNotContain(result.Memories, item => item.Content is "forbidden-robot" or "forbidden-group" or "forbidden-user" or "expired" or "inactive");
+        Assert.Equal(20, index.RequestedLimit);
+        Assert.Equal(5, result.Memories.Count);
+        Assert.Equal(["User", "Group", "Robot"], result.Memories.Take(3).Select(item => item.ScopeType));
+        Assert.DoesNotContain(result.Memories, item => item.Content is "wrong-robot" or "wrong-group" or "wrong-user" or "expired" or "inactive");
+
+        var anonymous = await service.RecallAsync(
+            "日本签证材料",
+            robotId,
+            groupId,
+            null,
+            TestContext.Current.CancellationToken);
+        Assert.DoesNotContain(anonymous.Memories, item => item.ScopeType == "User");
     }
 
     private static MemoryEntryEntity Entry(
@@ -100,28 +111,19 @@ public sealed class MemoryRecallMySqlTests(MySqlFixture fixture)
 
     private sealed class StubVectorIndex(IReadOnlyList<MemoryVectorHit> hits) : IMemoryVectorIndex
     {
-        public Task IndexAsync(MemoryVectorDocument document, int dimension, VectorDistance distance, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task<IReadOnlyList<MemoryVectorHit>> SearchAsync(
-            IReadOnlyList<float> vector,
-            int dimension,
-            VectorDistance distance,
-            int generation,
-            int limit,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(hits);
-
-        public Task RemoveAsync(Guid memoryEntryId, int dimension, VectorDistance distance, int generation, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+        public int RequestedLimit { get; private set; }
+        public Task<IReadOnlyList<MemoryVectorHit>> SearchAsync(IReadOnlyList<float> vector, int dimension, VectorDistance distance, int generation, int limit, CancellationToken cancellationToken = default)
+        {
+            RequestedLimit = limit;
+            return Task.FromResult(hits);
+        }
+        public Task IndexAsync(MemoryVectorDocument document, int dimension, VectorDistance distance, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task RemoveAsync(Guid memoryEntryId, int dimension, VectorDistance distance, int generation, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class StubEmbeddingClient : IEmbeddingClient
     {
-        public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(
-            ModelProviderConfiguration configuration,
-            EmbeddingBatchRequest request,
-            CancellationToken cancellationToken = default) =>
+        public Task<EmbeddingBatchResponse> CreateEmbeddingsAsync(ModelProviderConfiguration configuration, EmbeddingBatchRequest request, CancellationToken cancellationToken = default) =>
             Task.FromResult<EmbeddingBatchResponse>(new([[.1f, .2f]]));
     }
 

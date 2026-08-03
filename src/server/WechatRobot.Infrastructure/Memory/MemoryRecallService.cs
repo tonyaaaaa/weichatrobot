@@ -76,21 +76,13 @@ public sealed class MemoryRecallService(
             var ids = scores.Keys.ToArray();
             var normalizedSubject = MemoryScope.NormalizeSubject(subjectKey);
             var now = timeProvider.GetUtcNow().UtcDateTime;
-            var idPredicate = GuidBatchQuery.BuildPredicate<MemoryEntryEntity>(
+            var entries = await LoadVisibleEntriesAsync(
                 ids,
-                entry => entry.Id);
-            var entries = await database.MemoryEntries.AsNoTracking()
-                .Where(idPredicate)
-                .Where(x =>
-                            x.Status == "active" &&
-                            (x.ExpiresAtUtc == null || x.ExpiresAtUtc > now) &&
-                            (
-                                x.ScopeType == "Global" ||
-                                x.ScopeType == "Robot" && x.RobotConfigId == robotConfigId ||
-                                x.ScopeType == "Group" && x.RobotConfigId == robotConfigId && x.GroupProfileId == groupProfileId ||
-                                x.ScopeType == "User" && x.RobotConfigId == robotConfigId && x.GroupProfileId == groupProfileId && x.SubjectKey == normalizedSubject
-                            ))
-                .ToArrayAsync(cancellationToken);
+                robotConfigId,
+                groupProfileId,
+                normalizedSubject,
+                now,
+                cancellationToken);
 
             var characters = 0;
             var recalled = new List<RecalledMemory>();
@@ -123,6 +115,51 @@ public sealed class MemoryRecallService(
         {
             return new([], "memory_recall_unavailable");
         }
+    }
+
+    private async Task<MemoryEntryEntity[]> LoadVisibleEntriesAsync(
+        Guid[] ids,
+        Guid robotConfigId,
+        Guid groupProfileId,
+        string? normalizedSubject,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        var visible = new Dictionary<Guid, MemoryEntryEntity>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(ids))
+        {
+            var idPredicate = GuidBatchQuery.BuildPredicate<MemoryEntryEntity>(batch, entry => entry.Id);
+            var baseQuery = database.MemoryEntries.AsNoTracking()
+                .Where(idPredicate)
+                .Where(entry => entry.Status == "active"
+                    && (entry.ExpiresAtUtc == null || entry.ExpiresAtUtc > now));
+            await AddAsync(baseQuery.Where(entry => entry.ScopeType == "Global"), visible, cancellationToken);
+            await AddAsync(baseQuery.Where(entry =>
+                entry.ScopeType == "Robot"
+                && entry.RobotConfigId == robotConfigId), visible, cancellationToken);
+            await AddAsync(baseQuery.Where(entry =>
+                entry.ScopeType == "Group"
+                && entry.RobotConfigId == robotConfigId
+                && entry.GroupProfileId == groupProfileId), visible, cancellationToken);
+            if (normalizedSubject is not null)
+            {
+                await AddAsync(baseQuery.Where(entry =>
+                    entry.ScopeType == "User"
+                    && entry.RobotConfigId == robotConfigId
+                    && entry.GroupProfileId == groupProfileId
+                    && entry.SubjectKey == normalizedSubject), visible, cancellationToken);
+            }
+        }
+        return visible.Values.ToArray();
+    }
+
+    private static async Task AddAsync(
+        IQueryable<MemoryEntryEntity> query,
+        IDictionary<Guid, MemoryEntryEntity> visible,
+        CancellationToken cancellationToken)
+    {
+        foreach (var entry in await query.ToArrayAsync(cancellationToken))
+            visible.TryAdd(entry.Id, entry);
     }
 
     private static int ScopePriority(string scopeType) => scopeType switch
