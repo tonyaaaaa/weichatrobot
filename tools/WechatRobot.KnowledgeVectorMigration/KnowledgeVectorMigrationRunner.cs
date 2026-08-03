@@ -217,7 +217,9 @@ public sealed class KnowledgeVectorMigrationRunner(
         foreach (var item in checkpoint.Versions)
         {
             var destination = Collection(item.DestinationCollection, item.Dimension, item.Distance);
-            var metadata = await vectors.InspectVersionAsync(destination, item.VersionId, token);
+            var metadata = await WithTransientRetryAsync(
+                () => vectors.InspectVersionAsync(destination, item.VersionId, token),
+                token);
             var document = await database.KnowledgeDocuments.AsNoTracking()
                 .SingleAsync(value => value.Id == item.DocumentId, token);
             var version = await database.KnowledgeDocumentVersions.AsNoTracking()
@@ -246,7 +248,9 @@ public sealed class KnowledgeVectorMigrationRunner(
         {
             if (item.Stage is not (MigrationStage.Switched or MigrationStage.Accepted)) continue;
             var source = Collection(item.SourceCollection, item.Dimension, item.Distance);
-            var metadata = await vectors.InspectVersionAsync(source, item.VersionId, token);
+            var metadata = await WithTransientRetryAsync(
+                () => vectors.InspectVersionAsync(source, item.VersionId, token),
+                token);
             if (metadata.Count != item.ExpectedPointCount || MetadataHash(metadata) != item.ExpectedMetadataHash)
                 throw new InvalidOperationException("Rollback source verification failed; database mappings were not changed.");
         }
@@ -282,16 +286,18 @@ public sealed class KnowledgeVectorMigrationRunner(
     {
         var source = Collection(item.SourceCollection, item.Dimension, item.Distance);
         var destination = Collection(item.DestinationCollection, item.Dimension, item.Distance);
-        await vectors.EnsureCollectionAsync(destination, token);
-        await vectors.EnsurePayloadIndexesAsync(destination, token);
+        await WithTransientRetryAsync(() => vectors.EnsureCollectionAsync(destination, token), token);
+        await WithTransientRetryAsync(() => vectors.EnsurePayloadIndexesAsync(destination, token), token);
         var copiedMetadata = new List<VectorPointMetadata>(item.ExpectedPointCount);
         string? offset = null;
         do
         {
-            var page = await vectors.ReadVersionPointsAsync(source, item.VersionId, offset, 256, token);
+            var page = await WithTransientRetryAsync(
+                () => vectors.ReadVersionPointsAsync(source, item.VersionId, offset, 256, token),
+                token);
             if (page.Points.Any(point => point.DocumentId != item.DocumentId || point.VersionId != item.VersionId))
                 throw new InvalidOperationException("Source vector metadata changed during copy.");
-            await vectors.UpsertAsync(destination, page.Points, token);
+            await WithTransientRetryAsync(() => vectors.UpsertAsync(destination, page.Points, token), token);
             copiedMetadata.AddRange(page.Points.Select(ToMetadata));
             offset = page.NextOffset;
         } while (offset is not null);
@@ -306,7 +312,9 @@ public sealed class KnowledgeVectorMigrationRunner(
     private async Task VerifyCopiedAsync(MigrationCheckpoint checkpoint, VersionMigrationCheckpoint item, CancellationToken token)
     {
         var destination = Collection(item.DestinationCollection, item.Dimension, item.Distance);
-        var metadata = await vectors.InspectVersionAsync(destination, item.VersionId, token);
+        var metadata = await WithTransientRetryAsync(
+            () => vectors.InspectVersionAsync(destination, item.VersionId, token),
+            token);
         if (metadata.Count != item.ExpectedPointCount || MetadataHash(metadata) != item.ExpectedMetadataHash)
             throw new InvalidOperationException("Destination vector verification failed.");
         item.Stage = MigrationStage.Verified;
@@ -346,6 +354,15 @@ public sealed class KnowledgeVectorMigrationRunner(
             }
         }
     }
+
+    private static Task WithTransientRetryAsync(
+        Func<Task> operation,
+        CancellationToken cancellationToken) =>
+        WithTransientRetryAsync(async () =>
+        {
+            await operation();
+            return true;
+        }, cancellationToken);
 
     private static VectorCollection Collection(string name, int dimension, string distance) =>
         new(name, dimension, ParseDistance(distance));

@@ -60,7 +60,11 @@ public sealed class KnowledgeVectorMigrationRunnerTests
 
         var source = new VectorCollection(document.ActiveCollectionName, 3, VectorDistance.Cosine);
         var point = new VectorPoint(Guid.NewGuid(), document.Id, version.Id, [Guid.NewGuid()], [1, 0, 0], true, 1);
-        var vectors = new InMemoryMigrationVectorStore(source, point, transientInspectFailures: 1);
+        var vectors = new InMemoryMigrationVectorStore(
+            source,
+            point,
+            transientInspectFailures: 1,
+            transientPayloadIndexFailures: 1);
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "WechatRobotTests", Guid.NewGuid().ToString("N"));
         var checkpointPath = Path.Combine(temporaryDirectory, "checkpoint.json");
         try
@@ -97,9 +101,11 @@ public sealed class KnowledgeVectorMigrationRunnerTests
     private sealed class InMemoryMigrationVectorStore(
         VectorCollection source,
         VectorPoint point,
-        int transientInspectFailures = 0) : IVectorStore
+        int transientInspectFailures = 0,
+        int transientPayloadIndexFailures = 0) : IVectorStore
     {
         private int _remainingInspectFailures = transientInspectFailures;
+        private int _remainingPayloadIndexFailures = transientPayloadIndexFailures;
         private readonly Dictionary<string, Dictionary<Guid, VectorPoint>> _collections = new(StringComparer.Ordinal)
         {
             [source.Name] = new() { [point.Id] = point }
@@ -111,7 +117,12 @@ public sealed class KnowledgeVectorMigrationRunnerTests
             return Task.CompletedTask;
         }
 
-        public Task EnsurePayloadIndexesAsync(VectorCollection collection, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnsurePayloadIndexesAsync(VectorCollection collection, CancellationToken cancellationToken)
+        {
+            if (_remainingPayloadIndexFailures-- > 0)
+                throw new VectorStoreUnavailableException("transient payload index test failure");
+            return Task.CompletedTask;
+        }
 
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken cancellationToken)
         {
