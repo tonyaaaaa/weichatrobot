@@ -62,9 +62,10 @@ internal static class OpenAiCompatibleRequestTuning
         };
         if (!root.ContainsKey("max_tokens"))
             root["max_tokens"] = 2048;
-        var replacement = new ByteArrayContent(Encoding.UTF8.GetBytes(root.ToJsonString()));
-        foreach (var header in request.Content.Headers)
-            replacement.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        var originalContentType = request.Content.Headers.ContentType;
+        var replacement = new ByteArrayContent(
+            Encoding.UTF8.GetBytes(root.ToJsonString()));
+        replacement.Headers.ContentType = originalContentType;
         request.Content = replacement;
     }
 }
