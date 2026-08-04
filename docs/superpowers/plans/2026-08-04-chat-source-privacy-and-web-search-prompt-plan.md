@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ensure private and group WeChat replies never expose web-search source lists, preserve those sources in conversation audit, prevent GLM Web Search from treating prompt metadata such as `participant` as the user's query, and answer exact greetings without invoking retrieval or an LLM.
+**Goal:** Ensure private and group WeChat replies never expose web-search source lists, preserve those sources in conversation audit, prevent GLM Web Search from treating prompt metadata such as `participant` as the user's query, answer exact greetings without invoking retrieval or an LLM, and keep the knowledge-document list available after a physical-delete request.
 
-**Architecture:** Enforce reply privacy at the shared `GroundedAnswerService` boundary while leaving the existing audit payload intact. Give the Web Search fallback a question-only final user message, introduce a shared deterministic greeting result in Application, and invoke it from both private and group processors after their existing eligibility gates but before template routing and retrieval. Retain the persisted `WebSearchShowSources` field for backward compatibility, but normalize all API writes and effective reads to `false` and remove its admin UI control.
+**Architecture:** Enforce reply privacy at the shared `GroundedAnswerService` boundary while leaving the existing audit payload intact. Give the Web Search fallback a question-only final user message, introduce a shared deterministic greeting result in Application, and invoke it from both private and group processors after their existing eligibility gates but before template routing and retrieval. Retain the persisted `WebSearchShowSources` field for backward compatibility, but normalize all API writes and effective reads to `false` and remove its admin UI control. For physical-delete list summaries, replace the MySQL-incompatible runtime GUID collection predicate with the repository's bounded `GuidBatchQuery` pattern and preserve the current retry-state contract.
 
 **Tech Stack:** .NET 10, ASP.NET Core, EF Core/MySQL, xUnit v3 with Microsoft Testing Platform, Vue 3, TypeScript, Vite, Element Plus, Vitest.
 
@@ -14,6 +14,8 @@
 - Preserve all unrelated user changes and inspect the worktree before editing.
 - Use `.local/.env` only through `WECHATROBOT_ENV_FILE`; never print secret values.
 - Do not create a database migration or reindex Qdrant; the schema and vector data do not change.
+- Do not start, retry, or complete physical-delete jobs as part of the list-query repair; the Worker remains authoritative for cleanup.
+- Query cleanup-job IDs through `GuidBatchQuery.CreateBatches` and `GuidBatchQuery.BuildPredicate`; do not use a runtime `Guid[]` `Contains` predicate or per-document N+1 queries.
 - Keep `WebSearchShowSources` in persisted/backend/frontend contracts for compatibility, but never allow it to affect outgoing chat text.
 - Keep `ChatSource` records in `RetrievalAuditDraft.WebSearchSources`; only the user-visible answer is source-free.
 - Greeting matching is exact after trim, terminal punctuation removal, and ASCII case normalization. It must not match business questions that merely contain a greeting.
@@ -359,7 +361,165 @@ Expected: API input `true` round-trips as `false`, persistence is false, the che
 
 ---
 
-## Task 5: Cross-boundary regression verification
+## Task 5: Repair the physical-delete list summary query
+
+**Files:**
+
+- Modify: `src/server/WechatRobot.Infrastructure/Knowledge/KnowledgeDocumentAdministrationQuery.cs`
+- Modify: `tests/server/WechatRobot.IntegrationTests/Knowledge/KnowledgeDocumentAdministrationMySqlTests.cs`
+
+**Interfaces:**
+
+- Consumes: `GuidBatchQuery.CreateBatches(IEnumerable<Guid>, int)` and `GuidBatchQuery.BuildPredicate<TEntity>(IReadOnlyCollection<Guid>, Expression<Func<TEntity, Guid>>)` from `WechatRobot.Infrastructure.Persistence`.
+- Produces: private `LoadCleanupStatusesAsync(IReadOnlyCollection<Guid>, CancellationToken)` returning `Task<Dictionary<Guid, string>>`; public API response contracts remain unchanged.
+
+- [ ] **Step 1: Expand the MySQL regression test to reproduce a mixed pending-delete page**
+
+Replace the single-document setup in `Physical_delete_state_queries_translate_on_mysql` with two pending-delete documents and one normal document. Give the pending documents deterministic cleanup jobs in different states:
+
+```csharp
+var pendingDocument = new KnowledgeDocumentEntity
+{
+    Title = $"Pending Delete {suffix}",
+    Status = "disabled",
+    IsDeleteRequested = true
+};
+var failedDocument = new KnowledgeDocumentEntity
+{
+    Title = $"Failed Delete {suffix}",
+    Status = "disabled",
+    IsDeleteRequested = true
+};
+var normalDocument = new KnowledgeDocumentEntity
+{
+    Title = $"Normal Document {suffix}",
+    Status = "uploaded"
+};
+
+setup.AddRange(
+    pendingDocument,
+    failedDocument,
+    normalDocument,
+    Version(pendingDocument.Id, 1, "pending-delete.txt", "disabled"),
+    Version(failedDocument.Id, 1, "failed-delete.txt", "disabled"),
+    Version(normalDocument.Id, 1, "normal.txt", "uploaded"),
+    CleanupJob(pendingDocument.Id, "pending"),
+    CleanupJob(failedDocument.Id, "deadLetter"));
+```
+
+Add these local helper methods to the test class so every seeded row satisfies the existing entity contract:
+
+```csharp
+private static KnowledgeDocumentVersionEntity Version(
+    Guid documentId,
+    int version,
+    string fileName,
+    string status) => new()
+{
+    KnowledgeDocumentId = documentId,
+    Version = version,
+    OriginalFileName = fileName,
+    SafeFileName = fileName,
+    ContentType = "text/plain",
+    Sha256 = Guid.NewGuid().ToString("N").PadRight(64, '0'),
+    ObjectKey = $"test/physical-delete-list/{Guid.NewGuid():N}/{fileName}",
+    Status = status
+};
+
+private static DurableJobEntity CleanupJob(Guid documentId, string status) => new()
+{
+    Id = KnowledgeDocumentCleanupJobIdentity.Create(documentId),
+    JobType = "CleanupKnowledgeDocument",
+    Status = status,
+    PayloadJson = "{}"
+};
+```
+
+Query by the shared `suffix`, then assert:
+
+```csharp
+Assert.Equal(3, page.Items.Count);
+Assert.False(page.Items.Single(item => item.Id == pendingDocument.Id).CanRetryPhysicalDelete);
+Assert.True(page.Items.Single(item => item.Id == failedDocument.Id).CanRetryPhysicalDelete);
+Assert.False(page.Items.Single(item => item.Id == normalDocument.Id).IsDeleteRequested);
+```
+
+- [ ] **Step 2: Run the focused MySQL test against the configured integration-test database**
+
+```powershell
+$env:WECHATROBOT_ENV_FILE = 'H:\Codex\WechatRobot\.local\.env'
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~KnowledgeDocumentAdministrationMySqlTests.Physical_delete_state_queries_translate_on_mysql"
+```
+
+Expected on the affected MySQL configuration before implementation: FAIL from the cleanup-job status query when EF executes the runtime GUID collection predicate. If the configured test server does not reproduce the Provider exception, retain this behavior regression and use the code review assertion in Step 5 to prove the unsafe predicate is removed; do not run test writes against an unconfirmed production database.
+
+- [ ] **Step 3: Add the bounded cleanup-status loader**
+
+In `KnowledgeDocumentAdministrationQuery`, add a focused loader using the same pattern as the class's version/tag loaders:
+
+```csharp
+private async Task<Dictionary<Guid, string>> LoadCleanupStatusesAsync(
+    IReadOnlyCollection<Guid> cleanupJobIds,
+    CancellationToken cancellationToken)
+{
+    var rows = await LoadBatchedAsync(
+        cleanupJobIds,
+        batch =>
+        {
+            var predicate = GuidBatchQuery.BuildPredicate<DurableJobEntity>(
+                batch,
+                job => job.Id);
+            return database.DurableJobs
+                .AsNoTracking()
+                .Where(predicate)
+                .Where(job => job.JobType == "CleanupKnowledgeDocument")
+                .Select(job => new CleanupJobStatusRow(job.Id, job.Status))
+                .ToArrayAsync(cancellationToken);
+        });
+
+    return rows.ToDictionary(row => row.Id, row => row.Status);
+}
+```
+
+Add the private projection beside the other private records:
+
+```csharp
+private sealed record CleanupJobStatusRow(Guid Id, string Status);
+```
+
+- [ ] **Step 4: Replace the incompatible collection query**
+
+Keep cleanup-job ID construction unchanged, then replace the direct `Contains`/`ToDictionaryAsync` query with:
+
+```csharp
+var cleanupStatuses = await LoadCleanupStatusesAsync(
+    cleanupJobIds.Values.ToArray(),
+    cancellationToken);
+```
+
+Do not catch database exceptions, change `CanRetryPhysicalDelete`, or execute cleanup inline.
+
+- [ ] **Step 5: Run the focused MySQL test and inspect the source invariant**
+
+```powershell
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~KnowledgeDocumentAdministrationMySqlTests.Physical_delete_state_queries_translate_on_mysql"
+rg -n "cleanupJobIdValues\.Contains|GuidBatchQuery\.BuildPredicate<DurableJobEntity>" src/server/WechatRobot.Infrastructure/Knowledge/KnowledgeDocumentAdministrationQuery.cs
+```
+
+Expected: the test passes; the unsafe `cleanupJobIdValues.Contains` expression is absent; the durable-job query uses `BuildPredicate<DurableJobEntity>`.
+
+- [ ] **Step 6: Commit the isolated query repair**
+
+```powershell
+git add src/server/WechatRobot.Infrastructure/Knowledge/KnowledgeDocumentAdministrationQuery.cs `
+        tests/server/WechatRobot.IntegrationTests/Knowledge/KnowledgeDocumentAdministrationMySqlTests.cs
+git diff --cached --check
+git commit -m "fix: load physical cleanup states safely"
+```
+
+---
+
+## Task 6: Cross-boundary regression verification
 
 **Files:**
 
@@ -378,7 +538,7 @@ Load `.local` without displaying values, then run:
 
 ```powershell
 $env:WECHATROBOT_ENV_FILE = 'H:\Codex\WechatRobot\.local\.env'
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~PrivateChatProcessorTests|FullyQualifiedName~GroupConfigurationMySqlTests"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~PrivateChatProcessorTests|FullyQualifiedName~GroupConfigurationMySqlTests|FullyQualifiedName~KnowledgeDocumentAdministrationMySqlTests"
 ```
 
 If the test framework does not accept the compound filter syntax, run each class separately. Report unavailable MySQL or external infrastructure as a blocker rather than substituting stale evidence.
@@ -403,7 +563,7 @@ dotnet build src/server/WechatRobot.Worker/WechatRobot.Worker.csproj -c Release
 - [ ] **Step 5: Check diff hygiene and source-leak regressions**
 
 ```powershell
-rg -n "AppendSources|在群消息中展示网页来源|WebSearchShowSources:\s*true" src tests
+rg -n "AppendSources|在群消息中展示网页来源|WebSearchShowSources:\s*true|cleanupJobIdValues\.Contains" src tests
 git diff --check
 git status --short
 git diff --stat
@@ -423,6 +583,7 @@ Confirm explicitly:
 - Group policy/mention/intent rules still run before the greeting response.
 - The legacy API field is accepted but normalized to false.
 - No database migration, Qdrant change, or knowledge reindex was introduced.
+- Pending physical-delete documents remain listable, and cleanup retryability retains its existing meaning.
 
 - [ ] **Step 7: Commit the completed implementation**
 
@@ -449,7 +610,7 @@ If `src/web/wechatrobot-admin/src/api/groups.ts` or another directly required co
 
 ---
 
-## Task 6: Release handoff (only after all verification passes)
+## Task 7: Release handoff (only after all verification passes)
 
 **Files:**
 
