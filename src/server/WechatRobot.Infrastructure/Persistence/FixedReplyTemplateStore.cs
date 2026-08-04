@@ -199,11 +199,7 @@ public sealed class FixedReplyTemplateStore(WechatRobotDbContext database)
             .Take(maximumCandidates)
             .ToListAsync(cancellationToken);
         var ids = templates.Select(item => item.Id).ToArray();
-        var examples = await database.FixedReplyTemplateExamples
-            .AsNoTracking()
-            .Where(item => ids.Contains(item.TemplateId))
-            .OrderBy(item => item.Id)
-            .ToListAsync(cancellationToken);
+        var examples = await LoadExamplesAsync(ids, cancellationToken);
         return templates.Select(item => new EffectiveFixedReply(
             item.Id,
             item.Version,
@@ -261,11 +257,7 @@ public sealed class FixedReplyTemplateStore(WechatRobotDbContext database)
             .Take(maximumCandidates)
             .ToListAsync(cancellationToken);
         var ids = templates.Select(item => item.Id).ToArray();
-        var examples = await database.FixedReplyTemplateExamples
-            .AsNoTracking()
-            .Where(item => ids.Contains(item.TemplateId))
-            .OrderBy(item => item.Id)
-            .ToListAsync(cancellationToken);
+        var examples = await LoadExamplesAsync(ids, cancellationToken);
         return templates.Select(item => new EffectiveFixedReply(
             item.Id,
             item.Version,
@@ -312,16 +304,8 @@ public sealed class FixedReplyTemplateStore(WechatRobotDbContext database)
             return [];
         }
         var ids = entities.Select(item => item.Id).ToArray();
-        var examples = await database.FixedReplyTemplateExamples
-            .AsNoTracking()
-            .Where(item => ids.Contains(item.TemplateId))
-            .OrderBy(item => item.Id)
-            .ToListAsync(cancellationToken);
-        var rules = await database.FixedReplyTemplateGroupRules
-            .AsNoTracking()
-            .Where(item => ids.Contains(item.TemplateId))
-            .OrderBy(item => item.GroupProfileId)
-            .ToListAsync(cancellationToken);
+        var examples = await LoadExamplesAsync(ids, cancellationToken);
+        var rules = await LoadGroupRulesAsync(ids, cancellationToken);
         return entities.Select(item => new FixedReplyTemplateView(
             item.Id,
             item.Name,
@@ -344,6 +328,50 @@ public sealed class FixedReplyTemplateStore(WechatRobotDbContext database)
             item.CreatedAtUtc,
             item.UpdatedAtUtc,
             item.DeletedAtUtc)).ToArray();
+    }
+
+    private async Task<IReadOnlyList<FixedReplyTemplateExampleEntity>>
+        LoadExamplesAsync(
+            IReadOnlyCollection<Guid> templateIds,
+            CancellationToken cancellationToken)
+    {
+        var examples = new List<FixedReplyTemplateExampleEntity>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(templateIds))
+        {
+            var predicate = GuidBatchQuery
+                .BuildPredicate<FixedReplyTemplateExampleEntity>(
+                    batch,
+                    item => item.TemplateId);
+            examples.AddRange(await database.FixedReplyTemplateExamples
+                .AsNoTracking()
+                .Where(predicate)
+                .OrderBy(item => item.Id)
+                .ToArrayAsync(cancellationToken));
+        }
+
+        return examples.OrderBy(item => item.Id).ToArray();
+    }
+
+    private async Task<IReadOnlyList<FixedReplyTemplateGroupRuleEntity>>
+        LoadGroupRulesAsync(
+            IReadOnlyCollection<Guid> templateIds,
+            CancellationToken cancellationToken)
+    {
+        var rules = new List<FixedReplyTemplateGroupRuleEntity>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(templateIds))
+        {
+            var predicate = GuidBatchQuery
+                .BuildPredicate<FixedReplyTemplateGroupRuleEntity>(
+                    batch,
+                    item => item.TemplateId);
+            rules.AddRange(await database.FixedReplyTemplateGroupRules
+                .AsNoTracking()
+                .Where(predicate)
+                .OrderBy(item => item.GroupProfileId)
+                .ToArrayAsync(cancellationToken));
+        }
+
+        return rules.OrderBy(item => item.GroupProfileId).ToArray();
     }
 
     private void ReplaceChildren(
