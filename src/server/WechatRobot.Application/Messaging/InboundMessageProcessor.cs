@@ -141,6 +141,16 @@ public sealed class InboundMessageProcessor(
                 return;
             }
         }
+        if (ConversationalGreeting.TryCreate(request.Question, out var greeting))
+        {
+            await EnsureLeaseAsync(request, cancellationToken);
+            await conversations.PersistAnswerAndEnqueueAsync(
+                request,
+                greeting,
+                cancellationToken);
+            committed = true;
+            return;
+        }
         if (runtime.TemplateRoutingRuntimeMode == TemplateRoutingRuntimeMode.AgentFramework
             && templateRouter is not null
             && fixedReplies is not null)

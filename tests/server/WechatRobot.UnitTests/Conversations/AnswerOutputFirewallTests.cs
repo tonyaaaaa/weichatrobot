@@ -23,6 +23,13 @@ public sealed class AnswerOutputFirewallTests
     }
 
     [Theory]
+    [MemberData(nameof(GenericMarkers))]
+    public void Ungrounded_answers_with_source_markers_are_rejected(string output)
+    {
+        Assert.False(new AnswerOutputFirewall().ValidateUngrounded(output).IsSafe);
+    }
+
+    [Theory]
     [InlineData("The warranty is two years, according to the policy.")]
     [InlineData("质保期为两年，如需维修请联系售后。")]
     public void Clean_plain_answers_are_accepted(string output)

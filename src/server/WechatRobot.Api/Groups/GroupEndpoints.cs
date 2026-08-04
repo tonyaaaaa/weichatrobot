@@ -426,7 +426,7 @@ public static class GroupEndpoints
         AnswerFallbackRequest request) => new(
         request.WebSearchEnabled,
         request.ModelKnowledgeFallbackEnabled,
-        request.WebSearchShowSources,
+        false,
         request.WebSearchResultCount,
         request.WebSearchRecency,
         request.WebSearchDomainFilter,
@@ -437,7 +437,7 @@ public static class GroupEndpoints
         GroupProfileEntity group) => new(
         group.WebSearchEnabled,
         group.ModelKnowledgeFallbackEnabled,
-        group.WebSearchShowSources,
+        false,
         group.WebSearchResultCount,
         group.WebSearchRecency,
         group.WebSearchDomainFilter,
@@ -450,7 +450,7 @@ public static class GroupEndpoints
     {
         group.WebSearchEnabled = settings.WebSearchEnabled;
         group.ModelKnowledgeFallbackEnabled = settings.ModelKnowledgeFallbackEnabled;
-        group.WebSearchShowSources = settings.WebSearchShowSources;
+        group.WebSearchShowSources = false;
         group.WebSearchResultCount = settings.WebSearchResultCount;
         group.WebSearchRecency = settings.WebSearchRecency;
         group.WebSearchDomainFilter = settings.WebSearchDomainFilter;

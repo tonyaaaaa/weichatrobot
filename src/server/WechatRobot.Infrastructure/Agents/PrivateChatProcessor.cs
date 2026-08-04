@@ -29,7 +29,7 @@ public sealed class PrivateChatProcessor(
     private static readonly GroupAnswerFallbackSettings PrivateAnswerFallback = new(
         WebSearchEnabled: true,
         ModelKnowledgeFallbackEnabled: true,
-        WebSearchShowSources: true,
+        WebSearchShowSources: false,
         WebSearchResultCount: 5,
         WebSearchRecency: "NoLimit",
         WebSearchDomainFilter: null,
@@ -75,6 +75,16 @@ public sealed class PrivateChatProcessor(
                 await database.SaveChangesAsync(cancellationToken);
             }
             await ReplyAsync(message, "已收到，正在整理并对比现有知识。", cancellationToken);
+            return;
+        }
+
+        if (ConversationalGreeting.TryCreate(command.Body, out var greeting))
+        {
+            await ReplyAsync(
+                message,
+                greeting.Decision.GroupText,
+                cancellationToken,
+                greeting);
             return;
         }
 

@@ -29,7 +29,9 @@
 **Files:**
 
 - Modify: `src/server/WechatRobot.Application/Conversations/GroundedAnswerService.cs`
+- Modify: `src/server/WechatRobot.Application/Conversations/AnswerOutputFirewall.cs`
 - Modify: `tests/server/WechatRobot.UnitTests/Conversations/GroundedAnswerTests.cs`
+- Modify: `tests/server/WechatRobot.UnitTests/Conversations/AnswerOutputFirewallTests.cs`
 
 - [ ] **Step 1: Add a failing unit test proving sources stay in audit but not in the reply**
 
@@ -62,7 +64,7 @@ Also keep an assertion that conversation summary/history, when provided, remains
 Run:
 
 ```powershell
-dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --filter "FullyQualifiedName~GroundedAnswerTests"
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-class "WechatRobot.UnitTests.Conversations.GroundedAnswerTests"
 ```
 
 Expected before implementation: the reply contains `来源：` when the flag is true, and the Web Search request's last message contains the `participant`/`content` envelope.
@@ -99,6 +101,17 @@ messages.Add(new(
 ```
 
 Do not change the controlled-evidence prompt or model-knowledge fallback prompt in this task.
+
+Extend `AnswerOutputFirewall.ValidateUngrounded` so model-generated source markers cannot bypass
+the removal of `AppendSources`:
+
+```csharp
+if (GenericMarker.IsMatch(output))
+    return new(false, "generic_source_marker");
+```
+
+Cover the existing `GenericMarkers` theory data through `ValidateUngrounded`; these cases must fail
+before this change and pass afterward.
 
 - [ ] **Step 5: Re-run focused unit tests**
 
@@ -149,7 +162,7 @@ Assert.Empty(result.Audit.WebSearchSources);
 - [ ] **Step 2: Run the focused test and confirm it fails to compile**
 
 ```powershell
-dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --filter "FullyQualifiedName~ConversationalGreetingTests"
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-class "WechatRobot.UnitTests.Conversations.ConversationalGreetingTests"
 ```
 
 Expected: `ConversationalGreeting` does not exist.
@@ -241,8 +254,8 @@ Also retain or add a negative case for `你好，日本签证需要什么材料`
 - [ ] **Step 3: Run the processor-focused tests and confirm failure**
 
 ```powershell
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~PrivateChatProcessorTests"
-dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj --filter "FullyQualifiedName~InboundMessageProcessorTests"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.PrivateChat.PrivateChatProcessorTests"
+dotnet test tests/server/WechatRobot.UnitTests/WechatRobot.UnitTests.csproj -- --filter-class "WechatRobot.UnitTests.Conversations.InboundMessageProcessorTests"
 ```
 
 Expected before wiring: downstream router/retrieval/model is invoked, or the private flow returns the unavailable fallback when no model exists.
@@ -325,9 +338,9 @@ When the panel emits an updated fallback draft for another field, assert `webSea
 - [ ] **Step 3: Run focused backend and frontend tests and confirm failures**
 
 ```powershell
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~GroupConfigurationMySqlTests"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Groups.GroupConfigurationMySqlTests"
 Set-Location src/web/wechatrobot-admin
-npm test -- --run src/components/groups/GroupKnowledgeAnswerPanel.spec.ts
+npm test -- src/components/groups/GroupKnowledgeAnswerPanel.spec.ts
 ```
 
 - [ ] **Step 4: Normalize the backend compatibility field**
@@ -448,7 +461,7 @@ Assert.False(page.Items.Single(item => item.Id == normalDocument.Id).IsDeleteReq
 
 ```powershell
 $env:WECHATROBOT_ENV_FILE = 'H:\Codex\WechatRobot\.local\.env'
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~KnowledgeDocumentAdministrationMySqlTests.Physical_delete_state_queries_translate_on_mysql"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-method "WechatRobot.IntegrationTests.Knowledge.KnowledgeDocumentAdministrationMySqlTests.Physical_delete_state_queries_translate_on_mysql"
 ```
 
 Expected on the affected MySQL configuration before implementation: FAIL from the cleanup-job status query when EF executes the runtime GUID collection predicate. If the configured test server does not reproduce the Provider exception, retain this behavior regression and use the code review assertion in Step 5 to prove the unsafe predicate is removed; do not run test writes against an unconfirmed production database.
@@ -502,7 +515,7 @@ Do not catch database exceptions, change `CanRetryPhysicalDelete`, or execute cl
 - [ ] **Step 5: Run the focused MySQL test and inspect the source invariant**
 
 ```powershell
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~KnowledgeDocumentAdministrationMySqlTests.Physical_delete_state_queries_translate_on_mysql"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-method "WechatRobot.IntegrationTests.Knowledge.KnowledgeDocumentAdministrationMySqlTests.Physical_delete_state_queries_translate_on_mysql"
 rg -n "cleanupJobIdValues\.Contains|GuidBatchQuery\.BuildPredicate<DurableJobEntity>" src/server/WechatRobot.Infrastructure/Knowledge/KnowledgeDocumentAdministrationQuery.cs
 ```
 
@@ -538,7 +551,9 @@ Load `.local` without displaying values, then run:
 
 ```powershell
 $env:WECHATROBOT_ENV_FILE = 'H:\Codex\WechatRobot\.local\.env'
-dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj --filter "FullyQualifiedName~PrivateChatProcessorTests|FullyQualifiedName~GroupConfigurationMySqlTests|FullyQualifiedName~KnowledgeDocumentAdministrationMySqlTests"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.PrivateChat.PrivateChatProcessorTests"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Groups.GroupConfigurationMySqlTests"
+dotnet test tests/server/WechatRobot.IntegrationTests/WechatRobot.IntegrationTests.csproj -- --filter-class "WechatRobot.IntegrationTests.Knowledge.KnowledgeDocumentAdministrationMySqlTests"
 ```
 
 If the test framework does not accept the compound filter syntax, run each class separately. Report unavailable MySQL or external infrastructure as a blocker rather than substituting stale evidence.
@@ -591,16 +606,23 @@ Review staged files so no `.local` data or unrelated changes are included, then:
 
 ```powershell
 git add src/server/WechatRobot.Application/Conversations/GroundedAnswerService.cs `
+        src/server/WechatRobot.Application/Conversations/AnswerOutputFirewall.cs `
         src/server/WechatRobot.Application/Conversations/ConversationalGreeting.cs `
         src/server/WechatRobot.Application/Messaging/InboundMessageProcessor.cs `
         src/server/WechatRobot.Infrastructure/Agents/PrivateChatProcessor.cs `
         src/server/WechatRobot.Api/Groups/GroupEndpoints.cs `
         src/web/wechatrobot-admin/src/components/groups/GroupKnowledgeAnswerPanel.vue `
         src/web/wechatrobot-admin/src/components/groups/GroupKnowledgeAnswerPanel.spec.ts `
+        src/web/wechatrobot-admin/src/views/groups/groupConfigurationDraft.ts `
+        src/web/wechatrobot-admin/src/views/groups/groupConfigurationDraft.spec.ts `
+        docs/superpowers/specs/2026-08-04-chat-source-privacy-and-web-search-prompt-design.md `
+        docs/superpowers/plans/2026-08-04-chat-source-privacy-and-web-search-prompt-plan.md `
+        tests/server/WechatRobot.UnitTests/Conversations/AnswerOutputFirewallTests.cs `
         tests/server/WechatRobot.UnitTests/Conversations/GroundedAnswerTests.cs `
         tests/server/WechatRobot.UnitTests/Conversations/ConversationalGreetingTests.cs `
         tests/server/WechatRobot.UnitTests/Conversations/InboundMessageProcessorTests.cs `
         tests/server/WechatRobot.IntegrationTests/PrivateChat/PrivateChatProcessorTests.cs `
+        tests/server/WechatRobot.IntegrationTests/Groups/GroupConfigurationTests.cs `
         tests/server/WechatRobot.IntegrationTests/Groups/GroupConfigurationMySqlTests.cs
 git diff --cached --check
 git commit -m "fix: keep chat sources private"

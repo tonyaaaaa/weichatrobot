@@ -16,6 +16,67 @@ namespace WechatRobot.IntegrationTests.PrivateChat;
 public sealed class PrivateChatProcessorTests
 {
     [Fact]
+    public async Task Exact_private_greeting_replies_without_model_template_or_retrieval()
+    {
+        await using var database = Database();
+        var robotId = Guid.NewGuid();
+        var messageId = Guid.NewGuid();
+        database.RobotConfigs.Add(new RobotConfigEntity
+        {
+            Id = robotId,
+            Name = "机器人",
+            EncryptedWorkToolRobotId = "encrypted"
+        });
+        database.ConversationMessages.Add(PrivateMessage(
+            messageId,
+            robotId,
+            2,
+            "greeting-scope",
+            "inbound",
+            "user",
+            "你好！",
+            DateTime.UtcNow));
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var router = new RecordingTemplateRouter(new ContinueKnowledgeAnswer());
+        var rewrite = new CountingPassThroughRewriteAgent();
+        var processor = new PrivateChatProcessor(
+            database,
+            new UnusedAnswerAgent(),
+            new ModelConfigurationService(new PassThroughProtector()),
+            new DurableJobRepository(database),
+            new PrivateKnowledgeIngestStore(database),
+            new ConversationContextService(),
+            TimeProvider.System,
+            MultiTurn(rewrite),
+            templateRouter: router,
+            fixedReplies: new FixedReplyTemplateService(
+                new FixedReplyTemplateStore(database),
+                TimeProvider.System));
+
+        await processor.ProcessAsync(
+            new LeasedDurableJob(
+                Guid.NewGuid(),
+                "ProcessPrivateMessage",
+                $$"""{"messageId":"{{messageId:D}}"}""",
+                0,
+                "test"),
+            TestContext.Current.CancellationToken);
+
+        var outbound = await database.ConversationMessages.AsNoTracking()
+            .SingleAsync(
+                item => item.InReplyToMessageId == messageId,
+                TestContext.Current.CancellationToken);
+        var audit = await database.RetrievalAudits.AsNoTracking()
+            .SingleAsync(
+                item => item.ConversationMessageId == messageId,
+                TestContext.Current.CancellationToken);
+        Assert.Equal("您好！请问有什么签证问题需要咨询？", outbound.Text);
+        Assert.Equal("conversational_greeting", audit.AnswerSource);
+        Assert.Equal(0, router.PrivateCallCount);
+        Assert.Equal(0, rewrite.CallCount);
+    }
+
+    [Fact]
     public async Task Direct_ingest_batch_job_does_not_reuse_source_message_unique_relation()
     {
         await using var database = Database();

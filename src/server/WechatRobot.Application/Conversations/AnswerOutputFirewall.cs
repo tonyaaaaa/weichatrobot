@@ -45,6 +45,8 @@ public sealed class AnswerOutputFirewall
             return new(false, "control_character");
         if (ContainsInternalProtocol(output))
             return new(false, "internal_instruction_marker");
+        if (GenericMarker.IsMatch(output))
+            return new(false, "generic_source_marker");
         return new(true);
     }
 

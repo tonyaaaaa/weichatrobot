@@ -258,6 +258,11 @@ public sealed class GroupConfigurationMySqlTests(MySqlFixture fixture) : IClassF
         Assert.Equal(
             "example.com,news.example.com",
             body.GetProperty("answerFallback").GetProperty("webSearchDomainFilter").GetString());
+        Assert.False(body.GetProperty("answerFallback").GetProperty("webSearchShowSources").GetBoolean());
+        database.ChangeTracker.Clear();
+        Assert.False((await database.GroupProfiles.AsNoTracking()
+            .SingleAsync(item => item.Id == group.Id, TestContext.Current.CancellationToken))
+            .WebSearchShowSources);
 
         var invalid = await client.PutAsJsonAsync(
             $"/api/groups/{group.Id:D}/configuration",

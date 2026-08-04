@@ -2,7 +2,6 @@
 import { computed } from 'vue';
 import {
   ElAlert,
-  ElCheckbox,
   ElInput,
   ElInputNumber,
   ElOption,
@@ -38,7 +37,11 @@ const globalTags = computed(() =>
   props.availableTags.filter(tag => tag.isEnabled && tag.isGlobalPublic));
 
 function updateFallback(patch: Partial<AnswerFallbackSettings>): void {
-  emit('update:answerFallback', { ...props.answerFallback, ...patch });
+  emit('update:answerFallback', {
+    ...props.answerFallback,
+    ...patch,
+    webSearchShowSources: false
+  });
 }
 
 function toggleWebSearch(enabled: boolean): void {
@@ -181,12 +184,6 @@ function modelCapabilityCopy(): string {
               @update:model-value="updateFallback({ webSearchDomainFilter: String($event) || null })"
             />
           </label>
-          <ElCheckbox
-            :model-value="answerFallback.webSearchShowSources"
-            @update:model-value="updateFallback({ webSearchShowSources: Boolean($event) })"
-          >
-            在群消息中展示网页来源
-          </ElCheckbox>
         </div>
 
         <div class="setting-row">
@@ -265,7 +262,6 @@ header p, .setting-row span, .muted { color: var(--color-muted-text); }
   padding-left: var(--space-lg);
   border-left: 3px solid var(--color-primary);
 }
-.search-options .el-checkbox { grid-column: 1 / -1; }
 @media (max-width: 720px) {
   .flow-step { grid-template-columns: 1fr; padding: var(--space-lg); }
   .search-options { grid-template-columns: 1fr; padding-left: 0; border-left: 0; }

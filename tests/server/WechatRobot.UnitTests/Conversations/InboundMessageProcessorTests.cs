@@ -12,6 +12,49 @@ namespace WechatRobot.UnitTests.Conversations;
 public sealed class InboundMessageProcessorTests
 {
     [Fact]
+    public async Task Exact_group_greeting_replies_after_intent_without_summary_rewrite_or_model()
+    {
+        var request = Request() with { Question = "你好！" };
+        var repository = new FakeRepository(request);
+        var summarizer = new FakeSummarizer("must not run");
+        var retrieval = new FakeRetrieval();
+        var chat = new FakeChat();
+        var rewrite = new FakeRewriteAgent(new QueryRewriteResult(
+            QueryRewriteDecision.Search,
+            "不应执行",
+            null,
+            QueryRewriteReasonCode.StandaloneQuestion));
+        var processor = new InboundMessageProcessor(
+            repository,
+            new ConversationContextService(),
+            summarizer,
+            new GroundedAnswerService(
+                retrieval,
+                chat,
+                new GroundedAnswerOptions(),
+                new AnswerOutputFirewall()),
+            TimeProvider.System,
+            MultiTurn(rewrite),
+            intentAgent: new FakeIntentAgent(IntentDecision.Reply),
+            runtimeOptions: new AgentRuntimeOptions
+            {
+                IntentRuntimeMode = IntentRuntimeMode.AgentFramework
+            });
+
+        await processor.ProcessAsync(
+            Job(request.MessageId),
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(repository.Result);
+        Assert.Equal("您好！请问有什么签证问题需要咨询？", repository.Result.Decision.GroupText);
+        Assert.Equal("conversational_greeting", repository.Result.Audit.AnswerSource);
+        Assert.Equal(0, summarizer.CallCount);
+        Assert.Equal(0, rewrite.CallCount);
+        Assert.Equal(string.Empty, retrieval.Query);
+        Assert.Null(chat.LastRequest);
+    }
+
+    [Fact]
     public async Task Evicted_history_is_summarized_persisted_and_traced()
     {
         var repository = new FakeRepository(Request());

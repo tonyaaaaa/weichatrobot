@@ -148,12 +148,9 @@ public sealed class GroundedAnswerService(
                     var validation = outputFirewall.ValidateUngrounded(text);
                     if (validation.IsSafe && sources.Length > 0)
                     {
-                        var groupText = fallback.WebSearchShowSources
-                            ? AppendSources(text, sources)
-                            : text;
                         return Result(
                             AnswerDecisionKind.Answer,
-                            groupText,
+                            text,
                             evidence,
                             confidence,
                             contextPolicy,
@@ -247,29 +244,16 @@ public sealed class GroundedAnswerService(
         foreach (var message in request.Context.Messages)
             messages.Add(new("user",
                 $"<<<UNTRUSTED_CONVERSATION_MESSAGE_BEGIN>>>\n{FormatConversationData(message)}\n<<<UNTRUSTED_CONVERSATION_MESSAGE_END>>>"));
-        messages.Add(new("user",
-            $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{FormatCurrentQuestion(request)}\n<<<UNTRUSTED_QUESTION_END>>>"));
+        messages.Add(new(
+            "user",
+            webSearch is null
+                ? $"<<<UNTRUSTED_QUESTION_BEGIN>>>\n{FormatCurrentQuestion(request)}\n<<<UNTRUSTED_QUESTION_END>>>"
+                : request.Question.Trim()));
         return new(messages, webSearch);
     }
 
     private static string ToProviderValue(string value) =>
         value.Length == 0 ? value : char.ToLowerInvariant(value[0]) + value[1..];
-
-    private static string AppendSources(string answer, IReadOnlyList<ChatSource> sources)
-    {
-        var builder = new StringBuilder(answer.Trim());
-        builder.AppendLine().AppendLine().AppendLine("来源：");
-        foreach (var source in sources.Take(3))
-        {
-            var title = source.Title
-                .Replace('\r', ' ')
-                .Replace('\n', ' ')
-                .Trim();
-            if (title.Length > 80) title = title[..80];
-            builder.Append("- ").Append(title).Append(' ').AppendLine(source.Url.AbsoluteUri);
-        }
-        return builder.ToString().TrimEnd();
-    }
 
     private ChatCompletionRequest BuildPrompt(
         GroundedAnswerRequest request,

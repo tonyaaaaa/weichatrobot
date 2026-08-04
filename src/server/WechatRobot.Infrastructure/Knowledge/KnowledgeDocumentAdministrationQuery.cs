@@ -348,18 +348,9 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                 document => document.Id,
                 document => KnowledgeDocumentCleanupJobIdentity.Create(
                     document.Id));
-        var cleanupJobIdValues = cleanupJobIds.Values.ToArray();
-        var cleanupStatuses = cleanupJobIds.Count == 0
-            ? new Dictionary<Guid, string>()
-            : await database.DurableJobs
-                .AsNoTracking()
-                .Where(job =>
-                    cleanupJobIdValues.Contains(job.Id) &&
-                    job.JobType == "CleanupKnowledgeDocument")
-                .ToDictionaryAsync(
-                    job => job.Id,
-                    job => job.Status,
-                    cancellationToken);
+        var cleanupStatuses = await LoadCleanupStatusesAsync(
+            cleanupJobIds.Values.ToArray(),
+            cancellationToken);
         return documents.Select(document =>
         {
             var documentVersions = grouped.GetValueOrDefault(document.Id) ?? [];
@@ -437,6 +428,28 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
                     .ThenBy(row => row.TagId)
                     .Select(row => new KnowledgeDocumentTagSummary(row.TagId, row.Name))
                     .ToArray());
+    }
+
+    private async Task<Dictionary<Guid, string>> LoadCleanupStatusesAsync(
+        IReadOnlyCollection<Guid> cleanupJobIds,
+        CancellationToken cancellationToken)
+    {
+        var rows = await LoadBatchedAsync(
+            cleanupJobIds,
+            batch =>
+            {
+                var predicate = GuidBatchQuery.BuildPredicate<DurableJobEntity>(
+                    batch,
+                    job => job.Id);
+                return database.DurableJobs
+                    .AsNoTracking()
+                    .Where(predicate)
+                    .Where(job => job.JobType == "CleanupKnowledgeDocument")
+                    .Select(job => new CleanupJobStatusRow(job.Id, job.Status))
+                    .ToArrayAsync(cancellationToken);
+            });
+
+        return rows.ToDictionary(row => row.Id, row => row.Status);
     }
 
     private async Task<Dictionary<Guid, int>> CountByVersionAsync<TEntity>(
@@ -565,6 +578,8 @@ public sealed class KnowledgeDocumentAdministrationQuery(WechatRobotDbContext da
         string PayloadJson,
         DateTime CreatedAtUtc,
         DateTime UpdatedAtUtc);
+
+    private sealed record CleanupJobStatusRow(Guid Id, string Status);
 
     private sealed record IndexJobRow(
         Guid Id,

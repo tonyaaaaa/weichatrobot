@@ -13,39 +13,54 @@ public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixtu
     public async Task Physical_delete_state_queries_translate_on_mysql()
     {
         var suffix = Guid.NewGuid().ToString("N");
-        var document = new KnowledgeDocumentEntity
+        var pendingDocument = new KnowledgeDocumentEntity
         {
             Title = $"Pending Delete {suffix}",
             Status = "disabled",
             IsDeleteRequested = true
         };
-        var version = new KnowledgeDocumentVersionEntity
+        var failedDocument = new KnowledgeDocumentEntity
         {
-            KnowledgeDocumentId = document.Id,
-            Version = 1,
-            OriginalFileName = "pending-delete.txt",
-            SafeFileName = "pending-delete.txt",
-            ContentType = "text/plain",
-            Sha256 = Guid.NewGuid().ToString("N").PadRight(64, '0'),
-            ObjectKey = $"test/pending-delete/{suffix}",
-            Status = "disabled"
+            Title = $"Failed Delete {suffix}",
+            Status = "disabled",
+            IsDeleteRequested = true
         };
-        var cleanupJobId =
-            KnowledgeDocumentCleanupJobIdentity.Create(document.Id);
+        var normalDocument = new KnowledgeDocumentEntity
+        {
+            Title = $"Normal Document {suffix}",
+            Status = "uploaded"
+        };
+        var pendingVersion = Version(
+            pendingDocument.Id,
+            1,
+            "pending-delete.txt",
+            "disabled");
+        var failedVersion = Version(
+            failedDocument.Id,
+            1,
+            "failed-delete.txt",
+            "disabled");
+        var normalVersion = Version(
+            normalDocument.Id,
+            1,
+            "normal.txt",
+            "uploaded");
+        pendingDocument.ActiveVersionId = null;
+        failedDocument.ActiveVersionId = null;
+        normalDocument.ActiveVersionId = normalVersion.Id;
         await using (var setup = CreateDatabase())
         {
             await setup.Database.MigrateAsync(
                 TestContext.Current.CancellationToken);
             setup.AddRange(
-                document,
-                version,
-                new DurableJobEntity
-                {
-                    Id = cleanupJobId,
-                    JobType = "CleanupKnowledgeDocument",
-                    Status = "deadLetter",
-                    PayloadJson = "{}"
-                });
+                pendingDocument,
+                failedDocument,
+                normalDocument,
+                pendingVersion,
+                failedVersion,
+                normalVersion,
+                CleanupJob(pendingDocument.Id, "pending"),
+                CleanupJob(failedDocument.Id, "deadLetter"));
             await setup.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
@@ -53,7 +68,7 @@ public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixtu
         var page = await new KnowledgeDocumentAdministrationQuery(database)
             .ListAsync(
                 suffix,
-                "disabled",
+                null,
                 null,
                 null,
                 1,
@@ -61,16 +76,41 @@ public sealed class KnowledgeDocumentAdministrationMySqlTests(MySqlFixture fixtu
                 TestContext.Current.CancellationToken);
         var workbench = await new KnowledgeDocumentWorkbenchQuery(database)
             .GetAsync(
-                document.Id,
-                version.Id,
+                failedDocument.Id,
+                failedVersion.Id,
                 TestContext.Current.CancellationToken);
 
-        var summary = Assert.Single(page.Items);
-        Assert.True(summary.IsDeleteRequested);
-        Assert.True(summary.CanRetryPhysicalDelete);
+        Assert.Equal(3, page.Items.Count);
+        Assert.False(page.Items.Single(item => item.Id == pendingDocument.Id).CanRetryPhysicalDelete);
+        Assert.True(page.Items.Single(item => item.Id == failedDocument.Id).CanRetryPhysicalDelete);
+        Assert.False(page.Items.Single(item => item.Id == normalDocument.Id).IsDeleteRequested);
         Assert.True(workbench!.DocumentIsDeleteRequested);
         Assert.True(workbench.CanRetryPhysicalDelete);
     }
+
+    private static KnowledgeDocumentVersionEntity Version(
+        Guid documentId,
+        int version,
+        string fileName,
+        string status) => new()
+    {
+        KnowledgeDocumentId = documentId,
+        Version = version,
+        OriginalFileName = fileName,
+        SafeFileName = fileName,
+        ContentType = "text/plain",
+        Sha256 = Guid.NewGuid().ToString("N").PadRight(64, '0'),
+        ObjectKey = $"test/physical-delete-list/{Guid.NewGuid():N}/{fileName}",
+        Status = status
+    };
+
+    private static DurableJobEntity CleanupJob(Guid documentId, string status) => new()
+    {
+        Id = KnowledgeDocumentCleanupJobIdentity.Create(documentId),
+        JobType = "CleanupKnowledgeDocument",
+        Status = status,
+        PayloadJson = "{}"
+    };
 
     [Fact]
     public async Task List_and_detail_queries_translate_on_mysql()

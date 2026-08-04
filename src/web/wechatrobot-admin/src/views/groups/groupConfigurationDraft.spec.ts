@@ -75,4 +75,16 @@ describe('groupConfigurationDraft', () => {
     second.answerFallback.modelKnowledgeFallbackEnabled = true;
     expect(groupConfigurationDraftSignature(first)).not.toBe(groupConfigurationDraftSignature(second));
   });
+
+  it('normalizes the legacy source display flag to false', () => {
+    const draft = createGroupConfigurationDraft({
+      ...configuration,
+      answerFallback: {
+        ...configuration.answerFallback,
+        webSearchShowSources: true
+      }
+    });
+
+    expect(draft.answerFallback.webSearchShowSources).toBe(false);
+  });
 });

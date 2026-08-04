@@ -19,7 +19,10 @@ export function createGroupConfigurationDraft(configuration: GroupConfiguration)
     excludeRules: configuration.rules.exclude.map(rule => ({ ...rule })),
     boundTagIds: [...configuration.boundTagIds],
     context: { ...configuration.context.configured },
-    answerFallback: { ...configuration.answerFallback }
+    answerFallback: {
+      ...configuration.answerFallback,
+      webSearchShowSources: false
+    }
   };
 }
 

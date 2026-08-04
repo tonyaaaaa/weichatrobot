@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { ElSwitch } from 'element-plus';
 import GroupKnowledgeAnswerPanel from './GroupKnowledgeAnswerPanel.vue';
 
 describe('GroupKnowledgeAnswerPanel', () => {
@@ -14,7 +15,7 @@ describe('GroupKnowledgeAnswerPanel', () => {
         answerFallback: {
           webSearchEnabled: true,
           modelKnowledgeFallbackEnabled: true,
-          webSearchShowSources: false,
+          webSearchShowSources: true,
           webSearchResultCount: 5,
           webSearchRecency: 'NoLimit',
           webSearchDomainFilter: null,
@@ -42,6 +43,12 @@ describe('GroupKnowledgeAnswerPanel', () => {
     expect(wrapper.text()).toContain('搜索结果数量');
     expect(wrapper.text()).toContain('公共知识');
     expect(wrapper.text()).toContain('全局公开');
+    expect(wrapper.text()).not.toContain('在群消息中展示网页来源');
+    wrapper.findAllComponents(ElSwitch)[0].vm.$emit('update:modelValue', false);
+    expect(wrapper.emitted('update:answerFallback')?.at(-1)?.[0]).toMatchObject({
+      webSearchEnabled: false,
+      webSearchShowSources: false
+    });
   });
 
   it('describes an unconfigured web search mode as not enabled instead of unsupported', () => {

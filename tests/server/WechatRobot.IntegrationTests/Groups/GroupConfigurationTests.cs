@@ -376,6 +376,61 @@ public sealed class GroupConfigurationTests : IClassFixture<ModelConfigurationAp
             cancellationToken: TestContext.Current.CancellationToken)).GetProperty("currentVersion").GetInt32());
     }
 
+    [Fact]
+    public async Task Legacy_source_display_flag_is_always_read_and_saved_as_false()
+    {
+        var groupId = await SeedGroupAndTagsAsync();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+            var group = await database.GroupProfiles.SingleAsync(
+                item => item.Id == groupId,
+                TestContext.Current.CancellationToken);
+            group.WebSearchShowSources = true;
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var client = _factory.CreateClient();
+        var loaded = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/groups/{groupId:D}/configuration",
+            TestContext.Current.CancellationToken);
+        Assert.False(loaded.GetProperty("answerFallback").GetProperty("webSearchShowSources").GetBoolean());
+
+        var saved = await client.PutAsJsonAsync(
+            $"/api/groups/{groupId:D}/configuration",
+            new
+            {
+                includeRules = Array.Empty<object>(),
+                excludeRules = Array.Empty<object>(),
+                boundTagIds = Array.Empty<Guid>(),
+                context = new { },
+                clearContext = false,
+                expectedConfigurationVersion = 0,
+                answerFallback = new
+                {
+                    webSearchEnabled = true,
+                    modelKnowledgeFallbackEnabled = true,
+                    webSearchShowSources = true,
+                    webSearchResultCount = 5,
+                    webSearchRecency = "NoLimit",
+                    webSearchDomainFilter = (string?)null,
+                    webSearchContentSize = "Medium",
+                    finalNoEvidencePolicy = "InsufficientEvidence"
+                }
+            },
+            TestContext.Current.CancellationToken);
+        saved.EnsureSuccessStatusCode();
+        var response = await saved.Content.ReadFromJsonAsync<JsonElement>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.False(response.GetProperty("answerFallback").GetProperty("webSearchShowSources").GetBoolean());
+
+        await using var verifyScope = _factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        Assert.False((await verify.GroupProfiles.AsNoTracking()
+            .SingleAsync(item => item.Id == groupId, TestContext.Current.CancellationToken))
+            .WebSearchShowSources);
+    }
+
     private static readonly Guid RobotId = Guid.Parse("00000000-0000-0000-0000-000000000801");
     private static readonly Guid ScopedTagId = Guid.Parse("00000000-0000-0000-0000-000000000802");
     private static readonly Guid GlobalPublicTagId = Guid.Parse("00000000-0000-0000-0000-000000000803");
