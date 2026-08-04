@@ -192,13 +192,17 @@ public sealed class GroundedConversationRepository(
     {
         if (decision.Kind != InboundPolicyDecisionKind.NoReply || string.IsNullOrWhiteSpace(decision.Reason))
             throw new ArgumentException("A typed no-reply decision is required.", nameof(decision));
-        var updated = await database.ConversationMessages.Where(item => item.Id == decision.MessageId && item.Direction == "inbound")
-            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.GroupProfileId, decision.GroupProfileId)
-                .SetProperty(item => item.ConversationSessionId, (Guid?)null)
-                .SetProperty(item => item.SessionSequence, (long?)null)
-                .SetProperty(item => item.ProcessingState, "completed").SetProperty(item => item.TerminalDecision, "no_reply")
-                .SetProperty(item => item.TerminalReason, decision.Reason).SetProperty(item => item.TerminalEvidenceJson, decision.EvidenceJson), token);
-        if (updated != 1) throw new InvalidOperationException("Inbound no-reply terminal could not be persisted.");
+        var message = await database.ConversationMessages.SingleOrDefaultAsync(
+            item => item.Id == decision.MessageId && item.Direction == "inbound",
+            token) ?? throw new InvalidOperationException("Inbound no-reply terminal could not be persisted.");
+        message.GroupProfileId = decision.GroupProfileId;
+        message.ConversationSessionId = null;
+        message.SessionSequence = null;
+        message.ProcessingState = "completed";
+        message.TerminalDecision = "no_reply";
+        message.TerminalReason = decision.Reason;
+        message.TerminalEvidenceJson = decision.EvidenceJson;
+        await database.SaveChangesAsync(token);
     }
 
     private static InboundPolicyDecision NoReply(Guid messageId, Guid? groupId, string reason, string evidence) =>
@@ -280,10 +284,24 @@ public sealed class GroundedConversationRepository(
         return changed == 1;
     }
 
-    public async Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token) =>
-        _ = await database.ConversationSessions.Where(item => item.Id == sessionId && item.LeaseOwner == leaseOwner)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.LeaseOwner, (string?)null).SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(item => item.Version, item => item.Version + 1), token);
+    public async Task ReleaseLeaseAsync(Guid sessionId, string leaseOwner, CancellationToken token)
+    {
+        var session = await database.ConversationSessions.SingleOrDefaultAsync(
+            item => item.Id == sessionId && item.LeaseOwner == leaseOwner,
+            token);
+        if (session is null) return;
+        session.LeaseOwner = null;
+        session.LeaseExpiresAtUtc = null;
+        session.Version++;
+        try
+        {
+            await database.SaveChangesAsync(token);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
+        }
+    }
 
     public async Task<ConversationProcessingRequest> LoadForProcessingAsync(Guid messageId, CancellationToken token)
     {
@@ -360,29 +378,27 @@ public sealed class GroundedConversationRepository(
         if (!groupState.IsEnabled || groupState.ArchivedAtUtc is not null)
         {
             var terminalReason = groupState.ArchivedAtUtc is null ? "group_disabled" : "group_archived";
-            await database.ConversationMessages.Where(item => item.Id == request.MessageId)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.ProcessingState, "completed")
-                    .SetProperty(item => item.TerminalDecision, "no_reply")
-                    .SetProperty(item => item.TerminalReason, terminalReason), token);
+            var terminal = await database.ConversationMessages.SingleAsync(
+                item => item.Id == request.MessageId,
+                token);
+            terminal.ProcessingState = "completed";
+            terminal.TerminalDecision = "no_reply";
+            terminal.TerminalReason = terminalReason;
             if (request.ConversationSessionId != Guid.Empty && request.SessionLeaseOwner is not null)
-                await database.ConversationSessions
-                    .Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner)
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(item => item.LeaseOwner, (string?)null)
-                        .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                        .SetProperty(item => item.Version, item => item.Version + 1), token);
+                await ReleaseOwnedSessionTrackedAsync(request, token);
+            await database.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
             return;
         }
         if (await database.RetrievalAudits.AnyAsync(item => item.ConversationMessageId == request.MessageId, token))
         {
-            await database.ConversationMessages.Where(item => item.Id == request.MessageId)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ProcessingState, "completed"), token);
+            var duplicate = await database.ConversationMessages.SingleAsync(
+                item => item.Id == request.MessageId,
+                token);
+            duplicate.ProcessingState = "completed";
             if (request.ConversationSessionId != Guid.Empty && request.SessionLeaseOwner is not null)
-                await database.ConversationSessions.Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner)
-                    .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.LeaseOwner, (string?)null)
-                        .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null).SetProperty(item => item.Version, item => item.Version + 1), token);
+                await ReleaseOwnedSessionTrackedAsync(request, token);
+            await database.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
             return;
         }
@@ -393,18 +409,19 @@ public sealed class GroundedConversationRepository(
         inbound.ProcessingState = "completed";
         if (request.ConversationSessionId == Guid.Empty || string.IsNullOrWhiteSpace(request.SessionLeaseOwner))
             throw new ConversationSessionOwnershipLostException("No owned conversation session lease is attached to the request.");
-        var sequenceState = await database.ConversationSessions.AsNoTracking()
-            .Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner)
-            .Select(item => new { item.NextSequence }).SingleOrDefaultAsync(token)
+        var session = await database.ConversationSessions.SingleOrDefaultAsync(
+            item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner,
+            token)
             ?? throw new ConversationSessionOwnershipLostException("Conversation session lease ownership was lost before sequence allocation.");
+        var nextSequence = session.NextSequence;
         inbound.ConversationSessionId = request.ConversationSessionId;
-        inbound.SessionSequence = sequenceState.NextSequence + 1;
+        inbound.SessionSequence = nextSequence + 1;
         var outbound = new ConversationMessageEntity
         {
             RobotConfigId = request.RobotConfigId,
             GroupProfileId = request.GroupProfileId,
             ConversationSessionId = request.ConversationSessionId,
-            SessionSequence = sequenceState.NextSequence + 2,
+            SessionSequence = nextSequence + 2,
             GroupName = request.ReplyGroupName,
             Direction = "outbound",
             Role = "assistant",
@@ -505,22 +522,50 @@ public sealed class GroundedConversationRepository(
             });
         }
 
-        var guarded = await database.ConversationSessions.Where(item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner &&
-                item.LeaseExpiresAtUtc > now && item.NextSequence == sequenceState.NextSequence)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.LeaseOwner, (string?)null).SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(item => item.LastActivityAtUtc, now).SetProperty(item => item.UpdatedAtUtc, now)
-                .SetProperty(item => item.NextSequence, sequenceState.NextSequence + 2)
-                .SetProperty(item => item.Summary, item => result.ResetContextBeforeCurrent ? result.UpdatedSummary : result.UpdatedSummary ?? item.Summary)
-                .SetProperty(item => item.ClearedThroughSequence, item => result.ResetContextBeforeCurrent ? sequenceState.NextSequence : item.ClearedThroughSequence)
-                .SetProperty(item => item.ClearedAtUtc, item => result.ResetContextBeforeCurrent ? request.ReceivedAtUtc : item.ClearedAtUtc)
-                .SetProperty(item => item.Version, item => item.Version + 1), token);
-        if (guarded != 1)
+        if (session.LeaseExpiresAtUtc is not { } leaseExpiry || leaseExpiry <= now ||
+            session.NextSequence != nextSequence)
         {
             await transaction.RollbackAsync(token);
             throw new ConversationSessionOwnershipLostException("Conversation session lease ownership was lost before commit.");
         }
-        await database.SaveChangesAsync(token);
-        await transaction.CommitAsync(token);
+        session.LeaseOwner = null;
+        session.LeaseExpiresAtUtc = null;
+        session.LastActivityAtUtc = now;
+        session.UpdatedAtUtc = now;
+        session.NextSequence = nextSequence + 2;
+        session.Summary = result.ResetContextBeforeCurrent
+            ? result.UpdatedSummary
+            : result.UpdatedSummary ?? session.Summary;
+        if (result.ResetContextBeforeCurrent)
+        {
+            session.ClearedThroughSequence = nextSequence;
+            session.ClearedAtUtc = request.ReceivedAtUtc;
+        }
+        session.Version++;
+        try
+        {
+            await database.SaveChangesAsync(token);
+            await transaction.CommitAsync(token);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+            throw new ConversationSessionOwnershipLostException("Conversation session lease ownership was lost before commit.");
+        }
+    }
+
+    private async Task ReleaseOwnedSessionTrackedAsync(
+        ConversationProcessingRequest request,
+        CancellationToken token)
+    {
+        var session = await database.ConversationSessions.SingleOrDefaultAsync(
+            item => item.Id == request.ConversationSessionId && item.LeaseOwner == request.SessionLeaseOwner,
+            token);
+        if (session is null) return;
+        session.LeaseOwner = null;
+        session.LeaseExpiresAtUtc = null;
+        session.Version++;
     }
 
     private static Guid CreateDeterministicGuid(string value)
@@ -671,24 +716,30 @@ public sealed class GroundedConversationRepository(
         DateTime clearedAtUtc,
         CancellationToken token)
     {
-        var cleared = await database.ConversationSessions.Where(item => item.GroupProfileId == groupProfileId)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ClearedAtUtc, clearedAtUtc)
-                .SetProperty(item => item.ClearedThroughSequence, item => item.NextSequence)
-                .SetProperty(item => item.Summary, (string?)null)
-                .SetProperty(item => item.LeaseOwner, (string?)null)
-                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(item => item.UpdatedAtUtc, clearedAtUtc)
-                .SetProperty(item => item.Version, item => item.Version + 1), token);
-        if (!await database.ConversationSessions.AnyAsync(item => item.GroupProfileId == groupProfileId && item.SenderScopeKey == "group", token))
+        var sessions = await database.ConversationSessions
+            .Where(item => item.GroupProfileId == groupProfileId)
+            .ToArrayAsync(token);
+        foreach (var session in sessions)
+        {
+            session.ClearedAtUtc = clearedAtUtc;
+            session.ClearedThroughSequence = session.NextSequence;
+            session.Summary = null;
+            session.LeaseOwner = null;
+            session.LeaseExpiresAtUtc = null;
+            session.UpdatedAtUtc = clearedAtUtc;
+            session.Version++;
+        }
+        var cleared = sessions.Length;
+        if (!sessions.Any(item => item.SenderScopeKey == "group"))
         {
             database.ConversationSessions.Add(new ConversationSessionEntity
             {
                 GroupProfileId = groupProfileId, SenderScopeKey = "group", LastActivityAtUtc = clearedAtUtc,
                 ClearedAtUtc = clearedAtUtc, ClearedThroughSequence = 0, CreatedAtUtc = clearedAtUtc, UpdatedAtUtc = clearedAtUtc
             });
-            await database.SaveChangesAsync(token);
             cleared++;
         }
+        await database.SaveChangesAsync(token);
         return cleared;
     }
 

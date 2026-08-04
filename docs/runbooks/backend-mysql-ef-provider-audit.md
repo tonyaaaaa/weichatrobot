@@ -13,12 +13,12 @@
 | --- | --- | ---: | --- | --- | --- |
 | `src/server/WechatRobot.Api/WorkTool/WorkToolGroupOperationEndpoints.cs` | `UpsertRobotAsync` | 1 | Update | ReplaceTracked | nullable setter or nullable capture |
 | `src/server/WechatRobot.Api/WorkTool/WorkToolGroupOperationEndpoints.cs` | `UpsertRobotAsync` | 2 | Update | ReplaceTracked | nullable setter or nullable capture |
-| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `EvaluateInboundPolicyAsync` | 1 | Update | ReplaceTracked | review with adjacent terminal transition |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `EvaluateInboundPolicyAsync` | 1 | Update | KeepAtomic | canonical group identity CAS |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `PersistNoReplyTerminalAsync` | 1 | Update | ReplaceTracked | nullable session fields |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `LeaseForProcessingAsync` | 1 | Update | KeepAtomic | message claim CAS |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `LeaseForProcessingAsync` | 2 | Update | KeepAtomic | message claim CAS |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `LeaseForProcessingAsync` | 3 | Update | KeepAtomic | session lease CAS |
-| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `RenewLeaseAsync` | 1 | Update | ReplaceTracked | nullable/lease review |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `RenewLeaseAsync` | 1 | Update | KeepAtomic | conversation lease renewal CAS |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `ReleaseLeaseAsync` | 1 | Update | ReplaceTracked | clears lease fields |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `PersistAnswerAndEnqueueAsync` | 1 | Update | ReplaceTracked | terminal transition review |
 | `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `PersistAnswerAndEnqueueAsync` | 2 | Update | ReplaceTracked | clears lease fields |
