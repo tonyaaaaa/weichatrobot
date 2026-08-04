@@ -97,3 +97,5 @@ git diff --check
 - [知识库物理删除列表查询修复设计](../superpowers/specs/2026-08-04-knowledge-physical-delete-list-query-design.md)：管理列表查询运行时 Guid 集合导致 API 500。
 - [知识库物理删除恢复计划](../superpowers/plans/2026-07-31-physical-delete-recovery.md)：后台恢复中的 Provider 敏感批量更新导致 Worker 退出。
 - [聊天来源隐藏与知识库查询修复计划](../superpowers/plans/2026-08-04-chat-source-privacy-and-web-search-prompt-plan.md)：知识库管理查询改为有界 `GuidBatchQuery`。
+
+全后端 bulk mutation 与运行时 Guid 查询的逐项分类记录在[后端 MySQL EF Provider 风险审计](backend-mysql-ef-provider-audit.md)。修改 EF 查询或状态机时必须同步更新该账本和 `BackendProviderCompatibilityContractTests`。
