@@ -153,36 +153,53 @@ public sealed class WorkToolGroupReconciliationWorker(
                     30,
                     1 << Math.Min(audit.ReconciliationAttemptCount, 4)))
                 : (DateTime?)null;
-            await database.WorkToolOperationAudits
-                .Where(item => item.Id == audit.Id
-                               && item.ReconciliationStatus == "Retrying")
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.ReconciliationStatus, status)
-                    .SetProperty(item => item.ReconciliationNextAttemptAtUtc,
-                        nextAttempt)
-                    .SetProperty(item => item.Version, item => item.Version + 1),
+            var retryAudit = await database.WorkToolOperationAudits
+                .SingleOrDefaultAsync(item => item.Id == audit.Id &&
+                                              item.ReconciliationStatus == "Retrying",
                     cancellationToken);
+            if (retryAudit is not null)
+            {
+                retryAudit.ReconciliationStatus = status;
+                retryAudit.ReconciliationNextAttemptAtUtc = nextAttempt;
+                retryAudit.Version++;
+                try
+                {
+                    await database.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    database.ChangeTracker.Clear();
+                }
+            }
         }
         return true;
     }
 
-    private static Task<int> CompleteAsync(
+    private static async Task<int> CompleteAsync(
         WechatRobotDbContext database,
         Guid id,
         string status,
         Guid? groupProfileId,
-        CancellationToken cancellationToken) =>
-        database.WorkToolOperationAudits
-            .Where(item => item.Id == id
-                           && item.ReconciliationStatus == "Retrying")
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.ReconciliationStatus, status)
-                .SetProperty(item => item.ReconciliationNextAttemptAtUtc,
-                    (DateTime?)null)
-                .SetProperty(item => item.ReconciledGroupProfileId,
-                    groupProfileId)
-                .SetProperty(item => item.Version, item => item.Version + 1),
-                cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        var audit = await database.WorkToolOperationAudits.SingleOrDefaultAsync(
+            item => item.Id == id && item.ReconciliationStatus == "Retrying",
+            cancellationToken);
+        if (audit is null) return 0;
+        audit.ReconciliationStatus = status;
+        audit.ReconciliationNextAttemptAtUtc = null;
+        audit.ReconciledGroupProfileId = groupProfileId;
+        audit.Version++;
+        try
+        {
+            return await database.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
+            return 0;
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

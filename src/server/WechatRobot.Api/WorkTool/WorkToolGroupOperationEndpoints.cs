@@ -182,18 +182,13 @@ public static class WorkToolGroupOperationEndpoints
         {
             var commands = database.SendCommands.Where(command => command.RobotConfigId == id &&
                 (command.Status == "pending" || command.Status == "retrying" || command.Status == "leased"));
-            if (isMySql)
-                await commands.ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "blocked")
-                    .SetProperty(command => command.LeaseOwner, (string?)null).SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
-            else
-                foreach (var command in await commands.ToArrayAsync(cancellationToken))
-                {
-                    command.Status = "blocked";
-                    command.LeaseOwner = null;
-                    command.LeaseExpiresAtUtc = null;
-                    command.Version++;
-                }
+            foreach (var command in await commands.ToArrayAsync(cancellationToken))
+            {
+                command.Status = "blocked";
+                command.LeaseOwner = null;
+                command.LeaseExpiresAtUtc = null;
+                command.Version++;
+            }
             robot.SendLeaseOwner = null; robot.SendLeaseExpiresAtUtc = null; robot.SendCoordinationVersion++;
             await database.SaveChangesAsync(cancellationToken);
         }
@@ -201,20 +196,14 @@ public static class WorkToolGroupOperationEndpoints
         {
             var now = DateTime.UtcNow;
             var commands = database.SendCommands.Where(command => command.RobotConfigId == id && command.Status == "blocked");
-            if (isMySql)
-                await commands.ExecuteUpdateAsync(setters => setters.SetProperty(command => command.Status, "pending")
-                    .SetProperty(command => command.NextAttemptAtUtc, now).SetProperty(command => command.LeaseOwner, (string?)null)
-                    .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
-            else
-                foreach (var command in await commands.ToArrayAsync(cancellationToken))
-                {
-                    command.Status = "pending";
-                    command.NextAttemptAtUtc = now;
-                    command.LeaseOwner = null;
-                    command.LeaseExpiresAtUtc = null;
-                    command.Version++;
-                }
+            foreach (var command in await commands.ToArrayAsync(cancellationToken))
+            {
+                command.Status = "pending";
+                command.NextAttemptAtUtc = now;
+                command.LeaseOwner = null;
+                command.LeaseExpiresAtUtc = null;
+                command.Version++;
+            }
             await database.SaveChangesAsync(cancellationToken);
         }
         if (transaction is not null) await transaction.CommitAsync(cancellationToken);

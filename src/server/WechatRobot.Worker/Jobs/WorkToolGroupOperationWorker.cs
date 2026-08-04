@@ -19,22 +19,36 @@ public sealed class WorkToolGroupOperationWorker(
         await using var scope = scopeFactory.CreateAsyncScope();
         var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        await database.WorkToolOperationAudits
+        var timedOut = await database.WorkToolOperationAudits
             .Where(item => item.Status == WorkToolCommandStatuses.Accepted &&
                            item.AcceptedAtUtc <= now.Subtract(ResultTimeout))
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, WorkToolCommandStatuses.ResultTimeout)
-                .SetProperty(item => item.CompletedAtUtc, now)
-                .SetProperty(item => item.Version, item => item.Version + 1), cancellationToken);
+            .ToArrayAsync(cancellationToken);
+        foreach (var audit in timedOut)
+        {
+            audit.Status = WorkToolCommandStatuses.ResultTimeout;
+            audit.CompletedAtUtc = now;
+            audit.Version++;
+        }
 
-        await database.WorkToolOperationAudits
+        var expiredDispatches = await database.WorkToolOperationAudits
             .Where(item => item.Status == WorkToolCommandStatuses.Dispatching && item.LeaseExpiresAtUtc <= now)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, WorkToolCommandStatuses.DeliveryUnknown)
-                .SetProperty(item => item.Result, "external_dispatch_lease_expired")
-                .SetProperty(item => item.LeaseOwner, (string?)null)
-                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(item => item.Version, item => item.Version + 1), cancellationToken);
+            .ToArrayAsync(cancellationToken);
+        foreach (var audit in expiredDispatches)
+        {
+            audit.Status = WorkToolCommandStatuses.DeliveryUnknown;
+            audit.Result = "external_dispatch_lease_expired";
+            audit.LeaseOwner = null;
+            audit.LeaseExpiresAtUtc = null;
+            audit.Version++;
+        }
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
+        }
 
         var candidate = await database.WorkToolOperationAudits.AsNoTracking()
             .Where(item => item.Status == WorkToolCommandStatuses.Queued || item.Status == "Queued")
@@ -92,34 +106,68 @@ public sealed class WorkToolGroupOperationWorker(
         return true;
     }
 
-    private Task<int> MarkAcceptedAsync(
+    private async Task<int> MarkAcceptedAsync(
         WechatRobotDbContext database,
         Guid id,
         string workToolMessageId,
         DateTime acceptedAtUtc,
-        CancellationToken token) =>
-        database.WorkToolOperationAudits
-            .Where(item => item.Id == id && item.Status == WorkToolCommandStatuses.Dispatching && item.LeaseOwner == _owner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, WorkToolCommandStatuses.Accepted)
-                .SetProperty(item => item.WorkToolCommandMessageId, workToolMessageId)
-                .SetProperty(item => item.AcceptedAtUtc, acceptedAtUtc)
-                .SetProperty(item => item.CompletedAtUtc, (DateTime?)null)
-                .SetProperty(item => item.Result, (string?)null)
-                .SetProperty(item => item.LeaseOwner, (string?)null)
-                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(item => item.Version, item => item.Version + 1), token);
+        CancellationToken token)
+    {
+        var audit = await database.WorkToolOperationAudits.SingleOrDefaultAsync(
+            item => item.Id == id &&
+                    item.Status == WorkToolCommandStatuses.Dispatching &&
+                    item.LeaseOwner == _owner,
+            token);
+        if (audit is null) return 0;
+        audit.Status = WorkToolCommandStatuses.Accepted;
+        audit.WorkToolCommandMessageId = workToolMessageId;
+        audit.AcceptedAtUtc = acceptedAtUtc;
+        audit.CompletedAtUtc = null;
+        audit.Result = null;
+        audit.LeaseOwner = null;
+        audit.LeaseExpiresAtUtc = null;
+        audit.Version++;
+        try
+        {
+            return await database.SaveChangesAsync(token);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
+            return 0;
+        }
+    }
 
-    private Task<int> CompleteAsync(WechatRobotDbContext database, Guid id, string status, string? result, DateTime? completedAtUtc, CancellationToken token) =>
-        database.WorkToolOperationAudits
-            .Where(item => item.Id == id && item.Status == WorkToolCommandStatuses.Dispatching && item.LeaseOwner == _owner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, status)
-                .SetProperty(item => item.Result, result)
-                .SetProperty(item => item.CompletedAtUtc, completedAtUtc)
-                .SetProperty(item => item.LeaseOwner, (string?)null)
-                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(item => item.Version, item => item.Version + 1), token);
+    private async Task<int> CompleteAsync(
+        WechatRobotDbContext database,
+        Guid id,
+        string status,
+        string? result,
+        DateTime? completedAtUtc,
+        CancellationToken token)
+    {
+        var audit = await database.WorkToolOperationAudits.SingleOrDefaultAsync(
+            item => item.Id == id &&
+                    item.Status == WorkToolCommandStatuses.Dispatching &&
+                    item.LeaseOwner == _owner,
+            token);
+        if (audit is null) return 0;
+        audit.Status = status;
+        audit.Result = result;
+        audit.CompletedAtUtc = completedAtUtc;
+        audit.LeaseOwner = null;
+        audit.LeaseExpiresAtUtc = null;
+        audit.Version++;
+        try
+        {
+            return await database.SaveChangesAsync(token);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
+            return 0;
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
