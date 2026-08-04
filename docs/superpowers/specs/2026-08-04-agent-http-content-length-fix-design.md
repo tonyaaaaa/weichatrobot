@@ -34,6 +34,25 @@ GLM 请求增加 `thinking.type=disabled`，并在缺失时增加 `max_tokens`�
 
 不修改 Agent Framework 调用链、模型配置、重试策略、数据库结构或知识库逻辑。
 
+## 调用点影响检查
+
+所有通过 `OpenAiCompatibleAgentChatClientFactory` 创建 `IChatClient`，且使用
+官方 GLM 配置的调用都会经过该 Handler：
+
+| 调用点 | 是否受影响 |
+| --- | --- |
+| `AnswerAgent` 非联网搜索回答 | 是 |
+| `QueryRewriteAgent` 多轮问题改写 | 是 |
+| `MessageIntentAgent` 群聊意图判断 | 是 |
+| `TemplateRoutingAgent` 固定回复匹配 | 是 |
+| `PrivateKnowledgeProposalAgent` 私聊知识提案 | 是 |
+| `AgentCapabilityProbe` 模型能力探测 | 是 |
+| `OpenAiCompatibleChatClient` 联网搜索和 legacy 回答 | 否；在序列化前修改字典 |
+| Embedding、Qdrant 和 WorkTool 客户端 | 否；不使用该 Handler |
+
+修复共享 Handler 后，上述所有受影响 Agent 调用同时恢复，不需要在各 Agent 内
+分别处理请求头。
+
 ## 测试
 
 先添加一个失败回归测试，通过真实回环 TCP/HTTP 连接和
