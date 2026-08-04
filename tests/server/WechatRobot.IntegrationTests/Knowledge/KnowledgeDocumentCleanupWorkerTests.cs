@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using WechatRobot.Application.Jobs;
 using WechatRobot.Application.Knowledge;
@@ -17,7 +19,7 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeDocumentCleanupWorkerTests
 {
     [Fact]
-    public async Task Completed_legacy_cleanup_with_remaining_tombstone_is_recovered_and_deleted()
+    public async Task Completed_legacy_cleanup_is_recovered_without_bulk_update_support()
     {
         var documentId = Guid.Parse("11111111-2222-3333-4444-555555555555");
         var versionId = Guid.NewGuid();
@@ -27,6 +29,7 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
         var databaseName = Guid.NewGuid().ToString();
         services.AddDbContext<WechatRobotDbContext>(builder =>
             builder.UseInMemoryDatabase(databaseName)
+                .ReplaceService<IDatabaseProvider, ProviderWithoutBulkUpdateSupport>()
                 .ConfigureWarnings(warnings =>
                     warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
         services.AddScoped<IDurableJobRepository, InMemoryCleanupJobs>();
@@ -89,6 +92,13 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
                 item => item.Id == cleanupJobId,
                 TestContext.Current.CancellationToken)).Status);
         Assert.Equal(["wechatrobot/knowledge/legacy.txt"], storage.Deleted);
+    }
+
+    private sealed class ProviderWithoutBulkUpdateSupport : IDatabaseProvider
+    {
+        public string Name => "ProviderWithoutBulkUpdateSupport";
+
+        public bool IsConfigured(IDbContextOptions options) => true;
     }
 
     [Fact]

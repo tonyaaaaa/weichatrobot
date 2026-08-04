@@ -99,37 +99,26 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
         var cleanupJobIds = strandedDocumentIds
             .Select(KnowledgeDocumentCleanupJobIdentity.Create)
             .ToArray();
-        if (database.Database.ProviderName?.Contains(
-                "InMemory",
-                StringComparison.OrdinalIgnoreCase) == true)
+
+        var completedJobs = new List<DurableJobEntity>();
+        foreach (var batch in GuidBatchQuery.CreateBatches(cleanupJobIds))
         {
-            var completedJobs = await database.DurableJobs
+            var predicate = GuidBatchQuery.BuildPredicate<DurableJobEntity>(
+                batch,
+                job => job.Id);
+            completedJobs.AddRange(await database.DurableJobs
                 .Where(job =>
-                    cleanupJobIds.Contains(job.Id) &&
                     job.JobType == "CleanupKnowledgeDocument" &&
                     job.Status == "completed")
-                .ToArrayAsync(token);
-            foreach (var completedJob in completedJobs)
-                ResetForRecovery(completedJob, nowUtc);
-            if (completedJobs.Length != 0)
-                await database.SaveChangesAsync(token);
-            return completedJobs.Length != 0;
+                .Where(predicate)
+                .ToArrayAsync(token));
         }
 
-        return await database.DurableJobs
-            .Where(job =>
-                cleanupJobIds.Contains(job.Id) &&
-                job.JobType == "CleanupKnowledgeDocument" &&
-                job.Status == "completed")
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(job => job.Status, "pending")
-                .SetProperty(job => job.CompletedAtUtc, (DateTime?)null)
-                .SetProperty(job => job.NextAttemptAtUtc, nowUtc)
-                .SetProperty(job => job.LeaseOwner, (string?)null)
-                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(job => job.UpdatedAtUtc, nowUtc)
-                .SetProperty(job => job.Version, job => job.Version + 1),
-                token) != 0;
+        foreach (var completedJob in completedJobs)
+            ResetForRecovery(completedJob, nowUtc);
+        if (completedJobs.Count != 0)
+            await database.SaveChangesAsync(token);
+        return completedJobs.Count != 0;
     }
 
     private static void ResetForRecovery(
