@@ -88,6 +88,32 @@
 
 总计：74 项，`Unreviewed` 为 0。分类在对应模块的 red-green 修复中可以收紧，但不能未经测试改为 `KeepAtomic`。
 
+## Residual atomic CAS allowlist
+
+修复后仅保留以下 19 个非空原子条件更新。此表与静态守卫使用相同的路径、方法和当前方法内序号；任何新增、删除或移动都必须重新审核。
+
+| Path | Method | Current Ordinal | Operation |
+| --- | --- | ---: | --- |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `EvaluateInboundPolicyAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `LeaseForProcessingAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `LeaseForProcessingAsync` | 2 | Update |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `LeaseForProcessingAsync` | 3 | Update |
+| `src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs` | `RenewLeaseAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Knowledge/KnowledgeCandidatePublishProcessor.cs` | `ProcessAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `LeaseNextAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `RenewLeaseAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `LeaseNextJobAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `LeaseNextSendCommandAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `LeaseNextSendCommandAsync` | 2 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendDispatchingAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewJobLeaseAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 1 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 2 | Update |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `UpdateRelatedMessageStateAsync` | 1 | Update |
+| `src/server/WechatRobot.Worker/Jobs/WorkToolGroupOperationWorker.cs` | `ProcessOnceAsync` | 1 | Update |
+| `src/server/WechatRobot.Worker/Jobs/WorkToolGroupReconciliationWorker.cs` | `ProcessOnceAsync` | 1 | Update |
+
 ## Runtime Guid 查询清单
 
 | Path | Identifier | Classification | Replacement |

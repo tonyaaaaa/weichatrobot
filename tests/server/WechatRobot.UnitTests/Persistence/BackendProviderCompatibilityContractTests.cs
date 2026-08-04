@@ -4,7 +4,28 @@ namespace WechatRobot.UnitTests.Persistence;
 
 public sealed partial class BackendProviderCompatibilityContractTests
 {
-    private static readonly BulkMutationKey[] ApprovedBulkMutations = [];
+    private static readonly BulkMutationKey[] ApprovedBulkMutations =
+    [
+        new("src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs", "EvaluateInboundPolicyAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs", "LeaseForProcessingAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs", "LeaseForProcessingAsync", 2, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs", "LeaseForProcessingAsync", 3, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Conversations/GroundedConversationRepository.cs", "RenewLeaseAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Knowledge/KnowledgeCandidatePublishProcessor.cs", "ProcessAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs", "ActivateVersionAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs", "LeaseNextAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs", "RenewLeaseAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "LeaseNextJobAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "LeaseNextSendCommandAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "LeaseNextSendCommandAsync", 2, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "MarkSendDispatchingAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "RenewJobLeaseAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "RenewSendLeasesAsync", 1, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "RenewSendLeasesAsync", 2, "Update"),
+        new("src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs", "UpdateRelatedMessageStateAsync", 1, "Update"),
+        new("src/server/WechatRobot.Worker/Jobs/WorkToolGroupOperationWorker.cs", "ProcessOnceAsync", 1, "Update"),
+        new("src/server/WechatRobot.Worker/Jobs/WorkToolGroupReconciliationWorker.cs", "ProcessOnceAsync", 1, "Update")
+    ];
     private static readonly string[] NullableCaptureNames =
         ["nextAttempt", "groupProfileId", "result", "completedAtUtc"];
 
@@ -13,8 +34,36 @@ public sealed partial class BackendProviderCompatibilityContractTests
     {
         var actual = ScanBulkMutations(RepositoryRoot());
 
-        Assert.Equal(74, actual.Count);
-        Assert.Empty(actual.Select(item => item.Key).Except(ApprovedBulkMutations));
+        Assert.Equal(ApprovedBulkMutations, actual.Select(item => item.Key));
+    }
+
+    [Fact]
+    public void Audit_ledger_records_the_original_inventory_and_current_allowlist()
+    {
+        var ledger = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "docs",
+            "runbooks",
+            "backend-mysql-ef-provider-audit.md"));
+        var originalInventory = Section(ledger, "## Bulk mutation 清单", "## Residual atomic CAS allowlist");
+        var originalRows = OriginalAuditRowRegex().Matches(originalInventory);
+        Assert.Equal(74, originalRows.Count);
+        Assert.DoesNotContain(originalRows.Cast<Match>(), match =>
+            match.Value.Contains("| Unreviewed |", StringComparison.Ordinal));
+
+        var residualSection = Section(ledger, "## Residual atomic CAS allowlist", "## Runtime Guid 查询清单");
+        var documented = ResidualAuditRowRegex().Matches(residualSection)
+            .Select(match => new BulkMutationKey(
+                match.Groups["path"].Value,
+                match.Groups["method"].Value,
+                int.Parse(match.Groups["ordinal"].Value),
+                match.Groups["operation"].Value))
+            .OrderBy(item => item.Path, StringComparer.Ordinal)
+            .ThenBy(item => item.Method, StringComparer.Ordinal)
+            .ThenBy(item => item.Operation, StringComparer.Ordinal)
+            .ThenBy(item => item.Ordinal)
+            .ToArray();
+        Assert.Equal(ApprovedBulkMutations, documented);
     }
 
     [Fact]
@@ -121,6 +170,15 @@ public sealed partial class BackendProviderCompatibilityContractTests
         throw new InvalidOperationException($"Bulk mutation at offset {callIndex} has an unbalanced argument list.");
     }
 
+    private static string Section(string source, string heading, string nextHeading)
+    {
+        var start = source.IndexOf(heading, StringComparison.Ordinal);
+        var end = source.IndexOf(nextHeading, start + heading.Length, StringComparison.Ordinal);
+        if (start < 0 || end < 0)
+            throw new InvalidOperationException($"Audit ledger section '{heading}' was not found.");
+        return source[start..end];
+    }
+
     private static bool IsGeneratedPath(string path) =>
         path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
         || path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
@@ -157,4 +215,10 @@ public sealed partial class BackendProviderCompatibilityContractTests
 
     [GeneratedRegex(@"\b(expectedVersionIds|documentIds|newVersionIds|memoryIds)\.Contains\s*\(")]
     private static partial Regex RuntimeGuidContainsRegex();
+
+    [GeneratedRegex(@"(?m)^\| `src/server/[^`]+` \| `[^`]+` \| \d+ \| (?:Update|Delete) \| (?:ReplaceTracked|KeepAtomic|RemoveGuidContains) \|")]
+    private static partial Regex OriginalAuditRowRegex();
+
+    [GeneratedRegex(@"(?m)^\| `(?<path>src/server/[^`]+)` \| `(?<method>[^`]+)` \| (?<ordinal>\d+) \| (?<operation>Update|Delete) \|$")]
+    private static partial Regex ResidualAuditRowRegex();
 }
