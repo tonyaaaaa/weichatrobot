@@ -19,6 +19,200 @@ namespace WechatRobot.IntegrationTests.Knowledge;
 public sealed class KnowledgeDocumentCleanupWorkerTests
 {
     [Fact]
+    public async Task Upload_completion_does_not_require_bulk_update_support()
+    {
+        await using var provider = CreateProviderBoundaryServices().BuildServiceProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var store = new KnowledgeDocumentStore(database);
+        var pending = await store.StageAsync(
+            new DocumentStageRequest(
+                null,
+                "provider-upload.txt",
+                new ValidatedDocument(
+                    "provider upload"u8.ToArray(),
+                    "d".PadLeft(64, '0'),
+                    "provider-upload.txt",
+                    "text/plain")),
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(pending);
+
+        var completed = await store.MarkUploadedAsync(
+            pending,
+            new StoredObject(
+                pending.ObjectKey,
+                new Uri($"https://public.example.test/{pending.ObjectKey}")),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(completed);
+        Assert.Equal(
+            "uploaded",
+            (await database.KnowledgeDocumentVersions.SingleAsync(
+                item => item.Id == pending.VersionId,
+                TestContext.Current.CancellationToken)).Status);
+        Assert.Equal(
+            "pending",
+            (await database.DurableJobs.SingleAsync(
+                job =>
+                    job.JobType == "ParseKnowledgeDocument" &&
+                    job.PayloadJson.Contains(pending.VersionId.ToString()),
+                TestContext.Current.CancellationToken)).Status);
+    }
+
+    [Fact]
+    public async Task Upload_failure_does_not_require_bulk_update_support()
+    {
+        await using var provider = CreateProviderBoundaryServices().BuildServiceProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        var store = new KnowledgeDocumentStore(database);
+        var pending = await store.StageAsync(
+            new DocumentStageRequest(
+                null,
+                "provider-failure.txt",
+                new ValidatedDocument(
+                    "provider failure"u8.ToArray(),
+                    "e".PadLeft(64, '0'),
+                    "provider-failure.txt",
+                    "text/plain")),
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(pending);
+
+        await store.MarkFailedAsync(
+            pending,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            "failed",
+            (await database.KnowledgeDocumentVersions.SingleAsync(
+                item => item.Id == pending.VersionId,
+                TestContext.Current.CancellationToken)).Status);
+        var uploadJob = await database.DurableJobs.SingleAsync(
+            job =>
+                job.JobType == "UploadKnowledgeDocument" &&
+                job.PayloadJson.Contains(pending.VersionId.ToString()),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("retrying", uploadJob.Status);
+        Assert.Equal(1, uploadJob.AttemptCount);
+    }
+
+    [Fact]
+    public async Task Physical_delete_request_does_not_require_bulk_update_support()
+    {
+        var documentId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var services = new ServiceCollection();
+        services.AddDbContext<WechatRobotDbContext>(builder =>
+            builder.UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .ReplaceService<IDatabaseProvider, ProviderWithoutBulkUpdateSupport>()
+                .ConfigureWarnings(warnings =>
+                    warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        await using var provider = services.BuildServiceProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        database.AddRange(
+            new KnowledgeDocumentEntity
+            {
+                Id = documentId,
+                Title = "provider boundary",
+                Status = "uploaded",
+                ActiveVersionId = versionId,
+                StateVersion = 6
+            },
+            new KnowledgeDocumentVersionEntity
+            {
+                Id = versionId,
+                KnowledgeDocumentId = documentId,
+                Version = 1,
+                OriginalFileName = "provider-boundary.txt",
+                SafeFileName = "provider-boundary.txt",
+                ContentType = "text/plain",
+                Sha256 = "a".PadLeft(64, '0'),
+                ObjectKey = "wechatrobot/knowledge/provider-boundary.txt",
+                Status = "uploaded",
+                IsPublished = true
+            });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var accepted = await new KnowledgeDocumentStore(database)
+            .RequestPhysicalDeleteAsync(
+                documentId,
+                6,
+                "admin",
+                TestContext.Current.CancellationToken);
+
+        Assert.True(accepted);
+        var document = await database.KnowledgeDocuments.SingleAsync(
+            item => item.Id == documentId,
+            TestContext.Current.CancellationToken);
+        Assert.True(document.IsDeleteRequested);
+        Assert.Equal("disabled", document.Status);
+        Assert.Null(document.ActiveVersionId);
+        Assert.Equal(7, document.StateVersion);
+        Assert.True(await database.DurableJobs.AnyAsync(
+            item => item.Id == KnowledgeDocumentCleanupJobIdentity.Create(documentId),
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Physical_delete_retry_does_not_require_bulk_update_support()
+    {
+        var documentId = Guid.NewGuid();
+        var cleanupJobId = KnowledgeDocumentCleanupJobIdentity.Create(documentId);
+        var services = new ServiceCollection();
+        services.AddDbContext<WechatRobotDbContext>(builder =>
+            builder.UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .ReplaceService<IDatabaseProvider, ProviderWithoutBulkUpdateSupport>()
+                .ConfigureWarnings(warnings =>
+                    warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        await using var provider = services.BuildServiceProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
+        database.AddRange(
+            new KnowledgeDocumentEntity
+            {
+                Id = documentId,
+                Title = "provider retry boundary",
+                Status = "disabled",
+                IsDeleteRequested = true,
+                StateVersion = 3
+            },
+            new DurableJobEntity
+            {
+                Id = cleanupJobId,
+                JobType = "CleanupKnowledgeDocument",
+                Status = "deadLetter",
+                AttemptCount = 4,
+                PayloadJson = JsonSerializer.Serialize(new { documentId })
+            },
+            new DeadLetterEntity
+            {
+                DurableJobId = cleanupJobId,
+                Reason = "sanitized cleanup failure",
+                PayloadJson = "{}"
+            });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var accepted = await new KnowledgeDocumentStore(database)
+            .RequestPhysicalDeleteAsync(
+                documentId,
+                3,
+                "admin",
+                TestContext.Current.CancellationToken);
+
+        Assert.True(accepted);
+        var cleanup = await database.DurableJobs.SingleAsync(
+            item => item.Id == cleanupJobId,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("pending", cleanup.Status);
+        Assert.Equal(0, cleanup.AttemptCount);
+        Assert.Null(cleanup.CompletedAtUtc);
+        Assert.False(await database.DeadLetters.AnyAsync(
+            item => item.DurableJobId == cleanupJobId,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Completed_legacy_cleanup_is_recovered_without_bulk_update_support()
     {
         var documentId = Guid.Parse("11111111-2222-3333-4444-555555555555");
@@ -99,6 +293,17 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
         public string Name => "ProviderWithoutBulkUpdateSupport";
 
         public bool IsConfigured(IDbContextOptions options) => true;
+    }
+
+    private static ServiceCollection CreateProviderBoundaryServices()
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<WechatRobotDbContext>(builder =>
+            builder.UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .ReplaceService<IDatabaseProvider, ProviderWithoutBulkUpdateSupport>()
+                .ConfigureWarnings(warnings =>
+                    warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        return services;
     }
 
     [Fact]
