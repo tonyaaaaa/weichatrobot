@@ -398,7 +398,7 @@ public sealed class PrivateKnowledgeIngestProcessor(
             ContentType = "text/plain",
             Sha256 = Hash($"{batch.Id:N}:{sequence}:{proposal.Question}:{proposal.Answer}"),
             SizeBytes = Encoding.UTF8.GetByteCount(proposal.Question + proposal.Answer),
-            ObjectKey = $"private-chat/{batch.Id:N}/{sequence}",
+            ObjectKey = $"wechatrobot/private-chat/{batch.Id:N}/{sequence}",
             Status = "approved",
             StagedContent = Encoding.UTF8.GetBytes(
                 $"问题：{proposal.Question}\n答案：{proposal.Answer}"),

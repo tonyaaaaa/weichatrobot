@@ -107,6 +107,8 @@ public sealed class PrivateKnowledgeIngestPipelineTests
         Assert.Equal("Indexing", batch.Status);
         Assert.Equal("New", item.ChangeKind);
         Assert.Equal("PrivateChatDirect", version.SourceKind);
+        Assert.StartsWith("wechatrobot/private-chat/", version.ObjectKey, StringComparison.Ordinal);
+        Assert.Contains($"/{batchId:N}/", version.ObjectKey, StringComparison.Ordinal);
         Assert.Equal(batchId, version.SourceBatchId);
         Assert.Equal(batchId, indexJob.PrivateKnowledgeIngestBatchId);
         Assert.Contains(global.Id.ToString(), indexJob.PendingTagIdsJson, StringComparison.OrdinalIgnoreCase);
@@ -711,6 +713,7 @@ public sealed class PrivateKnowledgeIngestPipelineTests
     private sealed class MemoryVectorStore : IVectorStore
     {
         public Task EnsureCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
+        public Task EnsurePayloadIndexesAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
         public Task UpsertAsync(VectorCollection collection, IReadOnlyList<VectorPoint> points, CancellationToken token) => Task.CompletedTask;
         public Task SetVersionActiveAsync(VectorCollection collection, Guid versionId, bool active, CancellationToken token) => Task.CompletedTask;
         public Task DeleteCollectionAsync(VectorCollection collection, CancellationToken token) => Task.CompletedTask;
