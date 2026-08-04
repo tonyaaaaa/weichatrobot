@@ -192,6 +192,18 @@ more specific file overrides this repository-level guide for its scope.
 - Never run data cleanup or migrations against an unconfirmed database target.
 - Bound queries and batch operations. Avoid unbounded scans, N+1 queries, and
   loading entire datasets when a database-side filter is available.
+- With `MySql.EntityFrameworkCore`, never translate `Contains` over a runtime
+  `Guid[]`, `List<Guid>`, or other Guid collection into SQL. Use
+  `GuidBatchQuery.CreateBatches` and `GuidBatchQuery.BuildPredicate` with at
+  most 100 IDs per batch; do not replace batching with one query per ID.
+- Treat `RelationalCommand.CreateDbCommand` or
+  `TypeMappedRelationalParameter.AddDbParameter` null references as a likely
+  provider-query compatibility failure. Check runtime collection parameters
+  and bulk updates before blaming empty business data.
+- Cover provider-sensitive `ExecuteUpdateAsync`/`ExecuteDeleteAsync`
+  expressions, especially nullable assignments, with real MySQL integration
+  coverage or an equivalent provider-boundary regression test. Follow
+  `docs/runbooks/mysql-ef-provider-query-compatibility.md`.
 - Treat MySQL state and Qdrant state as separate sources that require separate
   verification.
 - Preserve durable job idempotency, leases, generations, retry metadata, and
