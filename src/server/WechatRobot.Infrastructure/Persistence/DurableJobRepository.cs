@@ -152,16 +152,31 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task CompleteJobAsync(Guid jobId, string leaseOwner, DateTime completedAtUtc, CancellationToken cancellationToken)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var updated = await database.DurableJobs.Where(job => job.Id == jobId && job.Status == "leased" && job.LeaseOwner == leaseOwner)
-        .ExecuteUpdateAsync(setters => setters
-            .SetProperty(job => job.Status, "completed")
-            .SetProperty(job => job.CompletedAtUtc, completedAtUtc)
-            .SetProperty(job => job.LeaseOwner, (string?)null)
-            .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
-            .SetProperty(job => job.Version, job => job.Version + 1)
-            .SetProperty(job => job.UpdatedAtUtc, completedAtUtc), cancellationToken);
-        if (updated == 1) await UpdateRelatedMessageStateAsync(jobId, "completed", cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        var job = await database.DurableJobs.SingleOrDefaultAsync(
+            value => value.Id == jobId && value.Status == "leased" && value.LeaseOwner == leaseOwner,
+            cancellationToken);
+        if (job is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+        job.Status = "completed";
+        job.CompletedAtUtc = completedAtUtc;
+        job.LeaseOwner = null;
+        job.LeaseExpiresAtUtc = null;
+        job.Version++;
+        job.UpdatedAtUtc = completedAtUtc;
+        await UpdateRelatedMessageStateTrackedAsync(job, "completed", cancellationToken);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+        }
     }
 
     public async Task DeferJobAsync(
@@ -173,27 +188,33 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     {
         await using var transaction = await database.Database.BeginTransactionAsync(
             cancellationToken);
-        var updated = await database.DurableJobs
-            .Where(value =>
+        var owned = await database.DurableJobs.SingleOrDefaultAsync(value =>
                 value.Id == job.Id
                 && value.Status == "leased"
-                && value.LeaseOwner == job.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(value => value.Status, "retrying")
-                .SetProperty(
-                    value => value.NextAttemptAtUtc,
-                    deferredAtUtc.Add(retryDelay))
-                .SetProperty(value => value.LeaseOwner, (string?)null)
-                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(value => value.Version, value => value.Version + 1)
-                .SetProperty(value => value.UpdatedAtUtc, deferredAtUtc),
-                cancellationToken);
-        if (updated == 1)
-            await UpdateRelatedMessageStateAsync(
-                job.Id,
-                "retrying",
-                cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+                && value.LeaseOwner == job.LeaseOwner,
+            cancellationToken);
+        if (owned is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+        owned.Status = "retrying";
+        owned.NextAttemptAtUtc = deferredAtUtc.Add(retryDelay);
+        owned.LeaseOwner = null;
+        owned.LeaseExpiresAtUtc = null;
+        owned.Version++;
+        owned.UpdatedAtUtc = deferredAtUtc;
+        await UpdateRelatedMessageStateTrackedAsync(owned, "retrying", cancellationToken);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+        }
     }
 
     public async Task<bool> RenewJobLeaseAsync(
@@ -221,46 +242,42 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task FailJobAsync(LeasedDurableJob job, string reason, DateTime failedAtUtc, CancellationToken cancellationToken)
     {
         var attempts = job.AttemptCount + 1;
-        if (attempts >= 4)
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var owned = await database.DurableJobs.SingleOrDefaultAsync(
+            value => value.Id == job.Id && value.Status == "leased" && value.LeaseOwner == job.LeaseOwner,
+            cancellationToken);
+        if (owned is null)
         {
-            await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-            var updated = await database.DurableJobs
-                .Where(value => value.Id == job.Id && value.Status == "leased" && value.LeaseOwner == job.LeaseOwner)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(value => value.Status, "deadLetter")
-                    .SetProperty(value => value.AttemptCount, attempts)
-                    .SetProperty(value => value.LeaseOwner, (string?)null)
-                    .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(value => value.Version, value => value.Version + 1)
-                    .SetProperty(value => value.UpdatedAtUtc, failedAtUtc), cancellationToken);
-            if (updated == 1)
-            {
-                await UpdateRelatedMessageStateAsync(job.Id, "deadLetter", cancellationToken);
-                database.DeadLetters.Add(new DeadLetterEntity { DurableJobId = job.Id, Reason = reason, PayloadJson = job.PayloadJson, CreatedAtUtc = failedAtUtc });
-                await database.SaveChangesAsync(cancellationToken);
-            }
-            await transaction.CommitAsync(cancellationToken);
+            await transaction.RollbackAsync(cancellationToken);
             return;
         }
-
-        var delay = SendRetryDelay(attempts);
-        await using var retryTransaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var retried = await database.DurableJobs
-            .Where(value => value.Id == job.Id && value.Status == "leased" && value.LeaseOwner == job.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(value => value.Status, "retrying")
-                .SetProperty(value => value.AttemptCount, attempts)
-                .SetProperty(value => value.NextAttemptAtUtc, failedAtUtc.Add(delay))
-                .SetProperty(value => value.LeaseOwner, (string?)null)
-                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(value => value.Version, value => value.Version + 1)
-                .SetProperty(value => value.UpdatedAtUtc, failedAtUtc), cancellationToken);
-        if (retried == 1)
+        owned.AttemptCount = attempts;
+        owned.LeaseOwner = null;
+        owned.LeaseExpiresAtUtc = null;
+        owned.Version++;
+        owned.UpdatedAtUtc = failedAtUtc;
+        if (attempts >= 4)
         {
-            await UpdateRelatedMessageStateAsync(job.Id, "retrying", cancellationToken);
-            await retryTransaction.CommitAsync(cancellationToken);
+            owned.Status = "deadLetter";
+            await UpdateRelatedMessageStateTrackedAsync(owned, "deadLetter", cancellationToken);
+            database.DeadLetters.Add(new DeadLetterEntity { DurableJobId = job.Id, Reason = reason, PayloadJson = job.PayloadJson, CreatedAtUtc = failedAtUtc });
         }
-        else await retryTransaction.RollbackAsync(cancellationToken);
+        else
+        {
+            owned.Status = "retrying";
+            owned.NextAttemptAtUtc = failedAtUtc.Add(SendRetryDelay(attempts));
+            await UpdateRelatedMessageStateTrackedAsync(owned, "retrying", cancellationToken);
+        }
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+        }
     }
 
     public async Task<EnqueueSendCommandResult> EnqueueSendCommandAsync(EnqueueSendCommandRequest request, CancellationToken cancellationToken)
@@ -294,33 +311,44 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
 
     public async Task<LeasedSendCommand?> LeaseNextSendCommandAsync(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration, CancellationToken cancellationToken)
     {
-        await database.SendCommands
+        foreach (var timedOut in await database.SendCommands
             .Where(command => command.Status == WorkToolCommandStatuses.Accepted &&
                               command.AcceptedAtUtc <= nowUtc.Subtract(WorkToolResultTimeout))
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(command => command.Status, WorkToolCommandStatuses.ResultTimeout)
-                .SetProperty(command => command.CompletedAtUtc, nowUtc)
-                .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
+            .ToArrayAsync(cancellationToken))
+        {
+            timedOut.Status = WorkToolCommandStatuses.ResultTimeout;
+            timedOut.CompletedAtUtc = nowUtc;
+            timedOut.Version++;
+        }
 
-        var expiredExternal = await database.SendCommands.AsNoTracking()
+        var expiredExternal = await database.SendCommands
             .Where(command => command.Status == WorkToolCommandStatuses.Dispatching && command.LeaseExpiresAtUtc <= nowUtc)
-            .Select(command => new { command.Id, command.RobotConfigId, command.LeaseOwner })
             .ToArrayAsync(cancellationToken);
         foreach (var expired in expiredExternal)
         {
-            await database.SendCommands.Where(command => command.Id == expired.Id && command.Status == WorkToolCommandStatuses.Dispatching)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(command => command.Status, WorkToolCommandStatuses.DeliveryUnknown)
-                    .SetProperty(command => command.ReconciliationReason, "external_dispatch_lease_expired")
-                    .SetProperty(command => command.LeaseOwner, (string?)null)
-                    .SetProperty(command => command.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(command => command.Version, command => command.Version + 1), cancellationToken);
-            await database.RobotConfigs
-                .Where(robot => robot.Id == expired.RobotConfigId && robot.SendLeaseOwner == expired.LeaseOwner)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(robot => robot.SendLeaseOwner, (string?)null)
-                    .SetProperty(robot => robot.SendLeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(robot => robot.SendCoordinationVersion, robot => robot.SendCoordinationVersion + 1), cancellationToken);
+            var expiredOwner = expired.LeaseOwner;
+            expired.Status = WorkToolCommandStatuses.DeliveryUnknown;
+            expired.ReconciliationReason = "external_dispatch_lease_expired";
+            expired.LeaseOwner = null;
+            expired.LeaseExpiresAtUtc = null;
+            expired.Version++;
+            var robot = await database.RobotConfigs.SingleOrDefaultAsync(
+                value => value.Id == expired.RobotConfigId && value.SendLeaseOwner == expiredOwner,
+                cancellationToken);
+            if (robot is not null)
+            {
+                robot.SendLeaseOwner = null;
+                robot.SendLeaseExpiresAtUtc = null;
+                robot.SendCoordinationVersion++;
+            }
+        }
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
         }
         var candidate = await (from command in database.SendCommands.AsNoTracking()
                                join robot in database.RobotConfigs.AsNoTracking() on command.RobotConfigId equals robot.Id
@@ -420,11 +448,18 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
                 else await sendGate.DisposeAsync();
                 return owned;
             }
-            await database.SendCommands.Where(value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.Status, "blocked")
-                    .SetProperty(value => value.LeaseOwner, (string?)null).SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
-            await ReleaseRobotGuardAsync(command, cancellationToken);
+            var blocked = await database.SendCommands.SingleOrDefaultAsync(
+                value => value.Id == command.Id && value.Status == "leased" && value.LeaseOwner == command.LeaseOwner,
+                cancellationToken);
+            if (blocked is not null)
+            {
+                blocked.Status = "blocked";
+                blocked.LeaseOwner = null;
+                blocked.LeaseExpiresAtUtc = null;
+                blocked.Version++;
+            }
+            _ = await ReleaseRobotGuardTrackedAsync(command, cancellationToken);
+            await database.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             await sendGate.DisposeAsync();
             return false;
@@ -465,16 +500,30 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task MarkSendDeliveryUnknownAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, CancellationToken cancellationToken)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var updated = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(value => value.Status, WorkToolCommandStatuses.DeliveryUnknown)
-                .SetProperty(value => value.ReconciliationReason, reason.Length > 256 ? reason[..256] : reason)
-                .SetProperty(value => value.LeaseOwner, (string?)null)
-                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
-        if (updated == 1) await ReleaseRobotGuardAsync(command, cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        var entity = await database.SendCommands.SingleOrDefaultAsync(
+            value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner,
+            cancellationToken);
+        if (entity is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+        entity.Status = WorkToolCommandStatuses.DeliveryUnknown;
+        entity.ReconciliationReason = reason.Length > 256 ? reason[..256] : reason;
+        entity.LeaseOwner = null;
+        entity.LeaseExpiresAtUtc = null;
+        entity.Version++;
+        _ = await ReleaseRobotGuardTrackedAsync(command, cancellationToken);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+        }
     }
 
     public async Task MarkSendRejectedAsync(
@@ -484,21 +533,30 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         CancellationToken cancellationToken)
     {
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var rejected = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(value => value.Status, WorkToolCommandStatuses.Rejected)
-                .SetProperty(value => value.ReconciliationReason, reason.Length > 256 ? reason[..256] : reason)
-                .SetProperty(value => value.CompletedAtUtc, rejectedAtUtc)
-                .SetProperty(value => value.LeaseOwner, (string?)null)
-                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
-        if (rejected != 1 || await ReleaseRobotGuardAsync(command, cancellationToken) != 1)
+        var entity = await database.SendCommands.SingleOrDefaultAsync(
+            value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner,
+            cancellationToken);
+        if (entity is null || await ReleaseRobotGuardTrackedAsync(command, cancellationToken) != 1)
         {
             await transaction.RollbackAsync(cancellationToken);
             return;
         }
-        await transaction.CommitAsync(cancellationToken);
+        entity.Status = WorkToolCommandStatuses.Rejected;
+        entity.ReconciliationReason = reason.Length > 256 ? reason[..256] : reason;
+        entity.CompletedAtUtc = rejectedAtUtc;
+        entity.LeaseOwner = null;
+        entity.LeaseExpiresAtUtc = null;
+        entity.Version++;
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+        }
     }
 
     public async Task MarkSendAcceptedAsync(
@@ -511,38 +569,49 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
             throw new ArgumentException("A valid WorkTool message ID is required.", nameof(workToolMessageId));
 
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var payloadJson = await database.SendCommands.AsNoTracking()
-            .Where(value => value.Id == command.Id)
-            .Select(value => value.PayloadJson)
-            .SingleOrDefaultAsync(cancellationToken);
-        var accepted = await database.SendCommands
-            .Where(value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(value => value.Status, WorkToolCommandStatuses.Accepted)
-                .SetProperty(value => value.WorkToolCommandMessageId, workToolMessageId)
-                .SetProperty(value => value.SentAtUtc, acceptedAtUtc)
-                .SetProperty(value => value.AcceptedAtUtc, acceptedAtUtc)
-                .SetProperty(value => value.CompletedAtUtc, (DateTime?)null)
-                .SetProperty(value => value.ReconciliationReason, (string?)null)
-                .SetProperty(value => value.LeaseOwner, (string?)null)
-                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
-        if (accepted != 1 || await ReleaseRobotGuardAsync(command, cancellationToken) != 1)
+        var entity = await database.SendCommands.SingleOrDefaultAsync(
+            value => value.Id == command.Id && value.Status == WorkToolCommandStatuses.Dispatching && value.LeaseOwner == command.LeaseOwner,
+            cancellationToken);
+        if (entity is null || await ReleaseRobotGuardTrackedAsync(command, cancellationToken) != 1)
         {
             await transaction.RollbackAsync(cancellationToken);
             return;
         }
-        var memoryIds = ReadMemoryRecallIds(payloadJson);
+        entity.Status = WorkToolCommandStatuses.Accepted;
+        entity.WorkToolCommandMessageId = workToolMessageId;
+        entity.SentAtUtc = acceptedAtUtc;
+        entity.AcceptedAtUtc = acceptedAtUtc;
+        entity.CompletedAtUtc = null;
+        entity.ReconciliationReason = null;
+        entity.LeaseOwner = null;
+        entity.LeaseExpiresAtUtc = null;
+        entity.Version++;
+        var memoryIds = ReadMemoryRecallIds(entity.PayloadJson);
         if (memoryIds.Length > 0)
         {
-            await database.MemoryEntries
-                .Where(entry => memoryIds.Contains(entry.Id) && entry.Status == "active")
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(entry => entry.RecallCount, entry => entry.RecallCount + 1)
-                    .SetProperty(entry => entry.LastRecalledAtUtc, acceptedAtUtc)
-                    .SetProperty(entry => entry.UpdatedAtUtc, acceptedAtUtc), cancellationToken);
+            foreach (var batch in GuidBatchQuery.CreateBatches(memoryIds))
+            {
+                foreach (var memory in await database.MemoryEntries
+                             .Where(GuidBatchQuery.BuildPredicate<MemoryEntryEntity>(batch, entry => entry.Id))
+                             .Where(entry => entry.Status == "active")
+                             .ToArrayAsync(cancellationToken))
+                {
+                    memory.RecallCount++;
+                    memory.LastRecalledAtUtc = acceptedAtUtc;
+                    memory.UpdatedAtUtc = acceptedAtUtc;
+                }
+            }
         }
-        await transaction.CommitAsync(cancellationToken);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
+        }
     }
 
     private static Guid[] ReadMemoryRecallIds(string? payloadJson)
@@ -571,45 +640,41 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
     public async Task FailSendCommandAsync(LeasedSendCommand command, string reason, DateTime failedAtUtc, TimeSpan? retryDelay, CancellationToken cancellationToken)
     {
         var attempts = command.AttemptCount + 1;
-        if (retryDelay is null)
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        var entity = await database.SendCommands.SingleOrDefaultAsync(
+            value => value.Id == command.Id &&
+                     (value.Status == WorkToolCommandStatuses.Leased || value.Status == WorkToolCommandStatuses.Dispatching) &&
+                     value.LeaseOwner == command.LeaseOwner,
+            cancellationToken);
+        if (entity is null)
         {
-            await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
-            var updated = await database.SendCommands
-                .Where(value => value.Id == command.Id && (value.Status == WorkToolCommandStatuses.Leased || value.Status == WorkToolCommandStatuses.Dispatching) && value.LeaseOwner == command.LeaseOwner)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(value => value.Status, "deadLetter")
-                    .SetProperty(value => value.AttemptCount, attempts)
-                    .SetProperty(value => value.LeaseOwner, (string?)null)
-                    .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                    .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
-            if (updated == 1)
-            {
-                database.DeadLetters.Add(new DeadLetterEntity { SendCommandId = command.Id, Reason = reason, PayloadJson = JsonSerializer.Serialize(command), CreatedAtUtc = failedAtUtc });
-                await database.SaveChangesAsync(cancellationToken);
-                await ReleaseRobotGuardAsync(command, cancellationToken);
-            }
-            await transaction.CommitAsync(cancellationToken);
+            await transaction.RollbackAsync(cancellationToken);
             return;
         }
-
-        await using var retryTransaction = await database.Database.BeginTransactionAsync(cancellationToken);
-        var retried = await database.SendCommands
-            .Where(value => value.Id == command.Id && (value.Status == WorkToolCommandStatuses.Leased || value.Status == WorkToolCommandStatuses.Dispatching) && value.LeaseOwner == command.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(value => value.Status, "retrying")
-                .SetProperty(value => value.AttemptCount, attempts)
-                .SetProperty(value => value.NextAttemptAtUtc, failedAtUtc.Add(retryDelay.Value))
-                .SetProperty(value => value.LeaseOwner, (string?)null)
-                .SetProperty(value => value.LeaseExpiresAtUtc, (DateTime?)null)
-                .SetProperty(value => value.Version, value => value.Version + 1), cancellationToken);
-        if (retried == 1)
+        entity.AttemptCount = attempts;
+        entity.LeaseOwner = null;
+        entity.LeaseExpiresAtUtc = null;
+        entity.Version++;
+        if (retryDelay is null)
         {
-            await ReleaseRobotGuardAsync(command, cancellationToken);
-            await retryTransaction.CommitAsync(cancellationToken);
+            entity.Status = "deadLetter";
+            database.DeadLetters.Add(new DeadLetterEntity { SendCommandId = command.Id, Reason = reason, PayloadJson = JsonSerializer.Serialize(command), CreatedAtUtc = failedAtUtc });
         }
         else
         {
-            await retryTransaction.RollbackAsync(cancellationToken);
+            entity.Status = "retrying";
+            entity.NextAttemptAtUtc = failedAtUtc.Add(retryDelay.Value);
+        }
+        _ = await ReleaseRobotGuardTrackedAsync(command, cancellationToken);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            database.ChangeTracker.Clear();
         }
     }
 
@@ -633,12 +698,19 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         return true;
     }
 
-    private Task<int> ReleaseRobotGuardAsync(LeasedSendCommand command, CancellationToken cancellationToken) => database.RobotConfigs
-        .Where(value => value.Id == command.RobotConfigId && value.SendLeaseOwner == command.LeaseOwner)
-        .ExecuteUpdateAsync(setters => setters
-            .SetProperty(value => value.SendLeaseOwner, (string?)null)
-            .SetProperty(value => value.SendLeaseExpiresAtUtc, (DateTime?)null)
-            .SetProperty(value => value.SendCoordinationVersion, value => value.SendCoordinationVersion + 1), cancellationToken);
+    private async Task<int> ReleaseRobotGuardTrackedAsync(
+        LeasedSendCommand command,
+        CancellationToken cancellationToken)
+    {
+        var robot = await database.RobotConfigs.SingleOrDefaultAsync(
+            value => value.Id == command.RobotConfigId && value.SendLeaseOwner == command.LeaseOwner,
+            cancellationToken);
+        if (robot is null) return 0;
+        robot.SendLeaseOwner = null;
+        robot.SendLeaseExpiresAtUtc = null;
+        robot.SendCoordinationVersion++;
+        return 1;
+    }
 
     private async Task UpdateRelatedMessageStateAsync(Guid jobId, string state, CancellationToken token)
     {
@@ -647,6 +719,18 @@ public sealed class DurableJobRepository(WechatRobotDbContext database) : IDurab
         if (messageId is { } id)
             await database.ConversationMessages.Where(message => message.Id == id)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(message => message.ProcessingState, state), token);
+    }
+
+    private async Task UpdateRelatedMessageStateTrackedAsync(
+        DurableJobEntity job,
+        string state,
+        CancellationToken token)
+    {
+        if (job.RelatedConversationMessageId is not { } messageId) return;
+        var message = await database.ConversationMessages.SingleOrDefaultAsync(
+            value => value.Id == messageId,
+            token);
+        if (message is not null) message.ProcessingState = state;
     }
 
     private static TimeSpan SendRetryDelay(int attempts) => attempts switch

@@ -52,15 +52,15 @@
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `LeaseNextSendCommandAsync` | 4 | Update | KeepAtomic | robot guard claim CAS |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `LeaseNextSendCommandAsync` | 5 | Update | KeepAtomic | send command claim CAS |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `EnsureSendEnabledAsync` | 1 | Update | ReplaceTracked | blocked transition clears lease |
-| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendDispatchingAsync` | 1 | Update | ReplaceTracked | nullable dispatch metadata review |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendDispatchingAsync` | 1 | Update | KeepAtomic | external dispatch claim CAS |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendDeliveryUnknownAsync` | 1 | Update | ReplaceTracked | clears lease fields |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendRejectedAsync` | 1 | Update | ReplaceTracked | clears lease fields |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendAcceptedAsync` | 1 | Update | ReplaceTracked | clears completion/reconciliation/lease fields |
-| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendAcceptedAsync` | 2 | Update | KeepAtomic | memory recall counter after Guid fix |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `MarkSendAcceptedAsync` | 2 | Update | ReplaceTracked | Guid-batched memory recall update |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `FailSendCommandAsync` | 1 | Update | ReplaceTracked | retry clears lease fields |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `FailSendCommandAsync` | 2 | Update | ReplaceTracked | terminal failure clears lease fields |
-| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 1 | Update | ReplaceTracked | nullable input audit required |
-| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 2 | Update | ReplaceTracked | nullable input audit required |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 1 | Update | KeepAtomic | send command lease renewal CAS |
+| `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 2 | Update | KeepAtomic | robot guard lease renewal CAS |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `ReleaseRobotGuardAsync` | 1 | Update | ReplaceTracked | clears guard fields |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `UpdateRelatedMessageStateAsync` | 1 | Update | KeepAtomic | non-null message state update |
 | `src/server/WechatRobot.Infrastructure/Persistence/EfHandoffStore.cs` | `TransitionAsync` | 1 | Update | ReplaceTracked | tracked handoff concurrency token transition |
