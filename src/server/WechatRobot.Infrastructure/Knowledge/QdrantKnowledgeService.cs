@@ -293,12 +293,18 @@ public sealed class QdrantKnowledgeService(
                         && x.StagedVersionId != null)
             .Select(x => x.StagedVersionId!.Value)
             .ToArrayAsync(token);
-        var batchJobs = await database.KnowledgeIndexJobs
-            .Where(x => x.PrivateKnowledgeIngestBatchId == batchId
-                        && expectedVersionIds.Contains(x.KnowledgeDocumentVersionId))
-            .ToArrayAsync(token);
+        var batchJobs = new List<KnowledgeIndexJobEntity>();
+        foreach (var versionBatch in GuidBatchQuery.CreateBatches(expectedVersionIds))
+        {
+            batchJobs.AddRange(await database.KnowledgeIndexJobs
+                .Where(x => x.PrivateKnowledgeIngestBatchId == batchId)
+                .Where(GuidBatchQuery.BuildPredicate<KnowledgeIndexJobEntity>(
+                    versionBatch,
+                    x => x.KnowledgeDocumentVersionId))
+                .ToArrayAsync(token));
+        }
         if (expectedVersionIds.Length == 0
-            || batchJobs.Length != expectedVersionIds.Length
+            || batchJobs.Count != expectedVersionIds.Length
             || batchJobs.Any(x => x.Status != "staged"))
         {
             if (transaction is not null) await transaction.CommitAsync(token);
@@ -306,13 +312,27 @@ public sealed class QdrantKnowledgeService(
         }
 
         var documentIds = batchJobs.Select(x => x.KnowledgeDocumentId).Distinct().ToArray();
-        var documents = await database.KnowledgeDocuments
-            .Where(x => documentIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, token);
+        var documents = new Dictionary<Guid, KnowledgeDocumentEntity>();
+        foreach (var documentBatch in GuidBatchQuery.CreateBatches(documentIds))
+        {
+            foreach (var document in await database.KnowledgeDocuments
+                         .Where(GuidBatchQuery.BuildPredicate<KnowledgeDocumentEntity>(
+                             documentBatch,
+                             x => x.Id))
+                         .ToArrayAsync(token))
+                documents.Add(document.Id, document);
+        }
         var newVersionIds = batchJobs.Select(x => x.KnowledgeDocumentVersionId).ToArray();
-        var newVersions = await database.KnowledgeDocumentVersions
-            .Where(x => newVersionIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, token);
+        var newVersions = new Dictionary<Guid, KnowledgeDocumentVersionEntity>();
+        foreach (var versionBatch in GuidBatchQuery.CreateBatches(newVersionIds))
+        {
+            foreach (var loadedVersion in await database.KnowledgeDocumentVersions
+                         .Where(GuidBatchQuery.BuildPredicate<KnowledgeDocumentVersionEntity>(
+                             versionBatch,
+                             x => x.Id))
+                         .ToArrayAsync(token))
+                newVersions.Add(loadedVersion.Id, loadedVersion);
+        }
         foreach (var batchJob in batchJobs.OrderBy(x => x.Id))
         {
             var document = documents[batchJob.KnowledgeDocumentId];
@@ -482,32 +502,53 @@ public sealed class QdrantKnowledgeService(
             .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "activating").SetProperty(job => job.Version, job => job.Version + 1)
                 .SetProperty(job => job.UpdatedAtUtc, now), token);
         if (ownerChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
-        var documentChanged = await database.KnowledgeDocuments.Where(document => document.Id == work.DocumentId && !document.IsDeleteRequested && document.Status != "disabled" &&
-                ((work.PreviousActiveVersionId == null && document.ActiveVersionId == null) ||
-                 (document.ActiveVersionId == work.PreviousActiveVersionId && document.ActiveCollectionName == work.PreviousActiveCollectionName)))
-            .ExecuteUpdateAsync(setters => setters.SetProperty(document => document.ActiveVersionId, work.VersionId)
-                .SetProperty(document => document.ActiveCollectionName, work.CollectionName)
-                .SetProperty(document => document.ActiveEmbeddingContractKey, work.EmbeddingContractKey)
-                .SetProperty(document => document.ActiveEmbeddingDimension, work.Dimension)
-                .SetProperty(document => document.ActiveDistance, DistanceValue(work.Distance)).SetProperty(document => document.ActiveIndexGeneration, work.Generation)
-                .SetProperty(document => document.ActiveCollectionExclusive, work.IsCollectionExclusive)
-                .SetProperty(document => document.Status, "active").SetProperty(document => document.StateVersion, document => document.StateVersion + 1)
-                .SetProperty(document => document.UpdatedAtUtc, now), token);
-        if (documentChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
-        var versionChanged = await database.KnowledgeDocumentVersions.Where(version => version.Id == work.VersionId && version.KnowledgeDocumentId == work.DocumentId && version.Status != "disabled")
-            .ExecuteUpdateAsync(setters => setters.SetProperty(version => version.Status, "active").SetProperty(version => version.IsPublished, true)
-                .SetProperty(version => version.IndexCollectionName, work.CollectionName)
-                .SetProperty(version => version.IndexEmbeddingContractKey, work.EmbeddingContractKey)
-                .SetProperty(version => version.EmbeddingDimension, work.Dimension)
-                .SetProperty(version => version.VectorDistance, DistanceValue(work.Distance)).SetProperty(version => version.IndexGeneration, work.Generation)
-                .SetProperty(version => version.IndexCollectionExclusive, work.IsCollectionExclusive)
-                .SetProperty(version => version.UpdatedAtUtc, now), token);
-        if (versionChanged != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
-        await database.KnowledgeCandidates.Where(candidate => candidate.KnowledgeDocumentVersionId == work.VersionId &&
-                (candidate.Status == "indexing" || candidate.Status == "approved_pending_index"))
-            .ExecuteUpdateAsync(setters => setters.SetProperty(candidate => candidate.Status, "published")
-                .SetProperty(candidate => candidate.PublishedAtUtc, now).SetProperty(candidate => candidate.Version, candidate => candidate.Version + 1)
-                .SetProperty(candidate => candidate.UpdatedAtUtc, now), token);
+        var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(
+            item => item.Id == work.DocumentId,
+            token);
+        if (document is null || document.IsDeleteRequested || document.Status == "disabled" ||
+            document.ActiveVersionId != work.PreviousActiveVersionId ||
+            document.ActiveCollectionName != work.PreviousActiveCollectionName)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(token);
+            return false;
+        }
+        var version = await database.KnowledgeDocumentVersions.SingleOrDefaultAsync(
+            item => item.Id == work.VersionId && item.KnowledgeDocumentId == work.DocumentId,
+            token);
+        if (version is null || version.Status == "disabled")
+        {
+            if (transaction is not null) await transaction.RollbackAsync(token);
+            return false;
+        }
+        document.ActiveVersionId = work.VersionId;
+        document.ActiveCollectionName = work.CollectionName;
+        document.ActiveEmbeddingContractKey = work.EmbeddingContractKey;
+        document.ActiveEmbeddingDimension = work.Dimension;
+        document.ActiveDistance = DistanceValue(work.Distance);
+        document.ActiveIndexGeneration = work.Generation;
+        document.ActiveCollectionExclusive = work.IsCollectionExclusive;
+        document.Status = "active";
+        document.StateVersion++;
+        document.UpdatedAtUtc = now;
+        version.Status = "active";
+        version.IsPublished = true;
+        version.IndexCollectionName = work.CollectionName;
+        version.IndexEmbeddingContractKey = work.EmbeddingContractKey;
+        version.EmbeddingDimension = work.Dimension;
+        version.VectorDistance = DistanceValue(work.Distance);
+        version.IndexGeneration = work.Generation;
+        version.IndexCollectionExclusive = work.IsCollectionExclusive;
+        version.UpdatedAtUtc = now;
+        foreach (var candidate in await database.KnowledgeCandidates.Where(item =>
+                     item.KnowledgeDocumentVersionId == work.VersionId &&
+                     (item.Status == "indexing" || item.Status == "approved_pending_index"))
+                 .ToArrayAsync(token))
+        {
+            candidate.Status = "published";
+            candidate.PublishedAtUtc = now;
+            candidate.Version++;
+            candidate.UpdatedAtUtc = now;
+        }
         var chunkIds = work.Chunks.Select(chunk => chunk.Id).ToArray();
         foreach (var batch in GuidBatchQuery.CreateBatches(chunkIds))
         {
@@ -525,19 +566,45 @@ public sealed class QdrantKnowledgeService(
             && KnowledgeIndexTransition.RequiresPreviousVersionCleanup(oldVersion, work.VersionId, oldCollection, work.CollectionName))
         {
             if (oldVersion != work.VersionId)
-                await database.KnowledgeDocumentVersions.Where(version => version.Id == oldVersion).ExecuteUpdateAsync(setters => setters
-                    .SetProperty(version => version.Status, "indexed").SetProperty(version => version.IsPublished, false).SetProperty(version => version.UpdatedAtUtc, now), token);
+            {
+                var previousVersion = await database.KnowledgeDocumentVersions.SingleOrDefaultAsync(
+                    item => item.Id == oldVersion,
+                    token);
+                if (previousVersion is not null)
+                {
+                    previousVersion.Status = "indexed";
+                    previousVersion.IsPublished = false;
+                    previousVersion.UpdatedAtUtc = now;
+                }
+            }
             await AddCleanupJobAsync(work.DocumentId, oldVersion, oldCollection, work.PreviousActiveEmbeddingDimension ?? work.Dimension,
                 work.PreviousActiveDistance ?? work.Distance, 0, now, work.JobId, null, work.PreviousActiveCollectionExclusive, token);
         }
-        var completed = await database.KnowledgeIndexJobs.Where(job => job.Id == work.JobId && job.Status == "activating" && job.LeaseOwner == work.LeaseOwner)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed").SetProperty(job => job.LeaseOwner, (string?)null)
-                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null).SetProperty(job => job.FailureReason, (string?)null)
-                .SetProperty(job => job.Version, job => job.Version + 1).SetProperty(job => job.UpdatedAtUtc, now), token);
-        if (completed != 1) { if (transaction is not null) await transaction.RollbackAsync(token); return false; }
-        await database.SaveChangesAsync(token);
-        if (transaction is not null) await transaction.CommitAsync(token);
-        return true;
+        var indexJob = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(
+            job => job.Id == work.JobId && job.Status == "activating" && job.LeaseOwner == work.LeaseOwner,
+            token);
+        if (indexJob is null)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(token);
+            return false;
+        }
+        indexJob.Status = "completed";
+        indexJob.LeaseOwner = null;
+        indexJob.LeaseExpiresAtUtc = null;
+        indexJob.FailureReason = null;
+        indexJob.Version++;
+        indexJob.UpdatedAtUtc = now;
+        try
+        {
+            await database.SaveChangesAsync(token);
+            if (transaction is not null) await transaction.CommitAsync(token);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            if (transaction is not null) await transaction.RollbackAsync(token);
+            return false;
+        }
     }
 
     public async Task EnqueueCleanupAsync(KnowledgeIndexWork work, CancellationToken token)
@@ -612,18 +679,36 @@ public sealed class QdrantKnowledgeService(
         string? actor,
         CancellationToken token)
     {
-        database.ChangeTracker.Clear();
-        var document = await database.KnowledgeDocuments.AsNoTracking().SingleOrDefaultAsync(item => item.Id == documentId, token) ?? throw new KeyNotFoundException();
-        if (document.StateVersion != expectedStateVersion)
-            throw Concurrency(document);
-        if (document.IsDeleteRequested) throw new DocumentDeleteRequestedException();
-        if (document.Status == "disabled") return;
-        if (IsInMemory)
+        try
         {
             await DisableTrackedAsync(documentId, expectedStateVersion, actor, token);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await ThrowDisableConflictAsync(documentId, token);
+        }
+    }
+
+    private async Task DisableTrackedAsync(
+        Guid documentId,
+        int expectedStateVersion,
+        string? actor,
+        CancellationToken token)
+    {
+        database.ChangeTracker.Clear();
+        await using var transaction = await BeginTransactionAsync(token);
+        var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(
+            item => item.Id == documentId,
+            token) ?? throw new KeyNotFoundException();
+        if (document.StateVersion != expectedStateVersion) throw Concurrency(document);
+        if (document.IsDeleteRequested) throw new DocumentDeleteRequestedException();
+        if (document.Status == "disabled")
+        {
+            if (transaction is not null) await transaction.CommitAsync(token);
             return;
         }
-        await using var transaction = await BeginTransactionAsync(token);
+
+        var priorStatus = document.Status;
         var now = timeProvider.GetUtcNow().UtcDateTime;
         if (document.ActiveVersionId is { } versionId && document.ActiveCollectionName is { } collection)
             await AddCleanupJobAsync(documentId, versionId, collection, document.ActiveEmbeddingDimension ?? options.Dimension,
@@ -636,52 +721,7 @@ public sealed class QdrantKnowledgeService(
         foreach (var staged in stagedContracts)
             await AddCleanupJobAsync(documentId, staged.KnowledgeDocumentVersionId, staged.CollectionName, staged.Dimension,
                 ParseDistance(staged.Distance), staged.Generation, now, staged.Id, staged.LeaseExpiresAtUtc, staged.IsCollectionExclusive, token);
-        var documentChanged = await database.KnowledgeDocuments.Where(item => item.Id == documentId && !item.IsDeleteRequested &&
-                item.Status == document.Status && item.ActiveVersionId == document.ActiveVersionId && item.StateVersion == expectedStateVersion)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, "disabled").SetProperty(item => item.ActiveVersionId, (Guid?)null)
-                .SetProperty(item => item.StateVersion, item => item.StateVersion + 1)
-                .SetProperty(item => item.UpdatedAtUtc, now), token);
-        if (documentChanged != 1)
-        {
-            if (transaction is not null) await transaction.RollbackAsync(token);
-            await ThrowDisableConflictAsync(documentId, token);
-        }
-        await database.KnowledgeDocumentVersions.Where(version => version.KnowledgeDocumentId == documentId)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(version => version.Status, "disabled").SetProperty(version => version.IsPublished, false)
-                .SetProperty(version => version.UpdatedAtUtc, now), token);
-        await database.KnowledgeIndexJobs.Where(job => job.KnowledgeDocumentId == documentId && job.Operation != "cleanup" &&
-                (job.Status == "pending" || job.Status == "retrying" || job.Status == "leased" || job.Status == "activating"))
-            .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "cancelled").SetProperty(job => job.LeaseOwner, (string?)null)
-                .SetProperty(job => job.Version, job => job.Version + 1).SetProperty(job => job.UpdatedAtUtc, now), token);
-        AddDocumentAudit(
-            actor,
-            "knowledge-document.disable",
-            documentId,
-            new
-            {
-                before = new { status = document.Status, stateVersion = expectedStateVersion },
-                after = new { status = "disabled", stateVersion = expectedStateVersion + 1 }
-            });
-        await database.SaveChangesAsync(token);
-        if (transaction is not null) await transaction.CommitAsync(token);
-    }
 
-    private async Task DisableTrackedAsync(
-        Guid documentId,
-        int expectedStateVersion,
-        string? actor,
-        CancellationToken token)
-    {
-        database.ChangeTracker.Clear();
-        var document = await database.KnowledgeDocuments.SingleOrDefaultAsync(
-            item => item.Id == documentId,
-            token) ?? throw new KeyNotFoundException();
-        if (document.StateVersion != expectedStateVersion) throw Concurrency(document);
-        if (document.IsDeleteRequested) throw new DocumentDeleteRequestedException();
-        if (document.Status == "disabled") return;
-
-        var priorStatus = document.Status;
-        var now = timeProvider.GetUtcNow().UtcDateTime;
         document.Status = "disabled";
         document.ActiveVersionId = null;
         document.StateVersion++;
@@ -720,13 +760,30 @@ public sealed class QdrantKnowledgeService(
                 after = new { status = "disabled", stateVersion = document.StateVersion }
             });
         await database.SaveChangesAsync(token);
+        if (transaction is not null) await transaction.CommitAsync(token);
     }
 
-    public async Task CompleteCleanupAsync(Guid jobId, string owner, CancellationToken token) => await database.KnowledgeIndexJobs
-        .Where(job => job.Id == jobId && job.Status == "leased" && job.LeaseOwner == owner)
-        .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, "completed").SetProperty(job => job.LeaseOwner, (string?)null)
-            .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null).SetProperty(job => job.Version, job => job.Version + 1)
-            .SetProperty(job => job.UpdatedAtUtc, timeProvider.GetUtcNow().UtcDateTime), token);
+    public async Task CompleteCleanupAsync(Guid jobId, string owner, CancellationToken token)
+    {
+        database.ChangeTracker.Clear();
+        var job = await database.KnowledgeIndexJobs.SingleOrDefaultAsync(
+            item => item.Id == jobId && item.Status == "leased" && item.LeaseOwner == owner,
+            token);
+        if (job is null) return;
+        job.Status = "completed";
+        job.LeaseOwner = null;
+        job.LeaseExpiresAtUtc = null;
+        job.Version++;
+        job.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        try
+        {
+            await database.SaveChangesAsync(token);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            database.ChangeTracker.Clear();
+        }
+    }
 
     public Task<bool> IsIndexLeaseOwnedAsync(Guid jobId, string owner, CancellationToken token) => database.KnowledgeIndexJobs.AsNoTracking()
         .AnyAsync(job => job.Id == jobId && (job.Status == "leased" || job.Status == "activating") && job.LeaseOwner == owner, token);

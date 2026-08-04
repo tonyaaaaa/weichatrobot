@@ -31,9 +31,9 @@
 | `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `LeaseNextAsync` | 1 | Update | KeepAtomic | index lease CAS |
 | `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `RenewLeaseAsync` | 1 | Update | KeepAtomic | lease renewal CAS |
 | `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 1 | Update | KeepAtomic | activation claim CAS |
-| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 2 | Update | KeepAtomic | document activation CAS |
-| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 3 | Update | KeepAtomic | version activation CAS |
-| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 4 | Update | KeepAtomic | candidate publish transition |
+| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 2 | Update | ReplaceTracked | document activation transition |
+| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 3 | Update | ReplaceTracked | version activation transition |
+| `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 4 | Update | ReplaceTracked | candidate publish transition |
 | `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 5 | Update | ReplaceTracked | old version nullable metadata |
 | `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `ActivateVersionAsync` | 6 | Update | ReplaceTracked | clears job lease fields |
 | `src/server/WechatRobot.Infrastructure/Knowledge/QdrantKnowledgeService.cs` | `DisableCoreAsync` | 1 | Update | ReplaceTracked | clears active version |
@@ -63,14 +63,14 @@
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `RenewSendLeasesAsync` | 2 | Update | ReplaceTracked | nullable input audit required |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `ReleaseRobotGuardAsync` | 1 | Update | ReplaceTracked | clears guard fields |
 | `src/server/WechatRobot.Infrastructure/Persistence/DurableJobRepository.cs` | `UpdateRelatedMessageStateAsync` | 1 | Update | KeepAtomic | non-null message state update |
-| `src/server/WechatRobot.Infrastructure/Persistence/EfHandoffStore.cs` | `TransitionAsync` | 1 | Update | KeepAtomic | handoff version CAS |
+| `src/server/WechatRobot.Infrastructure/Persistence/EfHandoffStore.cs` | `TransitionAsync` | 1 | Update | ReplaceTracked | tracked handoff concurrency token transition |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkUploadedAsync` | 1 | Update | ReplaceTracked | clears job lease fields |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkUploadedAsync` | 2 | Update | ReplaceTracked | document transition review |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkUploadedAsync` | 3 | Update | ReplaceTracked | clears failure reason |
-| `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkUploadedAsync` | 4 | Update | KeepAtomic | parse job unblock transition |
+| `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkUploadedAsync` | 4 | Update | ReplaceTracked | parse job unblock transition |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkFailedAsync` | 1 | Update | ReplaceTracked | clears job lease fields |
-| `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkFailedAsync` | 2 | Update | KeepAtomic | document failure transition |
-| `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkFailedAsync` | 3 | Update | KeepAtomic | version failure transition |
+| `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkFailedAsync` | 2 | Update | ReplaceTracked | document failure transition |
+| `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `MarkFailedAsync` | 3 | Update | ReplaceTracked | version failure transition |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `RequestPhysicalDeleteCoreAsync` | 1 | Update | ReplaceTracked | clears active version |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `RequestPhysicalDeleteCoreAsync` | 2 | Update | ReplaceTracked | version disable transition |
 | `src/server/WechatRobot.Infrastructure/Persistence/KnowledgeDocumentStore.cs` | `RequestPhysicalDeleteCoreAsync` | 3 | Update | ReplaceTracked | clears durable job leases |

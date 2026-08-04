@@ -182,19 +182,6 @@ public sealed class EfHandoffStore(WechatRobotDbContext db) : IHandoffStore
         var domain = Domain(entity); var from = domain.State.ToString();
         try { if (!transition(domain)) return Map(entity); }
         catch (InvalidHandoffTransitionException exception) { throw new HandoffStateException(exception.Message); }
-        if (db.Database.IsRelational())
-        {
-            await using var transaction = await db.Database.BeginTransactionAsync(token);
-            var changed = await db.HandoffCases.Where(x => x.Id == entity.Id && x.Version == version)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.State, domain.State.ToString())
-                    .SetProperty(x => x.AssigneeUserId, domain.AssigneeUserId).SetProperty(x => x.FinalAnswer, domain.FinalAnswer)
-                    .SetProperty(x => x.Version, version + 1).SetProperty(x => x.UpdatedAtUtc, now), token);
-            if (changed != 1) { await transaction.RollbackAsync(token); throw new HandoffConcurrencyException("The handoff was modified by another operator."); }
-            AddTransition(entity.Id, actor, version + 2, from, domain.State.ToString(), reason, idempotencyKey, now);
-            try { await db.SaveChangesAsync(token); await transaction.CommitAsync(token); return new(entity.Id, domain.State.ToString(), domain.AssigneeUserId, version + 1); }
-            catch (DbUpdateException exception) when (exception.InnerException is MySqlException { Number: 1062 })
-            { await transaction.RollbackAsync(CancellationToken.None); throw new HandoffConcurrencyException("The handoff transition was already committed by another operator."); }
-        }
         Apply(entity, domain); entity.Version++; AddTransition(entity.Id, actor, version + 2, from, domain.State.ToString(), reason, idempotencyKey, now);
         try { await db.SaveChangesAsync(token); return Map(entity); }
         catch (DbUpdateConcurrencyException) { throw new HandoffConcurrencyException("The handoff was modified by another operator."); }

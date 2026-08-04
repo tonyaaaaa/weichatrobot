@@ -58,22 +58,25 @@ public sealed class EfGroupLifecycleStore(
         group.ArchivedAtUtc = archivedAtUtc;
         group.StateVersion++;
         group.UpdatedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+        if (!isEnabled)
+        {
+            var now = timeProvider.GetUtcNow().UtcDateTime;
+            foreach (var job in await database.DurableJobs
+                         .Where(item => item.GroupProfileId == id &&
+                                        MemoryJobTypes.Contains(item.JobType) &&
+                                        (item.Status == "pending" || item.Status == "retrying"))
+                         .ToArrayAsync(token))
+            {
+                job.Status = "cancelled";
+                job.LeaseOwner = null;
+                job.LeaseExpiresAtUtc = null;
+                job.Version++;
+                job.UpdatedAtUtc = now;
+            }
+        }
         try
         {
             await database.SaveChangesAsync(token);
-            if (!isEnabled)
-            {
-                await database.DurableJobs
-                    .Where(job => job.GroupProfileId == id &&
-                                  MemoryJobTypes.Contains(job.JobType) &&
-                                  (job.Status == "pending" || job.Status == "retrying"))
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(job => job.Status, "cancelled")
-                        .SetProperty(job => job.LeaseOwner, (string?)null)
-                        .SetProperty(job => job.LeaseExpiresAtUtc, (DateTime?)null)
-                        .SetProperty(job => job.Version, job => job.Version + 1)
-                        .SetProperty(job => job.UpdatedAtUtc, timeProvider.GetUtcNow().UtcDateTime), token);
-            }
         }
         catch (DbUpdateConcurrencyException)
         {
