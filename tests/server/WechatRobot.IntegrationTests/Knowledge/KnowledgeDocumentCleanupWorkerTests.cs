@@ -255,6 +255,7 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
                     ContentType = "text/plain",
                     Sha256 = "c".PadLeft(64, '0'),
                     ObjectKey = "wechatrobot/knowledge/legacy.txt",
+                    PublicUrl = "https://public.example.test/wechatrobot/knowledge/legacy.txt",
                     Status = "disabled"
                 },
                 new DurableJobEntity
@@ -307,6 +308,79 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
     }
 
     [Fact]
+    public async Task Physical_delete_skips_legacy_pseudo_object_without_public_url()
+    {
+        var documentId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var job = new LeasedDurableJob(
+            Guid.NewGuid(),
+            "CleanupKnowledgeDocument",
+            JsonSerializer.Serialize(new { documentId }),
+            0,
+            "cleanup-owner");
+        var jobs = new FakeJobs(job);
+        var storage = new FakeStorage();
+        var services = new ServiceCollection();
+        var databaseName = Guid.NewGuid().ToString();
+        services.AddDbContext<WechatRobotDbContext>(builder =>
+            builder.UseInMemoryDatabase(databaseName));
+        services.AddSingleton<IDurableJobRepository>(jobs);
+        services.AddSingleton<IObjectStorage>(storage);
+        services.AddSingleton<IVectorStore>(new FakeVectors());
+        services.AddSingleton(new KnowledgeIndexOptions(3, VectorDistance.Cosine));
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<ISecretProtector, PassThroughProtector>();
+        services.AddScoped<ModelConfigurationService>();
+        services.AddScoped<QdrantKnowledgeService>();
+        await using var provider = services.BuildServiceProvider();
+        await using (var seedScope = provider.CreateAsyncScope())
+        {
+            var database = seedScope.ServiceProvider
+                .GetRequiredService<WechatRobotDbContext>();
+            database.AddRange(
+                new KnowledgeDocumentEntity
+                {
+                    Id = documentId,
+                    Status = "disabled",
+                    IsDeleteRequested = true
+                },
+                new KnowledgeDocumentVersionEntity
+                {
+                    Id = versionId,
+                    KnowledgeDocumentId = documentId,
+                    Version = 1,
+                    OriginalFileName = "private-chat.txt",
+                    SafeFileName = "private-chat.txt",
+                    ContentType = "text/plain",
+                    Sha256 = "c".PadLeft(64, '0'),
+                    ObjectKey = "private-chat/legacy/1",
+                    PublicUrl = null,
+                    Status = "disabled",
+                    SourceKind = "PrivateChatDirect"
+                });
+            await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var worker = new KnowledgeDocumentCleanupWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System);
+        Assert.True(await worker.ProcessOnceAsync(TestContext.Current.CancellationToken));
+
+        Assert.Empty(storage.Deleted);
+        Assert.True(jobs.Completed);
+        Assert.False(jobs.Failed, jobs.FailureReason);
+        await using var verificationScope = provider.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider
+            .GetRequiredService<WechatRobotDbContext>();
+        Assert.False(await verification.KnowledgeDocuments.AnyAsync(
+            item => item.Id == documentId,
+            TestContext.Current.CancellationToken));
+        Assert.False(await verification.KnowledgeDocumentVersions.AnyAsync(
+            item => item.Id == versionId,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Physical_delete_job_removes_every_oss_object_and_vector_generation_then_completes()
     {
         var documentId = Guid.NewGuid();
@@ -335,6 +409,7 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
             {
                 Id = versionId, KnowledgeDocumentId = documentId, Version = 1, OriginalFileName = "a.txt", SafeFileName = "a.txt", ContentType = "text/plain",
                 Sha256 = "a".PadLeft(64, '0'), ObjectKey = "wechatrobot/knowledge/a.txt", Status = "disabled", IndexCollectionName = "kb_cosine_3_g1",
+                PublicUrl = "https://public.example.test/wechatrobot/knowledge/a.txt",
                 EmbeddingDimension = 3, VectorDistance = "cosine", IndexGeneration = 1
             };
             var candidate = new KnowledgeCandidateEntity
@@ -411,6 +486,7 @@ public sealed class KnowledgeDocumentCleanupWorkerTests
                     ContentType = "text/plain",
                     Sha256 = "b".PadLeft(64, '0'),
                     ObjectKey = "wechatrobot/knowledge/retained.txt",
+                    PublicUrl = "https://public.example.test/wechatrobot/knowledge/retained.txt",
                     Status = "disabled",
                     IndexCollectionName = "kb_cosine_3_g1",
                     EmbeddingDimension = 3,

@@ -46,8 +46,15 @@ public sealed class KnowledgeDocumentCleanupWorker(IServiceScopeFactory scopeFac
             using var payload = JsonDocument.Parse(job.PayloadJson);
             var documentId = payload.RootElement.GetProperty("documentId").GetGuid();
             var database = scope.ServiceProvider.GetRequiredService<WechatRobotDbContext>();
-            var objectKeys = await database.KnowledgeDocumentVersions.AsNoTracking().Where(version => version.KnowledgeDocumentId == documentId && version.ObjectKey != "")
-                .Select(version => version.ObjectKey).Distinct().ToArrayAsync(token);
+            var objectKeys = await database.KnowledgeDocumentVersions.AsNoTracking()
+                .Where(version =>
+                    version.KnowledgeDocumentId == documentId &&
+                    version.PublicUrl != null &&
+                    version.PublicUrl != "" &&
+                    version.ObjectKey != "")
+                .Select(version => version.ObjectKey)
+                .Distinct()
+                .ToArrayAsync(token);
             var knowledge = scope.ServiceProvider.GetRequiredService<QdrantKnowledgeService>();
             while (await knowledge.GetDocumentIndexDrainDeadlineAsync(documentId, timeProvider.GetUtcNow().UtcDateTime, token) is { } drainDeadline)
             {
