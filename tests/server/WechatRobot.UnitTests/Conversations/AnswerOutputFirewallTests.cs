@@ -22,6 +22,29 @@ public sealed class AnswerOutputFirewallTests
         Assert.False(new AnswerOutputFirewall().Validate(output, [Evidence()]).IsSafe);
     }
 
+    [Fact]
+    public void Trailing_grounded_source_section_is_removed()
+    {
+        var firewall = new AnswerOutputFirewall();
+
+        var sanitized = firewall.SanitizeGrounded(
+            "办理材料如下。\n来源：legacy-visa.md");
+
+        Assert.Equal("办理材料如下。", sanitized);
+        Assert.True(firewall.Validate(sanitized, [Evidence()]).IsSafe);
+    }
+
+    [Fact]
+    public void Source_only_grounded_output_remains_unsafe_after_sanitization()
+    {
+        var firewall = new AnswerOutputFirewall();
+
+        var sanitized = firewall.SanitizeGrounded("来源：legacy-visa.md");
+
+        Assert.Equal(string.Empty, sanitized);
+        Assert.False(firewall.Validate(sanitized, [Evidence()]).IsSafe);
+    }
+
     [Theory]
     [MemberData(nameof(GenericMarkers))]
     public void Ungrounded_answers_with_source_markers_are_rejected(string output)

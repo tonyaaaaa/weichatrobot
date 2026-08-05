@@ -16,6 +16,12 @@ public sealed class AnswerOutputFirewall
     private static readonly Regex MarkerlessWebSearchCall = new(
         @"(?:[\""']name[\""']\s*:\s*[\""']web_search[\""']\s*,\s*[\""']arguments[\""']\s*:|[\""']arguments[\""']\s*:\s*\{[\s\S]{0,512}?\}\s*,\s*[\""']name[\""']\s*:\s*[\""']web_search[\""'])",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex TrailingSourceSection = new(
+        @"(?:\A|\r?\n)[\t ]*(?:来源|参考(?:文档)?|引用|sources?|references?)[\t ]*[:：][\s\S]*\z",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    public string SanitizeGrounded(string output) =>
+        TrailingSourceSection.Replace(output, string.Empty).Trim();
 
     public OutputValidationResult Validate(string output, IReadOnlyList<RetrievalEvidence> evidence)
     {
